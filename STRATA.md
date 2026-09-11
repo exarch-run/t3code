@@ -22,6 +22,10 @@ This branch builds the T3 server that StrataMD bundles. It sits on the upstream 
 
 From the repository root: `vp install --filter=t3... --filter=@t3tools/web... --filter=@t3tools/scripts...`, `cp .env.example .env`, `node scripts/update-release-package-versions.ts <version>`, `vp run --filter t3 build`, copy `dist/resource-monitor` from the official base package into `apps/server/dist`, then `node strata/pack.mjs --version <version> --out <dir>`. The pack script writes the trimmed manifest upstream publishes with and packs it with npm. Revert the version stamp afterwards.
 
+## What the branch carries
+
+- `apps/server/src/mcp/StrataHostClient.ts` and `apps/server/src/mcp/toolkits/strata/`: Strata's document tools, listed in every session's `t3-code` toolkit. The handlers post each call to Strata over a private loopback channel named by `STRATA_HOST_URL` and `STRATA_HOST_TOKEN`, which Strata passes at spawn; with the variables unset or the host unreachable every tool answers "Strata is not connected. Propose the action in a strata block instead." No capability, setting, contract, router, or authorization change: the only upstream file touched is `McpHttpServer.ts`, at the toolkit registration list.
+
 ## Developing against Strata
 
-Run `vp run dev:server` and pair StrataMD to it as an external engine. Cut a tagged build only when the change is ready to ship.
+Run `vp run dev:server` and pair StrataMD to it as an external engine (Settings → Advanced → Connect to another computer's agents). To use the document tools from that server, source Strata's `strata-host.env` from its data directory before starting the server; Strata writes it on every launch. Cut a tagged build only when the change is ready to ship.
