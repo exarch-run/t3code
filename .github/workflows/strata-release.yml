@@ -1,0 +1,244 @@
+name: Strata engine release
+
+# Builds the `t3` server package from this branch and publishes it as a GitHub
+# release. StrataMD's packaging installs the release tarball by URL with
+# lockfile integrity. Mirrors upstream's publish job without npm publishing.
+
+on:
+  push:
+    tags:
+      - "v*-strata.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build, for example v0.0.41-strata.1"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: strata-release-${{ inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+          filter: blob:none
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: |
+            args:
+              - --filter=t3...
+              - --filter=@t3tools/web...
+              - --filter=@t3tools/scripts...
+
+      - name: Resolve release inputs
+        id: meta
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          tag="${INPUT_TAG:-$GITHUB_REF_NAME}"
+          if [[ ! "$tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-strata\.([0-9]+)$ ]]; then
+            echo "Tag must look like v0.0.41-strata.1, got: $tag" >&2
+            exit 1
+          fi
+          version="${tag#v}"
+          base_tag="$(node -p "require('./strata/base.json').upstreamTag")"
+          base_commit="$(node -p "require('./strata/base.json').upstreamCommit")"
+          base_version="$(node -p "require('./strata/base.json').npmVersion")"
+          base_integrity="$(node -p "require('./strata/base.json').npmIntegrity")"
+          if [[ "$version" != "${BASH_REMATCH[1]}"* ]]; then exit 1; fi
+          if [[ "$base_version" != "${BASH_REMATCH[1]}"* ]]; then
+            echo "strata/base.json names $base_version; the tag says ${BASH_REMATCH[1]}" >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$base_commit" HEAD; then
+            echo "strata/base.json names $base_commit, which is not an ancestor of HEAD" >&2
+            exit 1
+          fi
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "base_tag=$base_tag"
+            echo "base_commit=$base_commit"
+            echo "base_version=$base_version"
+            echo "base_integrity=$base_integrity"
+          } >> "$GITHUB_OUTPUT"
+          echo "Building $version from $base_tag ($base_commit) at $(git rev-parse HEAD)"
+
+      - name: Use the public T3 Connect identifiers
+        run: cp .env.example .env
+
+      - name: Align package versions to the release version
+        run: node scripts/update-release-package-versions.ts "${{ steps.meta.outputs.version }}"
+
+      # The t3 build task depends on @t3tools/web#build, so the web client is
+      # built and bundled into dist/client as part of this step.
+      - name: Build the server package
+        run: vp run --filter t3 build
+
+      - name: Add the official helper binaries for the base version
+        shell: bash
+        env:
+          BASE_VERSION: ${{ steps.meta.outputs.base_version }}
+          BASE_INTEGRITY: ${{ steps.meta.outputs.base_integrity }}
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/base-package"
+          mkdir -p "$work"
+          curl -sSfL -o "$work/base.tgz" "https://registry.npmjs.org/t3/-/t3-${BASE_VERSION}.tgz"
+          actual="sha512-$(openssl dgst -sha512 -binary "$work/base.tgz" | base64 -w0)"
+          if [[ "$actual" != "$BASE_INTEGRITY" ]]; then
+            echo "Official base package integrity mismatch: $actual" >&2
+            exit 1
+          fi
+          tar -xzf "$work/base.tgz" -C "$work" package/dist/resource-monitor
+          rm -rf apps/server/dist/resource-monitor
+          cp -R "$work/package/dist/resource-monitor" apps/server/dist/resource-monitor
+          chmod +x apps/server/dist/resource-monitor/*/t3-resource-monitor 2>/dev/null || true
+          find apps/server/dist/resource-monitor -type f | sort
+
+      - name: Check the built package
+        shell: bash
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd apps/server
+          for f in dist/bin.mjs dist/service-launcher.mjs dist/client/index.html \
+                   dist/resource-monitor/linux-x64/t3-resource-monitor \
+                   dist/resource-monitor/darwin-x64/t3-resource-monitor \
+                   dist/resource-monitor/darwin-arm64/t3-resource-monitor \
+                   dist/resource-monitor/win32-x64/t3-resource-monitor.exe; do
+            if [[ ! -f "$f" ]]; then echo "Missing build asset: $f" >&2; exit 1; fi
+          done
+          node -e '
+            const pkg = require("./package.json");
+            if (pkg.version !== process.env.VERSION) throw new Error(`package.json version is ${pkg.version}`);
+          '
+
+      - name: Pack
+        id: pack
+        shell: bash
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/release"
+          mkdir -p "$out"
+          (cd apps/server && vp pm pack --pack-destination "$out")
+          file="$(ls "$out"/t3-*.tgz)"
+          tar -xzf "$file" -O package/package.json > "$out/package.json"
+          node -e '
+            const pkg = require(process.argv[1]);
+            if (pkg.name !== "t3" || pkg.version !== process.env.VERSION) throw new Error(`Packed ${pkg.name}@${pkg.version}`);
+            for (const group of ["dependencies", "optionalDependencies", "peerDependencies"]) {
+              for (const [name, range] of Object.entries(pkg[group] ?? {})) {
+                if (/^(workspace|catalog|link|file):/.test(String(range))) throw new Error(`${group}.${name} is ${range}`);
+              }
+            }
+          ' "$out/package.json"
+          sha="$(sha256sum "$file" | cut -d" " -f1)"
+          echo "$sha  $(basename "$file")" > "$file.sha256"
+          {
+            echo "file=$file"
+            echo "sha256=$sha"
+            echo "dir=$out"
+          } >> "$GITHUB_OUTPUT"
+          echo "Packed $(basename "$file") sha256 $sha"
+
+      - name: Write the provenance record
+        shell: bash
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          BASE_TAG: ${{ steps.meta.outputs.base_tag }}
+          BASE_COMMIT: ${{ steps.meta.outputs.base_commit }}
+          BASE_VERSION: ${{ steps.meta.outputs.base_version }}
+          BASE_INTEGRITY: ${{ steps.meta.outputs.base_integrity }}
+          FILE: ${{ steps.pack.outputs.file }}
+          SHA256: ${{ steps.pack.outputs.sha256 }}
+          OUT: ${{ steps.pack.outputs.dir }}
+        run: |
+          set -euo pipefail
+          git log --format='%H%x09%s' "$BASE_COMMIT..HEAD" > "$OUT/commits.tsv"
+          node -e '
+            const fs = require("node:fs");
+            const env = process.env;
+            const commits = fs.readFileSync(`${env.OUT}/commits.tsv`, "utf8").split("\n").filter(Boolean).map((line) => {
+              const [commit, ...subject] = line.split("\t");
+              return { commit, subject: subject.join("\t") };
+            });
+            const record = {
+              package: "t3",
+              version: env.VERSION,
+              tag: env.TAG,
+              forkRepository: `https://github.com/${env.GITHUB_REPOSITORY}`,
+              forkCommit: env.GITHUB_SHA,
+              upstreamRepository: "https://github.com/pingdotgg/t3code",
+              upstreamTag: env.BASE_TAG,
+              upstreamCommit: env.BASE_COMMIT,
+              basePackage: { name: "t3", version: env.BASE_VERSION, integrity: env.BASE_INTEGRITY, helperBinaries: "dist/resource-monitor" },
+              strataCommits: commits,
+              tarball: { name: require("node:path").basename(env.FILE), sha256: env.SHA256 },
+              workflowRun: `https://github.com/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`,
+              builtAt: new Date().toISOString(),
+              license: "MIT",
+            };
+            fs.writeFileSync(`${env.OUT}/provenance.json`, JSON.stringify(record, null, 2) + "\n");
+            const notes = [
+              `Strata engine ${env.VERSION}`,
+              "",
+              `Built from ${env.BASE_TAG} (${env.BASE_COMMIT}) plus ${commits.length} Strata commit(s).`,
+              "",
+              `Tarball SHA-256: ${env.SHA256}`,
+              "",
+              "Assets: the package tarball, its checksum, and provenance.json. A build attestation is attached to the tarball.",
+            ].join("\n");
+            fs.writeFileSync(`${env.OUT}/notes.md`, notes + "\n");
+          '
+          cat "$OUT/provenance.json"
+
+      - name: Attest the tarball
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: ${{ steps.pack.outputs.file }}
+
+      - name: Publish the GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          FILE: ${{ steps.pack.outputs.file }}
+          OUT: ${{ steps.pack.outputs.dir }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Strata engine $VERSION" \
+            --notes-file "$OUT/notes.md" \
+            --verify-tag \
+            "$FILE" "$FILE.sha256" "$OUT/provenance.json"

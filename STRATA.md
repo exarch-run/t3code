@@ -1,0 +1,27 @@
+# Strata engine branch
+
+This branch builds the T3 server that StrataMD bundles. It sits on the upstream release tag named in `strata/base.json` and carries only Strata's own commits on top. `git log <upstreamCommit>..strata` is the complete list of Strata's modifications.
+
+## Rules
+
+- New behavior goes in new files. Upstream files are touched only at registration points: the RPC method registry, the settings schema, the reactor list.
+- One commit per change, subject prefixed `strata:`.
+- Never rename or remove an existing RPC method, event type, field, or enum value. Add under new names and new capability flags. Existing clients, including the web client this package bundles and the T3 mobile app, keep working.
+- Never touch auth, pairing, token exchange, or the relay client.
+- Native code is not modified. Helper binaries come from the official npm package of the base version.
+
+## Taking an upstream release
+
+1. `git fetch upstream --tags`
+2. `git rebase v<version> strata` (merge instead once the branch holds more than about twenty commits)
+3. Update `strata/base.json`: tag, commit, npm version, npm integrity (`npm view t3@<version> dist.integrity`)
+4. Run upstream's server tests near the files this branch touches: `vp test run` inside `apps/server` with `-t` filters
+5. Tag `v<version>-strata.1` and push the tag. The workflow in `.github/workflows/strata-release.yml` builds the package and publishes a GitHub release with the tarball, its SHA-256, a provenance record, and a build attestation.
+
+## Building locally
+
+From the repository root: `vp install --filter=t3... --filter=@t3tools/web... --filter=@t3tools/scripts...`, `cp .env.example .env`, `node scripts/update-release-package-versions.ts <version>`, `vp run --filter t3 build`, copy `dist/resource-monitor` from the official base package into `apps/server/dist`, then `vp pm pack` inside `apps/server`. Revert the version stamp afterwards.
+
+## Developing against Strata
+
+Run `vp run dev:server` and pair StrataMD to it as an external engine. Cut a tagged build only when the change is ready to ship.
