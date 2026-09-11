@@ -147,27 +147,13 @@ jobs:
         run: |
           set -euo pipefail
           out="$RUNNER_TEMP/release"
-          mkdir -p "$out"
-          (cd apps/server && vp pm pack --pack-destination "$out")
-          file="$(ls "$out"/t3-*.tgz)"
-          tar -xzf "$file" -O package/package.json > "$out/package.json"
-          node -e '
-            const pkg = require(process.argv[1]);
-            if (pkg.name !== "t3" || pkg.version !== process.env.VERSION) throw new Error(`Packed ${pkg.name}@${pkg.version}`);
-            for (const group of ["dependencies", "optionalDependencies", "peerDependencies"]) {
-              for (const [name, range] of Object.entries(pkg[group] ?? {})) {
-                if (/^(workspace|catalog|link|file):/.test(String(range))) throw new Error(`${group}.${name} is ${range}`);
-              }
-            }
-          ' "$out/package.json"
-          sha="$(sha256sum "$file" | cut -d" " -f1)"
-          echo "$sha  $(basename "$file")" > "$file.sha256"
+          result="$(node strata/pack.mjs --version "$VERSION" --out "$out")"
+          echo "$result"
           {
-            echo "file=$file"
-            echo "sha256=$sha"
+            echo "file=$(node -pe 'JSON.parse(process.argv[1]).file' "$result")"
+            echo "sha256=$(node -pe 'JSON.parse(process.argv[1]).sha256' "$result")"
             echo "dir=$out"
           } >> "$GITHUB_OUTPUT"
-          echo "Packed $(basename "$file") sha256 $sha"
 
       - name: Write the provenance record
         shell: bash
