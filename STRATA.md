@@ -20,7 +20,7 @@ This branch builds the T3 server that StrataMD bundles. It sits on the upstream 
 
 ## Building locally
 
-From the repository root: `vp install --filter=t3... --filter=@t3tools/web... --filter=@t3tools/scripts...`, `cp .env.example .env`, `node scripts/update-release-package-versions.ts <version>`, `vp run --filter t3 build`, copy `dist/resource-monitor` from the official base package into `apps/server/dist`, then `vp pm pack` inside `apps/server`. Revert the version stamp afterwards.
+From the repository root: `vp install --filter=t3... --filter=@t3tools/web... --filter=@t3tools/scripts...`, `cp .env.example .env`, `node scripts/update-release-package-versions.ts <version>`, `vp run --filter t3 build`, copy `dist/resource-monitor` from the official base package into `apps/server/dist`, then `node strata/pack.mjs --version <version> --out <dir>`. The pack script writes the trimmed manifest upstream publishes with and packs it with npm. Revert the version stamp afterwards.
 
 ## Developing against Strata
 
