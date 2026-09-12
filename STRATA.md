@@ -30,7 +30,7 @@ From the repository root: `vp install --filter=t3... --filter=@t3tools/web... --
 
 ## Task progress extension
 
-`packages/contracts/src/taskProgress.ts` and `apps/server/src/strata/` define the server-owned card, native tool dispatch, writer leases and transactional projection. Migration 052 adds cards and content-bound retry receipts. Registration calls extend internal orchestration commands, events, projections, snapshots, server settings/config and thread subscriptions. Publishing is not a client command and does not use the desktop document host or modify authentication.
+`packages/contracts/src/taskProgress.ts` and `apps/server/src/strata/` define the server-owned card, native tool dispatch, writer leases and transactional projection. Migration 052 adds cards and content-bound retry receipts. Migration 053 seeds the projector cursor at the other projectors' position on an existing store, so taking the extension never replays the whole history before the server listens. Registration calls extend internal orchestration commands, events, projections, snapshots, server settings/config and thread subscriptions. Publishing is not a client command and does not use the desktop document host or modify authentication.
 
 New Codex threads receive native dynamic tools. The runtime supplies root thread and originating turn identity; its live writer lease is checked in serialized processing and again in the SQL transaction. Existing native threads retain their tools on resume. Pre-extension threads do not gain the tools automatically. Claude is not enabled because shared MCP credentials do not prove root/turn identity in full-access mode. The default-on `enableTaskProgress` setting rejects writes immediately when disabled.
 
