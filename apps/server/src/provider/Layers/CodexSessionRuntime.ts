@@ -1,4 +1,10 @@
 import {
+  taskTools,
+  progressEnabled,
+  registerWriter,
+  invokeProgress,
+} from "../../strata/TaskProgressRuntime.ts";
+import {
   ApprovalRequestId,
   DEFAULT_MODEL,
   EventId,
@@ -733,6 +739,9 @@ export const openCodexThread = (input: {
   readonly requestedModel: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
   readonly resumeThreadId: string | undefined;
+  readonly startRequest?: (
+    params: CodexRpc.ClientRequestParamsByMethod["thread/start"],
+  ) => Effect.Effect<typeof CodexThreadResumeMetadata.Type, CodexErrors.CodexAppServerError>;
 }): Effect.Effect<typeof CodexThreadResumeMetadata.Type, CodexErrors.CodexAppServerError> => {
   const resumeThreadId = input.resumeThreadId;
   const startParams = buildThreadStartParams({
@@ -742,9 +751,12 @@ export const openCodexThread = (input: {
     serviceTier: input.serviceTier,
   });
 
-  if (resumeThreadId === undefined) {
-    return input.client.request("thread/start", startParams);
-  }
+  const start = Effect.suspend(() =>
+    input.startRequest
+      ? input.startRequest(startParams)
+      : input.client.request("thread/start", startParams),
+  );
+  if (resumeThreadId === undefined) return start;
 
   // Older providers may still return history despite excludeTurns. Only the
   // session metadata is needed here, so unrelated historical items cannot
@@ -774,7 +786,7 @@ export const openCodexThread = (input: {
           resumeThreadId,
           recoverable: true,
           cause: error,
-        }).pipe(Effect.andThen(input.client.request("thread/start", startParams))),
+        }).pipe(Effect.andThen(start)),
       ),
     );
 };
@@ -1903,6 +1915,24 @@ export const makeCodexSessionRuntime = (
       });
 
     const currentSessionProviderThreadId = Effect.map(Ref.get(sessionRef), currentProviderThreadId);
+    const progressWriter = registerWriter({
+      threadId: options.threadId,
+      root: currentSessionProviderThreadId,
+      current: (turnId) =>
+        Effect.map(
+          Ref.get(sessionRef),
+          (session) => session.activeTurnId === turnId && session.status === "running",
+        ),
+    });
+    yield* Scope.addFinalizer(
+      runtimeScope,
+      Effect.sync(() => {
+        progressWriter.close();
+      }),
+    );
+    yield* client.handleServerRequest("item/tool/call", (payload) =>
+      invokeProgress(progressWriter.id, payload),
+    );
 
     yield* client.handleServerNotification("thread/started", (payload) =>
       currentSessionProviderThreadId.pipe(
@@ -2295,6 +2325,26 @@ export const makeCodexSessionRuntime = (
         requestedModel,
         serviceTier: options.serviceTier,
         resumeThreadId: readResumeCursorThreadId(options.resumeCursor),
+        ...((yield* progressEnabled())
+          ? {
+              startRequest: (params: CodexRpc.ClientRequestParamsByMethod["thread/start"]) =>
+                client.raw
+                  .request("thread/start", { ...params, dynamicTools: taskTools })
+                  .pipe(
+                    Effect.flatMap((response) =>
+                      decodeCodexThreadResumeMetadata(response).pipe(
+                        Effect.mapError((error) =>
+                          CodexErrors.CodexAppServerRequestError.invalidPayload(
+                            "thread/start",
+                            "decode-payload",
+                            error,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+            }
+          : {}),
       });
 
       const providerThreadId = opened.thread.id;

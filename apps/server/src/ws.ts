@@ -327,11 +327,13 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
       | "thread.proposed-plan-upserted"
       | "thread.activity-appended"
       | "thread.turn-diff-completed"
+      | "thread.task-progress-updated"
       | "thread.reverted"
       | "thread.session-set";
   }
 > {
   return (
+    event.type === "thread.task-progress-updated" ||
     event.type === "thread.message-sent" ||
     event.type === "thread.proposed-plan-upserted" ||
     event.type === "thread.activity-appended" ||
@@ -1272,6 +1274,12 @@ const makeWsRpcLayer = (
             : undefined;
 
           return {
+            taskProgress: {
+              version: 1 as const,
+              providers: ["codex"],
+              newChatsOnly: true,
+              enabled: settings.enableTaskProgress,
+            },
             environment,
             auth,
             cwd: config.cwd,
@@ -1626,7 +1634,8 @@ const makeWsRpcLayer = (
               const isThisThreadDetailEvent = (event: OrchestrationEvent) =>
                 event.aggregateKind === "thread" &&
                 event.aggregateId === input.threadId &&
-                isThreadDetailEvent(event);
+                isThreadDetailEvent(event) &&
+                (event.type !== "thread.task-progress-updated" || input.taskProgressVersion === 1);
 
               const liveStream = orchestrationEngine.streamDomainEvents.pipe(
                 Stream.filter(isThisThreadDetailEvent),

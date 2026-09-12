@@ -1965,6 +1965,44 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.task-progress.publish": {
+      const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
+      if (
+        thread.deletedAt !== null ||
+        !thread.latestTurn ||
+        thread.latestTurn.state !== "running" ||
+        thread.latestTurn.turnId !== command.providerTurnId
+      )
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "The originating conversation turn is no longer active.",
+        });
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.task-progress-updated",
+        payload: {
+          threadId: command.threadId,
+          digest: command.digest,
+          card: {
+            ...command.content,
+            version: 1,
+            revision: (thread.taskProgress?.revision ?? 0) + 1,
+            generation: thread.createdAt,
+            runId: thread.latestTurn.turnId,
+            providerTurnId: command.providerTurnId,
+            updatedAt: command.createdAt,
+            outcome: null,
+            endedAt: null,
+          },
+        },
+      };
+    }
+
     case "thread.activity.append": {
       const thread = yield* requireThread({
         readModel,

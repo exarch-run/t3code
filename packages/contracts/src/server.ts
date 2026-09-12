@@ -546,6 +546,14 @@ export function environmentThemeFileHasColors(file: EnvironmentThemeFile): boole
 }
 
 export const ServerConfig = Schema.Struct({
+  taskProgress: Schema.optional(
+    Schema.Struct({
+      version: Schema.Literal(1),
+      providers: Schema.Array(Schema.String),
+      newChatsOnly: Schema.Boolean,
+      enabled: Schema.Boolean,
+    }),
+  ),
   environment: ExecutionEnvironmentDescriptor,
   auth: ServerAuthDescriptor,
   cwd: TrimmedNonEmptyString,

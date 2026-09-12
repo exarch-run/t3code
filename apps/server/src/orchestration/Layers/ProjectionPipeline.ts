@@ -1,3 +1,4 @@
+import { projectTaskProgress } from "../../strata/TaskProgressPersistence.ts";
 import {
   ApprovalRequestId,
   isImportedAgentSessionMessageId,
@@ -65,6 +66,7 @@ import {
 } from "../../attachmentStore.ts";
 
 export const ORCHESTRATION_PROJECTOR_NAMES = {
+  taskProgress: "strata_task_progress",
   projects: "projection.projects",
   threads: "projection.threads",
   threadMessages: "projection.thread-messages",
@@ -1949,6 +1951,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       {
         name: ORCHESTRATION_PROJECTOR_NAMES.threads,
         apply: applyThreadsProjection,
+      },
+      {
+        name: ORCHESTRATION_PROJECTOR_NAMES.taskProgress,
+        apply: (event) => projectTaskProgress(sql, event),
       },
     ];
 

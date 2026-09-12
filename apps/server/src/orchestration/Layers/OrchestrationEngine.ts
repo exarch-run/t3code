@@ -1,3 +1,5 @@
+import { registerProgressBridge } from "../../strata/TaskProgressBridge.ts";
+import { validateProgressCommand } from "../../strata/TaskProgressPersistence.ts";
 import type {
   OrchestrationClientOrigin,
   OrchestrationEvent,
@@ -141,6 +143,8 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           "orchestration.aggregate_id": aggregateRef.aggregateId,
         });
 
+        const progressReceipt = yield* validateProgressCommand(sql, envelope.command);
+        if (progressReceipt) return { sequence: progressReceipt.sequence };
         const existingReceipt = yield* commandReceiptRepository.getByCommandId({
           commandId: envelope.command.commandId,
         });
@@ -273,6 +277,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         const committedCommand = yield* sql
           .withTransaction(
             Effect.gen(function* () {
+              yield* validateProgressCommand(sql, envelope.command);
               const committedEvents: OrchestrationEvent[] = [];
               const attachmentCleanups: Effect.Effect<void>[] = [];
               let nextCommandReadModel = commandReadModel;
@@ -389,7 +394,10 @@ const makeOrchestrationEngine = Effect.gen(function* () {
               ),
             );
 
-            if (isOrchestrationCommandRejection(error)) {
+            if (
+              isOrchestrationCommandRejection(error) &&
+              envelope.command.type !== "thread.task-progress.publish"
+            ) {
               yield* commandReceiptRepository
                 .upsert({
                   commandId: envelope.command.commandId,
@@ -446,6 +454,8 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       });
       return yield* Deferred.await(result);
     });
+
+  yield* registerProgressBridge(sql, dispatch);
 
   return {
     readEvents,

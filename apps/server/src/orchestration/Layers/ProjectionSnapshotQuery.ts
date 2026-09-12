@@ -1,3 +1,4 @@
+import { readProgressFields } from "../../strata/TaskProgressPersistence.ts";
 import {
   AgentSessionImportSource,
   ApprovalRequestId,
@@ -266,6 +267,7 @@ const ProjectionFullThreadDiffContextRowSchema = Schema.Struct({
 });
 
 const REQUIRED_SNAPSHOT_PROJECTORS = [
+  ORCHESTRATION_PROJECTOR_NAMES.taskProgress,
   ORCHESTRATION_PROJECTOR_NAMES.projects,
   ORCHESTRATION_PROJECTOR_NAMES.threads,
   ORCHESTRATION_PROJECTOR_NAMES.threadMessages,
@@ -2469,6 +2471,7 @@ pending_approval_requests AS (
                   continue;
                 }
                 threads.push({
+                  ...(yield* readProgressFields(sql, row.threadId)),
                   id: row.threadId,
                   projectId: row.projectId,
                   title: row.title,
@@ -3419,6 +3422,7 @@ pending_approval_requests AS (
       }
 
       const thread = {
+        ...(yield* readProgressFields(sql, threadRow.value.threadId)),
         id: threadRow.value.threadId,
         projectId: threadRow.value.projectId,
         title: threadRow.value.title,

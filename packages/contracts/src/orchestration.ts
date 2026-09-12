@@ -1,3 +1,4 @@
+import { TaskProgressCard, TaskProgressPublishFields } from "./taskProgress.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
@@ -725,6 +726,7 @@ export const ThreadPullRequestLink = Schema.Struct({
 export type ThreadPullRequestLink = typeof ThreadPullRequestLink.Type;
 
 export const OrchestrationThread = Schema.Struct({
+  taskProgress: Schema.optional(Schema.NullOr(TaskProgressCard)),
   id: ThreadId,
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
@@ -934,6 +936,7 @@ export const OrchestrationSubscribeShellInput = Schema.Struct({
 export type OrchestrationSubscribeShellInput = typeof OrchestrationSubscribeShellInput.Type;
 
 export const OrchestrationSubscribeThreadInput = Schema.Struct({
+  taskProgressVersion: Schema.optional(Schema.Literal(1)),
   threadId: ThreadId,
   /**
    * When provided, the server skips the initial snapshot frame and instead
@@ -1512,6 +1515,13 @@ const ThreadPullRequestLinkSyncCommand = Schema.Struct({
 });
 
 const InternalOrchestrationCommand = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("thread.task-progress.publish"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    createdAt: IsoDateTime,
+    ...TaskProgressPublishFields,
+  }),
   ThreadAutoSettleCommand,
   ThreadPullRequestSyncCommand,
   ThreadPullRequestLinkSyncCommand,
@@ -1567,6 +1577,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.session-set",
   "thread.proposed-plan-upserted",
   "thread.turn-diff-completed",
+  "thread.task-progress-updated",
   "thread.activity-appended",
 ]);
 export type OrchestrationEventType = typeof OrchestrationEventType.Type;
@@ -1874,6 +1885,11 @@ const EventBaseFields = {
 } as const;
 
 export const OrchestrationEvent = Schema.Union([
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.task-progress-updated"),
+    payload: Schema.Struct({ threadId: ThreadId, card: TaskProgressCard, digest: Schema.String }),
+  }),
   Schema.Struct({
     ...EventBaseFields,
     type: Schema.Literal("project.created"),

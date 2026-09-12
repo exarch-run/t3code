@@ -28,6 +28,14 @@ From the repository root: `vp install --filter=t3... --filter=@t3tools/web... --
 
 - `apps/server/src/provider/SessionFiles.ts` and `OrchestrationProject.sessionFiles`: files from the project folder that the server places in the model's context at session start, the way an assistant workspace's soul, identity, user, and memory files are loaded. Set through `project.create` and `project.meta.update`; rendered by the provider command reactor into `ProviderSessionStartInput.sessionContext`; appended after the runtime block by the shared builder, at session start for Claude, per turn for Codex, Grok, and OpenCode. Registration points touched: the contract, the decider, the projector, the projection pipeline and repository, migration 051, the snapshot query, the reactor, and one call per adapter.
 
+## Task progress extension
+
+`packages/contracts/src/taskProgress.ts` and `apps/server/src/strata/` define the server-owned card, native tool dispatch, writer leases and transactional projection. Migration 052 adds cards and content-bound retry receipts. Registration calls extend internal orchestration commands, events, projections, snapshots, server settings/config and thread subscriptions. Publishing is not a client command and does not use the desktop document host or modify authentication.
+
+New Codex threads receive native dynamic tools. The runtime supplies root thread and originating turn identity; its live writer lease is checked in serialized processing and again in the SQL transaction. Existing native threads retain their tools on resume. Pre-extension threads do not gain the tools automatically. Claude is not enabled because shared MCP credentials do not prove root/turn identity in full-access mode. The default-on `enableTaskProgress` setting rejects writes immediately when disabled.
+
+Readers opt into version 1 progress events with `taskProgressVersion`; old readers receive existing event forms and may ignore the optional snapshot field. Preserve this filtering for live delivery and replay. Cards retain source-turn outcomes outside paginated history. Each upstream upgrade must rerun TaskProgress tests, snapshot/projector/Codex tests, the bundled web build and Strata's explicit native provider proof, including old/new subscriptions, restart, backup restoration and retired/child writes. Never allocate migration 052 again.
+
 ## Developing against Strata
 
 Run `vp run dev:server` and pair StrataMD to it as an external engine (Settings → Advanced → Connect to another computer's agents). To use the document tools from that server, source Strata's `strata-host.env` from its data directory before starting the server; Strata writes it on every launch. Cut a tagged build only when the change is ready to ship.

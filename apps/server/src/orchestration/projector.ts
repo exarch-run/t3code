@@ -325,6 +325,15 @@ export function projectEvent(
   };
 
   switch (event.type) {
+    case "thread.task-progress-updated":
+      return Effect.succeed({
+        ...nextBase,
+        threads: nextBase.threads.map((thread) =>
+          thread.id === event.payload.threadId
+            ? { ...thread, taskProgress: event.payload.card }
+            : thread,
+        ),
+      });
     case "project.created":
       return decodeForEvent(ProjectCreatedPayload, event.payload, event.type, "payload").pipe(
         Effect.map((payload) => {

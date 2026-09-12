@@ -1,3 +1,4 @@
+import Migration0052 from "./Migrations/052_StrataTaskProgress.ts";
 /**
  * Migration runner with an inline loader.
  *
@@ -75,6 +76,7 @@ import Migration0051 from "./Migrations/051_ProjectionProjectsSessionFiles.ts";
  * returns migrations sorted by ID.
  */
 const migrationEntries = [
+  [52, "StrataTaskProgress", Migration0052],
   [1, "OrchestrationEvents", Migration0001],
   [2, "OrchestrationCommandReceipts", Migration0002],
   [3, "CheckpointDiffBlobs", Migration0003],
