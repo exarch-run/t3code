@@ -8,6 +8,7 @@ import { createServer, type Server } from "node:http";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as StrataHostClient from "../../StrataHostClient.ts";
+import { installBridge, NO_ACTIVE_RUN } from "../../../strata/TaskProgressRuntime.ts";
 import { StrataToolkitHandlersLive } from "./handlers.ts";
 import { StrataToolkit } from "./tools.ts";
 
@@ -83,38 +84,40 @@ const makeHarness = (env: NodeJS.ProcessEnv) =>
   });
 
 describe("strata toolkit handlers", () => {
-  it.effect("posts each tool request to Strata with the thread and environment and returns its JSON", () =>
-    Effect.gen(function* () {
-      const host = yield* Effect.promise(() =>
-        stubHost((received) => ({
-          status: 200,
-          body: { ok: true, result: { echo: received.body, tool: received.path } },
-        })),
-      );
-      try {
-        const harness = yield* makeHarness({
-          STRATA_HOST_URL: host.url,
-          STRATA_HOST_TOKEN: "secret-token",
-        });
-        const result = yield* harness.call("strata_act", {
-          actionId: "act-1",
-          entries: [{ verb: "save", document: "/docs/a.md" }],
-        });
-        expect(result).toEqual({
-          tool: "/tools/strata_act",
-          echo: {
-            threadId: "thread-1",
-            environmentId: "environment-1",
-            input: { actionId: "act-1", entries: [{ verb: "save", document: "/docs/a.md" }] },
-          },
-        });
-        expect(host.received[0]?.authorization).toBe("Bearer secret-token");
-        const documents = yield* harness.call("strata_open_documents", {});
-        expect(documents).toMatchObject({ tool: "/tools/strata_open_documents" });
-      } finally {
-        yield* Effect.promise(host.close);
-      }
-    }),
+  it.effect(
+    "posts each tool request to Strata with the thread and environment and returns its JSON",
+    () =>
+      Effect.gen(function* () {
+        const host = yield* Effect.promise(() =>
+          stubHost((received) => ({
+            status: 200,
+            body: { ok: true, result: { echo: received.body, tool: received.path } },
+          })),
+        );
+        try {
+          const harness = yield* makeHarness({
+            STRATA_HOST_URL: host.url,
+            STRATA_HOST_TOKEN: "secret-token",
+          });
+          const result = yield* harness.call("strata_act", {
+            actionId: "act-1",
+            entries: [{ verb: "save", document: "/docs/a.md" }],
+          });
+          expect(result).toEqual({
+            tool: "/tools/strata_act",
+            echo: {
+              threadId: "thread-1",
+              environmentId: "environment-1",
+              input: { actionId: "act-1", entries: [{ verb: "save", document: "/docs/a.md" }] },
+            },
+          });
+          expect(host.received[0]?.authorization).toBe("Bearer secret-token");
+          const documents = yield* harness.call("strata_open_documents", {});
+          expect(documents).toMatchObject({ tool: "/tools/strata_open_documents" });
+        } finally {
+          yield* Effect.promise(host.close);
+        }
+      }),
   );
 
   it.effect("a refusal from Strata surfaces its code and message", () =>
@@ -148,12 +151,105 @@ describe("strata toolkit handlers", () => {
       expect(missing).toMatchObject({ _tag: "StrataNotConnectedError" });
       expect(missing.message).toBe(StrataHostClient.STRATA_NOT_CONNECTED_MESSAGE);
 
-      const host = yield* Effect.promise(() => stubHost(() => ({ status: 200, body: { ok: true, result: {} } })));
+      const host = yield* Effect.promise(() =>
+        stubHost(() => ({ status: 200, body: { ok: true, result: {} } })),
+      );
       yield* Effect.promise(host.close);
       const gone = yield* makeHarness({ STRATA_HOST_URL: host.url, STRATA_HOST_TOKEN: "t" });
       const unreachable = yield* gone.call("strata_items", {}).pipe(Effect.flip);
       expect(unreachable).toMatchObject({ _tag: "StrataNotConnectedError" });
       expect(unreachable.message).toBe(StrataHostClient.STRATA_NOT_CONNECTED_MESSAGE);
+    }),
+  );
+});
+
+describe("task card handlers", () => {
+  const receipt = {
+    revision: 1,
+    generation: "g",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    sequence: 7,
+  };
+  const card = {
+    version: 1 as const,
+    revision: 1,
+    generation: "g",
+    runId: "turn-1",
+    providerTurnId: "turn-1",
+    markdown: "Halfway",
+    plan: [],
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    outcome: null,
+    endedAt: null,
+  };
+  const fakeBridge = (activeTurn: string | null) => {
+    const published: unknown[] = [];
+    const close = installBridge({
+      enabled: Effect.succeed(true),
+      activeTurn: () => Effect.succeed(activeTurn),
+      publish: (input) => {
+        published.push(input);
+        return Effect.succeed(receipt);
+      },
+      read: () => Effect.succeed(card),
+    });
+    return { published, close };
+  };
+
+  it.effect("writes the chat's card against the server's active turn and returns the receipt", () =>
+    Effect.gen(function* () {
+      const bridge = fakeBridge("turn-1");
+      try {
+        const harness = yield* makeHarness({});
+        const result = yield* harness.call("strata_progress_card", {
+          writeId: "w1",
+          markdown: "Halfway",
+          plan: [{ text: "Read", status: "completed" }],
+        });
+        expect(result).toEqual(receipt);
+        expect(bridge.published).toEqual([
+          {
+            threadId: "thread-1",
+            providerTurnId: "turn-1",
+            writeId: "w1",
+            digest: expect.any(String),
+            content: { markdown: "Halfway", plan: [{ text: "Read", status: "completed" }] },
+          },
+        ]);
+        expect(yield* harness.call("strata_progress_card_read", {})).toEqual({ card });
+      } finally {
+        bridge.close();
+      }
+    }),
+  );
+
+  it.effect("refuses a write when no run is active and when the content is unusable", () =>
+    Effect.gen(function* () {
+      const idle = fakeBridge(null);
+      try {
+        const harness = yield* makeHarness({});
+        const refused = yield* harness
+          .call("strata_progress_card", { writeId: "w1", markdown: "Late" })
+          .pipe(Effect.flip);
+        expect(refused).toMatchObject({ _tag: "TaskProgressRefusedError", detail: NO_ACTIVE_RUN });
+        expect(idle.published).toEqual([]);
+      } finally {
+        idle.close();
+      }
+      const running = fakeBridge("turn-1");
+      try {
+        const harness = yield* makeHarness({});
+        const empty = yield* harness
+          .call("strata_progress_card", { writeId: "w2" })
+          .pipe(Effect.flip);
+        expect(empty).toMatchObject({
+          _tag: "TaskProgressRefusedError",
+          detail: expect.stringContaining("Supply a status note, plan, or both"),
+        });
+        expect(running.published).toEqual([]);
+      } finally {
+        running.close();
+      }
     }),
   );
 });

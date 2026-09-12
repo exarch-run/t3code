@@ -12,7 +12,7 @@ const schemaHasDescription = (schema: unknown): boolean => {
     .some((members) => members.some(schemaHasDescription));
 };
 
-it("lists the eight Strata tools with described object parameters", () => {
+it("lists the ten Strata tools with described object parameters", () => {
   expect(Object.keys(StrataToolkit.tools).sort()).toEqual([
     "strata_act",
     "strata_changes",
@@ -20,6 +20,8 @@ it("lists the eight Strata tools with described object parameters", () => {
     "strata_document",
     "strata_items",
     "strata_open_documents",
+    "strata_progress_card",
+    "strata_progress_card_read",
     "strata_render_check",
     "strata_resolve",
   ]);
@@ -56,5 +58,19 @@ it("tells the agent what it must know at session start", () => {
   expect(document).toContain("A delivery is the owner's round");
   expect(document).toContain("belong to that read");
   expect(document).toContain("focus, reading position, and unsent drafts are never available");
-  expect(StrataToolkit.tools.strata_open_documents.description).toContain("Nothing else about them is available");
+  expect(StrataToolkit.tools.strata_open_documents.description).toContain(
+    "Nothing else about them is available",
+  );
+});
+
+it("tells every model how the task card works", () => {
+  const card = StrataToolkit.tools.strata_progress_card.description ?? "";
+  expect(card).toContain("Every call replaces the whole card");
+  expect(card).toContain("fresh writeId");
+  expect(card).toContain("The main agent keeps the card");
+  expect(card).toContain("only while this chat has a running turn");
+  expect(card).not.toContain("Only the parent");
+  expect(StrataToolkit.tools.strata_progress_card_read.description).toContain(
+    "Reading is optional",
+  );
 });

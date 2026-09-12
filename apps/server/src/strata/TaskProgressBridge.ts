@@ -10,6 +10,7 @@ import type * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as Effect from "effect/Effect";
 import { installBridge, type ProgressInvocation } from "./TaskProgressRuntime.ts";
 import { readProgress, readProgressReceipt } from "./TaskProgressPersistence.ts";
+import { toPersistenceSqlError } from "../persistence/Errors.ts";
 
 const commandIdFor = (input: ProgressInvocation) =>
   CommandId.make(
@@ -35,6 +36,20 @@ export const registerProgressBridge = (
               )
             : Effect.succeed(true),
           read: (threadId) => readProgress(sql, threadId),
+          // The chat's active turn as the session projection records it: the
+          // run a write is stamped with, and the gate that refuses idle chats.
+          activeTurn: (threadId) =>
+            sql<{
+              active_turn_id: string | null;
+              status: string;
+            }>`SELECT active_turn_id, status FROM projection_thread_sessions WHERE thread_id = ${threadId}`.pipe(
+              Effect.map((rows) =>
+                rows[0]?.status === "running" && rows[0].active_turn_id
+                  ? rows[0].active_turn_id
+                  : null,
+              ),
+              Effect.mapError(toPersistenceSqlError("task-progress.active-turn")),
+            ),
           publish: (input) =>
             Effect.gen(function* () {
               const commandId = commandIdFor(input);

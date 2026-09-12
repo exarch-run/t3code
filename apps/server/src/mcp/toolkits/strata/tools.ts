@@ -4,6 +4,7 @@ import * as Toolkit from "effect/unstable/ai/Toolkit";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as StrataHostClient from "../../StrataHostClient.ts";
+import { TaskProgressRefusedError } from "../../../strata/TaskProgressRuntime.ts";
 
 /**
  * Strata's document tools (StrataMD plan: Strata and T3 as one app, phase
@@ -13,10 +14,7 @@ import * as StrataHostClient from "../../StrataHostClient.ts";
  * every action needs a fresh actionId and a retry reuses it, and that the
  * owner's focus, reading position, and drafts are never available.
  */
-const dependencies = [
-  McpInvocationContext.McpInvocationContext,
-  StrataHostClient.StrataHostClient,
-];
+const dependencies = [McpInvocationContext.McpInvocationContext, StrataHostClient.StrataHostClient];
 
 const ABOUT_STRATA =
   "Strata is the owner's Markdown cockpit: it holds each open document with its unsaved edits and applies your document actions safely while the owner reviews them. A delivery is the owner's round, sent as a Markdown attachment on a turn; block ids in a delivery belong to that delivery, and block ids from strata_document or strata_resolve belong to that read. Your thread reads and acts only on documents attached to it; the attach verb in strata_act attaches it to another open document. The owner's focus, reading position, and unsent drafts are never available.";
@@ -26,8 +24,7 @@ export type StrataToolError = StrataHostClient.StrataHostError;
 
 /** Every result is JSON Strata produced; large bodies are bounded and say when they are truncated. */
 export const StrataResult = Schema.Record(Schema.String, Schema.Unknown).annotate({
-  description:
-    "JSON from Strata. Large bodies are bounded and carry truncated=true when cut.",
+  description: "JSON from Strata. Large bodies are bounded and carry truncated=true when cut.",
 });
 export type StrataResult = typeof StrataResult.Type;
 
@@ -74,8 +71,33 @@ export const StrataRenderCheckInput = Schema.Struct({
   }),
 });
 
-const strataTool = <T extends Tool.Any>(tool: T): T =>
-  tool.annotate(Tool.OpenWorld, false) as T;
+export const StrataProgressCardInput = Schema.Struct({
+  writeId: Schema.String.annotate({
+    description:
+      "A fresh id you make up for this update. A retry after a dropped connection reuses the same id and returns the original receipt without writing twice.",
+  }),
+  markdown: Schema.optional(
+    Schema.String.annotate({
+      description:
+        "General status as Markdown: what is done, what is happening, what is blocked, what was found. Up to 8 KiB. Omit it when the checklist says everything.",
+    }),
+  ),
+  plan: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        text: Schema.String.annotate({ description: "One step, 1–500 characters." }),
+        status: Schema.Literals(["pending", "in_progress", "completed"]).annotate({
+          description: "pending, in_progress, or completed. At most one step is in_progress.",
+        }),
+      }),
+    ).annotate({
+      description:
+        "An ordered checklist of at most 50 steps. Send the whole list every time; it replaces the previous one.",
+    }),
+  ),
+});
+
+const strataTool = <T extends Tool.Any>(tool: T): T => tool.annotate(Tool.OpenWorld, false) as T;
 
 const StrataDocumentTool = strataTool(
   Tool.make("strata_document", {
@@ -193,6 +215,35 @@ const StrataComponentsTool = strataTool(
     .annotate(Tool.Idempotent, true),
 );
 
+const StrataProgressCardTool = strataTool(
+  Tool.make("strata_progress_card", {
+    description:
+      "Keep Strata's task card current. Strata shows one card beside the owner's composer for this chat: a general Markdown status, an ordered checklist, or both. Every call replaces the whole card; omitted parts are removed. Use it for substantial work: write it when you start, update it at meaningful milestones or blockers, and write the result before you finish. Not on every turn, and not for a short answer or a question. Do not repeat checklist facts in the note. The main agent keeps the card; subagents leave it alone. Every call needs a fresh writeId; a retry reuses it and returns the original receipt. No read is required first. Writes are accepted only while this chat has a running turn.",
+    parameters: StrataProgressCardInput,
+    success: StrataResult,
+    failure: TaskProgressRefusedError,
+    dependencies: [McpInvocationContext.McpInvocationContext],
+  })
+    .annotate(Tool.Title, "Update the Strata task card")
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true),
+);
+
+const StrataProgressCardReadTool = strataTool(
+  Tool.make("strata_progress_card_read", {
+    description:
+      "Read this chat's current Strata task card, for example after a resume. Returns card, which is null before any write. Reading is optional; publishing never requires it.",
+    success: StrataResult,
+    failure: TaskProgressRefusedError,
+    dependencies: [McpInvocationContext.McpInvocationContext],
+  })
+    .annotate(Tool.Title, "Read the Strata task card")
+    .annotate(Tool.Readonly, true)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true),
+);
+
 export const StrataToolkit = Toolkit.make(
   StrataDocumentTool,
   StrataOpenDocumentsTool,
@@ -202,4 +253,6 @@ export const StrataToolkit = Toolkit.make(
   StrataActTool,
   StrataRenderCheckTool,
   StrataComponentsTool,
+  StrataProgressCardTool,
+  StrataProgressCardReadTool,
 );

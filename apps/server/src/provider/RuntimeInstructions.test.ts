@@ -10,6 +10,19 @@ describe("buildRuntimeInstructions", () => {
     expect(instructions).toContain("call list_thread_pull_requests and link any PR");
   });
 
+  it.each(["Codex", "Claude Code", "Cursor", "Grok", "OpenCode", "Antigravity"])(
+    "tells the %s harness about the task card",
+    (harness) => {
+      const instructions = buildRuntimeInstructions({ harness });
+      expect(instructions).toContain("<task_progress>");
+      expect(instructions).toContain("strata_progress_card");
+      expect(instructions).toContain("write the result before you finish");
+      expect(instructions.indexOf("<pull_request_linking>")).toBeLessThan(
+        instructions.indexOf("<task_progress>"),
+      );
+    },
+  );
+
   it("keeps known model and effort metadata on one line", () => {
     expect(
       buildRuntimeInstructions({

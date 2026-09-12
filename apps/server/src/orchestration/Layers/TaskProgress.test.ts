@@ -26,9 +26,10 @@ import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import { ServerConfig } from "../../config.ts";
 import {
-  registerWriter,
-  invokeProgress,
+  NO_ACTIVE_RUN,
   normalizeProgress,
+  publishProgress,
+  readProgressCard,
 } from "../../strata/TaskProgressRuntime.ts";
 
 function makeOrchestrationLayer(
@@ -90,15 +91,12 @@ function now() {
 }
 
 describe("task progress durable publishing", () => {
-  it("retains receipts and source outcomes across restart and rejects children and retired runs", async () => {
+  it("accepts any write in the chat while a run is active, retains receipts and outcomes across restart, and refuses idle chats", async () => {
     const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-progress-"));
     const database = NodePath.join(directory, "state.sqlite");
     let system = await createOrchestrationSystem(database);
     const threadId = ThreadId.make("progress-thread"),
       projectId = ProjectId.make("progress-project");
-    let turn = "turn-1";
-    let retireDuringCommit = false,
-      checks = 0;
     const execSql = (statement: string) => {
       const connection = new DatabaseSync(database);
       try {
@@ -107,25 +105,16 @@ describe("task progress durable publishing", () => {
         connection.close();
       }
     };
-    let writer = registerWriter({
-      threadId,
-      root: Effect.succeed("native-root"),
-      current: (id) =>
-        Effect.sync(() => {
-          if (retireDuringCommit && ++checks > 1) turn = "";
-          return id === turn;
-        }),
-    });
-    const invoke = (writeId: string, markdown: string, origin = turn, root = "native-root") =>
-      system.run(
-        invokeProgress(writer.id, {
-          threadId: root,
-          turnId: origin,
-          tool: "progress_card",
-          arguments: { writeId, markdown },
-        }),
-      );
-    const session = (id: string, status: "running" | "ready") =>
+    const publish = (writeId: string, markdown: string) =>
+      system.run(Effect.result(publishProgress(threadId, { writeId, markdown })));
+    const receipt = (writeId: string, markdown: string) =>
+      system.run(publishProgress(threadId, { writeId, markdown }));
+    const refusal = async (writeId: string, markdown: string) => {
+      const result = await publish(writeId, markdown);
+      expect(result._tag, `${writeId} should be refused`).toBe("Failure");
+      return result._tag === "Failure" ? result.failure.detail : "";
+    };
+    const session = (id: string, status: "running" | "ready", turn: string) =>
       system.run(
         system.engine.dispatch({
           type: "thread.session.set",
@@ -135,7 +124,7 @@ describe("task progress durable publishing", () => {
           session: {
             threadId,
             status,
-            providerName: "codex",
+            providerName: "claudeAgent",
             runtimeMode: "full-access",
             activeTurnId: status === "running" ? TurnId.make(turn) : null,
             lastError: null,
@@ -161,7 +150,7 @@ describe("task progress durable publishing", () => {
           threadId,
           projectId,
           title: "Progress",
-          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+          modelSelection: { instanceId: ProviderInstanceId.make("claudeAgent"), model: "claude" },
           runtimeMode: "full-access",
           interactionMode: "default",
           branch: null,
@@ -169,53 +158,50 @@ describe("task progress durable publishing", () => {
           createdAt: now(),
         }),
       );
-      await session("start-1", "running");
-      const first = await invoke("one", "First");
-      expect(first.success, first.contentItems[0]?.text).toBe(true);
-      expect((await invoke("two", "Second")).success).toBe(true);
-      expect(await invoke("one", "First")).toEqual(first);
-      expect((await invoke("one", "Changed")).success).toBe(false);
-      expect((await invoke("child", "Child", turn, "native-child")).success).toBe(false);
-      expect((await invoke("bad", "")).success).toBe(false);
+      // Nothing written yet, and no run to write in.
+      expect(await system.run(readProgressCard(threadId))).toBeNull();
+      expect(await refusal("early", "Too early")).toBe(NO_ACTIVE_RUN);
+
+      await session("start-1", "running", "turn-1");
+      const first = await receipt("one", "First");
+      expect(first.revision).toBe(1);
+      expect((await receipt("two", "Second")).revision).toBe(2);
+      // A retry returns the original receipt; a reused id with new content is refused.
+      expect(await receipt("one", "First")).toEqual(first);
+      expect(await refusal("one", "Changed")).toContain("writeId was already used");
+      expect(await refusal("bad", "")).toContain("Supply a status note, plan, or both");
       execSql(
         "CREATE TRIGGER reject_progress BEFORE INSERT ON strata_task_progress WHEN NEW.card_json LIKE '%reject-at-commit%' BEGIN SELECT RAISE(ABORT, 'proof failure'); END",
       );
-      expect((await invoke("failure", "reject-at-commit")).success).toBe(false);
+      expect((await publish("failure", "reject-at-commit"))._tag).toBe("Failure");
       execSql("DROP TRIGGER reject_progress");
-      retireDuringCommit = true;
-      expect((await invoke("already-resolved", "Must not commit")).success).toBe(false);
-      retireDuringCommit = false;
-      turn = "turn-1";
       const read = await system.readThread(threadId);
       expect(Option.isSome(read) && read.value.taskProgress?.markdown).toBe("Second");
-      turn = "";
-      expect((await invoke("late", "Late", "turn-1")).success).toBe(false);
-      await session("finish-1", "ready");
-      turn = "turn-2";
-      await session("start-2", "running");
-      const old = await system.readThread(threadId);
-      expect(Option.isSome(old) && old.value.taskProgress?.outcome).toBe("completed");
-      expect((await invoke("late-again", "Late", "turn-1")).success).toBe(false);
-      expect(await invoke("one", "First", "turn-1")).toEqual(first);
-      writer.close();
-      writer = registerWriter({
-        threadId,
-        root: Effect.succeed("native-root"),
-        current: (id) => Effect.sync(() => id === turn),
-      });
+      expect(Option.isSome(read) && read.value.taskProgress?.runId).toBe("turn-1");
+      expect((await system.run(readProgressCard(threadId)))?.revision).toBe(2);
+
+      // The run ends: the card keeps its outcome and idle writes are refused.
+      await session("finish-1", "ready", "turn-1");
+      const finished = await system.readThread(threadId);
+      expect(Option.isSome(finished) && finished.value.taskProgress?.outcome).toBe("completed");
+      expect(await refusal("late", "Late")).toBe(NO_ACTIVE_RUN);
+
+      // A restart keeps the card, its revision and its outcome.
       await system.dispose();
       system = await createOrchestrationSystem(database);
       const restored = await system.readThread(threadId);
       expect(Option.isSome(restored) && restored.value.taskProgress?.revision).toBe(2);
       expect(Option.isSome(restored) && restored.value.taskProgress?.outcome).toBe("completed");
-      expect(await invoke("one", "First", "turn-1")).toEqual(first);
-      const concurrent = await Promise.all([invoke("three", "Third"), invoke("four", "Fourth")]);
-      expect(concurrent.every((result) => result.success)).toBe(true);
-      expect(concurrent.map((result) => JSON.parse(result.contentItems[0]!.text).revision)).toEqual(
-        [3, 4],
-      );
+
+      // The next run writes on top; concurrent writes serialize.
+      await session("start-2", "running", "turn-2");
+      const concurrent = await Promise.all([receipt("three", "Third"), receipt("four", "Fourth")]);
+      expect(concurrent.map((result) => result.revision)).toEqual([3, 4]);
       const latest = await system.readThread(threadId);
       expect(Option.isSome(latest) && latest.value.taskProgress?.markdown).toBe("Fourth");
+      expect(Option.isSome(latest) && latest.value.taskProgress?.runId).toBe("turn-2");
+      expect(Option.isSome(latest) && latest.value.taskProgress?.outcome).toBeNull();
+
       await system.run(
         system.engine.dispatch({
           type: "thread.delete",
@@ -223,11 +209,9 @@ describe("task progress durable publishing", () => {
           threadId,
         }),
       );
-      expect((await invoke("after-delete", "Must not return")).success).toBe(false);
-      expect((await invoke("four", "Fourth")).success).toBe(false);
+      expect((await publish("after-delete", "Must not return"))._tag).toBe("Failure");
       expect(Option.isNone(await system.readThread(threadId))).toBe(true);
     } finally {
-      writer.close();
       await system.dispose();
       await NodeFSP.rm(directory, { recursive: true, force: true });
     }

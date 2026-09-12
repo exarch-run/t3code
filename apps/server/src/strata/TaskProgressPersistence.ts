@@ -9,7 +9,7 @@ import * as Schema from "effect/Schema";
 import type * as SqlClient from "effect/unstable/sql/SqlClient";
 import { toPersistenceSqlError } from "../persistence/Errors.ts";
 import { OrchestrationCommandInvariantError } from "../orchestration/Errors.ts";
-import { currentWriter, progressEnabled } from "./TaskProgressRuntime.ts";
+import { progressEnabled } from "./TaskProgressRuntime.ts";
 
 const encodeCard = Schema.encodeSync(Schema.fromJsonString(CardSchema));
 const decodeCard = Schema.decodeUnknownSync(Schema.fromJsonString(CardSchema));
@@ -49,11 +49,6 @@ export const validateProgressCommand = (sql: SqlClient.SqlClient, command: Orche
         });
       return decodeReceipt(previous.receipt_json);
     }
-    if (!(yield* currentWriter(command.writerId, command.threadId, command.providerTurnId)))
-      return yield* new OrchestrationCommandInvariantError({
-        commandType: command.type,
-        detail: "The originating turn is no longer active. The retained card was not changed.",
-      });
   });
 export const projectTaskProgress = (sql: SqlClient.SqlClient, event: OrchestrationEvent) =>
   Effect.gen(function* () {

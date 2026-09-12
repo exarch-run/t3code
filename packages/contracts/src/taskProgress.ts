@@ -24,7 +24,6 @@ export const TaskProgressCard = Schema.Struct({
 });
 export type TaskProgressCard = typeof TaskProgressCard.Type;
 export const TaskProgressPublishFields = {
-  writerId: Schema.String,
   providerTurnId: Schema.String,
   writeId: Schema.String,
   digest: Schema.String,

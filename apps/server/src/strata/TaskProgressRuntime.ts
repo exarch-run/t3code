@@ -1,29 +1,23 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import type { OrchestrationDispatchError } from "../orchestration/Errors.ts";
 import type { PersistenceSqlError } from "../persistence/Errors.ts";
-import type { TaskProgressContent, ThreadId } from "@t3tools/contracts";
+import type { TaskProgressCard, TaskProgressContent, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { TaskProgressContent as ContentSchema } from "@t3tools/contracts";
+import { TaskProgressContent as ContentSchema, TaskProgressReceipt } from "@t3tools/contracts";
 
-export interface ProgressWriter {
-  threadId: ThreadId;
-  root: Effect.Effect<string | undefined>;
-  current: (turnId: string) => Effect.Effect<boolean>;
-}
-const writers = new Map<string, ProgressWriter>();
-export const registerWriter = (writer: ProgressWriter) => {
-  const id = randomUUID();
-  writers.set(id, writer);
-  return { id, close: () => writers.delete(id) };
-};
-export const currentWriter = (id: string, threadId: string, turnId: string) => {
-  const writer = writers.get(id);
-  return writer?.threadId === threadId ? writer.current(turnId) : Effect.succeed(false);
-};
+type Receipt = typeof TaskProgressReceipt.Type;
+
+/**
+ * Task progress for every session. The tools live on the shared Strata
+ * toolkit, so whoever holds a chat's credential can publish while that chat
+ * has a running turn. The chat comes from the credential the engine issued
+ * at session start; the turn is the chat's active turn as the server records
+ * it. There is no parent-versus-subagent check: the instruction tells the
+ * main agent to keep the card, and its next write replaces anything else.
+ */
 export interface ProgressInvocation {
   threadId: ThreadId;
-  writerId: string;
   providerTurnId: string;
   writeId: string;
   digest: string;
@@ -31,12 +25,11 @@ export interface ProgressInvocation {
 }
 interface Bridge {
   enabled: Effect.Effect<boolean>;
+  activeTurn: (threadId: ThreadId) => Effect.Effect<string | null, PersistenceSqlError>;
   publish: (
     input: ProgressInvocation,
-  ) => Effect.Effect<unknown, OrchestrationDispatchError | PersistenceSqlError>;
-  read: (
-    threadId: ThreadId,
-  ) => Effect.Effect<unknown, OrchestrationDispatchError | PersistenceSqlError>;
+  ) => Effect.Effect<Receipt, OrchestrationDispatchError | PersistenceSqlError>;
+  read: (threadId: ThreadId) => Effect.Effect<TaskProgressCard | null, PersistenceSqlError>;
 }
 let bridge: Bridge | undefined;
 export const installBridge = (value: Bridge) => {
@@ -47,6 +40,26 @@ export const installBridge = (value: Bridge) => {
 };
 export const progressAvailable = () => bridge !== undefined;
 export const progressEnabled = () => bridge?.enabled ?? Effect.succeed(false);
+
+/** What the model reads when a write or read is refused. */
+export class TaskProgressRefusedError extends Schema.TaggedError<TaskProgressRefusedError>()(
+  "TaskProgressRefusedError",
+  { detail: Schema.String },
+) {
+  override get message(): string {
+    return this.detail;
+  }
+}
+const describe = (cause: unknown): string => {
+  if (cause && typeof cause === "object") {
+    const record = cause as { detail?: unknown; message?: unknown };
+    if (typeof record.detail === "string" && record.detail) return record.detail;
+    if (typeof record.message === "string" && record.message) return record.message;
+  }
+  return String(cause);
+};
+const refused = (cause: unknown) => new TaskProgressRefusedError({ detail: describe(cause) });
+
 const text = (value: string) =>
   value
     .replace(/\r\n?/g, "\n")
@@ -103,74 +116,32 @@ export function normalizeProgress(value: unknown): {
     digest: createHash("sha256").update(JSON.stringify(content)).digest("hex"),
   };
 }
-export function invokeProgress(
-  writerId: string,
-  request: { threadId: string; turnId: string; tool: string; arguments: unknown },
-) {
-  return Effect.gen(function* () {
-    const writer = writers.get(writerId),
-      service = bridge;
-    if (!writer || !service || request.threadId !== (yield* writer.root))
-      throw new Error("Progress publishing is available only to the conversation's parent agent.");
-    if (request.tool === "progress_card_read") return yield* service.read(writer.threadId);
-    if (request.tool !== "progress_card")
-      throw new Error(`Unsupported dynamic tool: ${request.tool}`);
-    const normalized = normalizeProgress(request.arguments);
-    return yield* service.publish({
-      ...normalized,
-      writerId,
-      threadId: writer.threadId,
-      providerTurnId: request.turnId,
-    });
-  }).pipe(
-    Effect.matchCause({
-      onSuccess: (result) => ({
-        success: true,
-        contentItems: [{ type: "inputText" as const, text: JSON.stringify(result) }],
-      }),
-      onFailure: (cause) => ({
-        success: false,
-        contentItems: [
-          { type: "inputText" as const, text: `Progress not updated: ${String(cause)}` },
-        ],
-      }),
-    }),
-  );
-}
-export const taskTools = [
-  {
-    type: "function",
-    name: "progress_card",
-    description:
-      "Keep Strata's task card current for substantial work. Write a general Markdown status, an ordered checklist, or both. Every call replaces the whole card; omitted parts are removed. Update at meaningful milestones and before ending, not on every turn. Do not duplicate note and checklist facts. Only the parent may publish. Use a fresh writeId for each new update and reuse it for a retry; await the receipt before another update. No read is required.",
-    inputSchema: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        writeId: { type: "string" },
-        markdown: { type: "string" },
-        plan: {
-          type: "array",
-          maxItems: 50,
-          items: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              text: { type: "string" },
-              status: { type: "string", enum: ["pending", "in_progress", "completed"] },
-            },
-            required: ["text", "status"],
-          },
-        },
-      },
-      required: ["writeId"],
-    },
-  },
-  {
-    type: "function",
-    name: "progress_card_read",
-    description:
-      "Optionally recover the current Strata task card after resume. Reading is not required before publishing.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
-  },
-] as const;
+
+const NOT_AVAILABLE = "Task progress is not available on this engine.";
+export const NO_ACTIVE_RUN = "No run is active in this chat, so the card was not changed.";
+
+/** Replace the chat's card from a session's tool call; the receipt is the tool's answer. */
+export const publishProgress = (
+  threadId: ThreadId,
+  input: unknown,
+): Effect.Effect<Receipt, TaskProgressRefusedError> =>
+  Effect.gen(function* () {
+    const service = bridge;
+    if (!service) return yield* new TaskProgressRefusedError({ detail: NOT_AVAILABLE });
+    const normalized = yield* Effect.try({ try: () => normalizeProgress(input), catch: refused });
+    const turn = yield* service.activeTurn(threadId).pipe(Effect.mapError(refused));
+    if (!turn) return yield* new TaskProgressRefusedError({ detail: NO_ACTIVE_RUN });
+    return yield* service
+      .publish({ ...normalized, threadId, providerTurnId: turn })
+      .pipe(Effect.mapError(refused));
+  }).pipe(Effect.catchDefect((defect) => Effect.fail(refused(defect))));
+
+/** The chat's current card, or null before any write. */
+export const readProgressCard = (
+  threadId: ThreadId,
+): Effect.Effect<TaskProgressCard | null, TaskProgressRefusedError> =>
+  Effect.gen(function* () {
+    const service = bridge;
+    if (!service) return yield* new TaskProgressRefusedError({ detail: NOT_AVAILABLE });
+    return yield* service.read(threadId).pipe(Effect.mapError(refused));
+  }).pipe(Effect.catchDefect((defect) => Effect.fail(refused(defect))));

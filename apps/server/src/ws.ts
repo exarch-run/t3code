@@ -1274,10 +1274,12 @@ const makeWsRpcLayer = (
             : undefined;
 
           return {
+            // Every session lists the task card tools on the shared Strata
+            // toolkit, so every enabled driver publishes and no chat is special.
             taskProgress: {
               version: 1 as const,
-              providers: ["codex"],
-              newChatsOnly: true,
+              providers: [...new Set(providers.map((provider) => provider.driver))],
+              newChatsOnly: false,
               enabled: settings.enableTaskProgress,
             },
             environment,
