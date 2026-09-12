@@ -57,6 +57,8 @@ export const ProviderSessionStartInput = Schema.Struct({
   // See ProviderSession for the migration story.
   providerInstanceId: Schema.optional(ProviderInstanceId),
   cwd: Schema.optional(TrimmedNonEmptyString),
+  /** Rendered project session files (OrchestrationProject.sessionFiles) the adapter places in the model's context for the session. */
+  sessionContext: Schema.optional(Schema.String),
   title: Schema.optional(TrimmedNonEmptyString),
   modelSelection: Schema.optional(ModelSelection),
   resumeCursor: Schema.optional(Schema.Unknown),

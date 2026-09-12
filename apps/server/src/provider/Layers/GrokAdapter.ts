@@ -131,6 +131,8 @@ interface GrokTurnLivenessSignal {
 interface GrokSessionContext {
   readonly threadId: ThreadId;
   readonly acpSessionId: string;
+  /** Strata's rendered session files, sent with every turn's runtime instructions. */
+  readonly sessionContext: string | undefined;
   session: ProviderSession;
   readonly scope: Scope.Closeable;
   readonly acp: AcpSessionRuntime.AcpSessionRuntime["Service"];
@@ -1280,6 +1282,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           const ctx: GrokSessionContext = {
             threadId: input.threadId,
             acpSessionId: started.sessionId,
+            sessionContext: input.sessionContext,
             session,
             scope: sessionScope,
             acp,
@@ -1595,6 +1598,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 harness: "Grok",
                 model: displayModel,
                 reasoningEffort: normalizeGrokReasoningEffort(requestedTurnReasoningEffort),
+                sessionContext: ctx.sessionContext,
               });
               for (let yieldAttempt = 0; yieldAttempt < 8; yieldAttempt += 1) {
                 yield* Effect.yieldNow;

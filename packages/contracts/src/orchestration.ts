@@ -390,6 +390,35 @@ export const ProjectScriptIcon = Schema.Literals([
 ]);
 export type ProjectScriptIcon = typeof ProjectScriptIcon.Type;
 
+/**
+ * A file the server places in the model's context at session start (Strata's
+ * assistant folder: soul, identity, user, memory, and the syntheses index).
+ * Relative to the project folder, never absolute, never climbing out of it.
+ */
+export const PROJECT_SESSION_FILES_MAX = 16;
+export const ProjectSessionFile = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(512),
+  Schema.makeFilter(
+    (value) =>
+      isProjectSessionFilePath(value) || "must be a relative path inside the project folder",
+  ),
+);
+export const ProjectSessionFiles = Schema.Array(ProjectSessionFile).check(
+  Schema.isMaxLength(PROJECT_SESSION_FILES_MAX),
+);
+export function isProjectSessionFilePath(value: string): boolean {
+  if (
+    value.length === 0 ||
+    value.startsWith("/") ||
+    value.startsWith("\\") ||
+    /^[A-Za-z]:/.test(value)
+  )
+    return false;
+  if (value.includes("\0")) return false;
+  const segments = value.split(/[\\/]+/);
+  return segments.every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
+}
+
 export const ProjectScript = Schema.Struct({
   id: TrimmedNonEmptyString,
   name: TrimmedNonEmptyString,
@@ -474,6 +503,8 @@ export const OrchestrationProject = Schema.Struct({
   faviconPath: Schema.optional(Schema.NullOr(ProjectFaviconPath)),
   projectIcon: Schema.optional(Schema.NullOr(ProjectIconOverride)),
   scripts: Schema.Array(ProjectScript),
+  // Optional on the wire so cached snapshots from older servers still decode.
+  sessionFiles: Schema.optional(ProjectSessionFiles),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   deletedAt: Schema.NullOr(IsoDateTime),
@@ -774,6 +805,7 @@ export const OrchestrationProjectShell = Schema.Struct({
   faviconPath: Schema.optional(Schema.NullOr(ProjectFaviconPath)),
   projectIcon: Schema.optional(Schema.NullOr(ProjectIconOverride)),
   scripts: Schema.Array(ProjectScript),
+  sessionFiles: Schema.optional(ProjectSessionFiles),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -985,6 +1017,7 @@ export const ProjectCreateCommand = Schema.Struct({
   // Retained for older clients that sent an automatic create-time seed. The
   // server ignores it; explicit project defaults use project.meta.update.
   defaultModelSelection: Schema.optional(Schema.NullOr(ModelSelection)),
+  sessionFiles: Schema.optional(ProjectSessionFiles),
   createdAt: IsoDateTime,
 });
 
@@ -1001,6 +1034,8 @@ const ProjectMetaUpdateCommand = Schema.Struct({
   faviconPath: Schema.optional(Schema.NullOr(ProjectFaviconPath)),
   projectIcon: Schema.optional(Schema.NullOr(ProjectIconOverride)),
   scripts: Schema.optional(Schema.Array(ProjectScript)),
+  // Absent = leave unchanged; empty = no session files.
+  sessionFiles: Schema.optional(ProjectSessionFiles),
 });
 
 const ProjectDeleteCommand = Schema.Struct({
@@ -1550,6 +1585,7 @@ export const ProjectCreatedPayload = Schema.Struct({
   faviconPath: Schema.optional(Schema.NullOr(ProjectFaviconPath)),
   projectIcon: Schema.optional(Schema.NullOr(ProjectIconOverride)),
   scripts: Schema.Array(ProjectScript),
+  sessionFiles: Schema.optional(ProjectSessionFiles),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -1565,6 +1601,7 @@ export const ProjectMetaUpdatedPayload = Schema.Struct({
   faviconPath: Schema.optional(Schema.NullOr(ProjectFaviconPath)),
   projectIcon: Schema.optional(Schema.NullOr(ProjectIconOverride)),
   scripts: Schema.optional(Schema.Array(ProjectScript)),
+  sessionFiles: Schema.optional(ProjectSessionFiles),
   updatedAt: IsoDateTime,
 });
 

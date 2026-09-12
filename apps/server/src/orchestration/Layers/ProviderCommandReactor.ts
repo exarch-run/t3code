@@ -22,6 +22,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
 import * as FileSystem from "effect/FileSystem";
+import { readSessionFiles } from "../../provider/SessionFiles.ts";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
@@ -712,6 +713,14 @@ const make = Effect.gen(function* () {
       thread,
       projects: project ? [project] : [],
     });
+    // Strata's session files: read from the project folder at session start and
+    // placed in the model's context by the adapter. A read failure never blocks the turn.
+    const sessionContext =
+      project?.sessionFiles && project.sessionFiles.length > 0
+        ? yield* readSessionFiles(project.workspaceRoot, project.sessionFiles).pipe(
+            Effect.catch(() => Effect.succeed(undefined)),
+          )
+        : undefined;
     const refreshWorkspaceSnapshot = effectiveCwd
       ? providerRegistry
           .refreshWorkspaceSnapshot({ instanceId: desiredInstanceId, cwd: effectiveCwd })
@@ -728,6 +737,7 @@ const make = Effect.gen(function* () {
           ...(preferredProvider ? { provider: preferredProvider } : {}),
           providerInstanceId: desiredInstanceId,
           ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
+          ...(sessionContext ? { sessionContext } : {}),
           ...(thread.title ? { title: thread.title } : {}),
           modelSelection: desiredModelSelection,
           ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),

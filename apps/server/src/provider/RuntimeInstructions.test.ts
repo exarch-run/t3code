@@ -25,4 +25,22 @@ describe("buildRuntimeInstructions", () => {
     expect(instructions).toContain("through the Cursor harness.");
     expect(instructions).not.toContain("reasoning effort");
   });
+
+  it("appends the project's session files after the runtime block and nothing when there are none", () => {
+    const block = "<session_files>\n## SOUL.md\n\nBe plain.\n</session_files>";
+    const instructions = buildRuntimeInstructions({
+      harness: "Claude Code",
+      sessionContext: block,
+    });
+    expect(instructions.endsWith(`\n\n${block}`)).toBe(true);
+    expect(instructions.indexOf("<runtime_info>")).toBeLessThan(
+      instructions.indexOf("<session_files>"),
+    );
+    expect(
+      buildRuntimeInstructions({ harness: "Claude Code", sessionContext: "  " }),
+    ).not.toContain("session_files");
+    expect(buildRuntimeInstructions({ harness: "Claude Code" })).toBe(
+      buildRuntimeInstructions({ harness: "Claude Code", sessionContext: undefined }),
+    );
+  });
 });

@@ -335,6 +335,8 @@ type OpenCodeStepUsage = Pick<Extract<Part, { readonly type: "step-finish" }>, "
 
 interface OpenCodeSessionContext {
   session: ProviderSession;
+  /** Strata's rendered session files, appended to every turn's system text. */
+  readonly sessionContext: string | undefined;
   readonly client: OpencodeClient;
   readonly server: OpenCodeServerConnection;
   readonly directory: string;
@@ -2981,6 +2983,7 @@ export function makeOpenCodeAdapter(
 
         const context: OpenCodeSessionContext = {
           session,
+          sessionContext: input.sessionContext,
           client: started.client,
           server: started.server,
           directory,
@@ -3223,6 +3226,7 @@ export function makeOpenCodeAdapter(
                 system: buildRuntimeInstructions({
                   harness: "OpenCode",
                   model: `${parsedModel.providerID}/${parsedModel.modelID}`,
+                  sessionContext: context.sessionContext,
                 }),
                 parts: [...(text ? [{ type: "text" as const, text }] : []), ...fileParts],
               },

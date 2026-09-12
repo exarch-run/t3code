@@ -339,6 +339,7 @@ export function projectEvent(
             faviconPath: payload.faviconPath ?? null,
             projectIcon: payload.projectIcon ?? null,
             scripts: payload.scripts,
+            ...(payload.sessionFiles !== undefined ? { sessionFiles: payload.sessionFiles } : {}),
             createdAt: payload.createdAt,
             updatedAt: payload.updatedAt,
             deletedAt: null,
@@ -381,6 +382,9 @@ export function projectEvent(
                     ? { projectIcon: payload.projectIcon }
                     : {}),
                   ...(payload.scripts !== undefined ? { scripts: payload.scripts } : {}),
+                  ...(payload.sessionFiles !== undefined
+                    ? { sessionFiles: payload.sessionFiles }
+                    : {}),
                   updatedAt: payload.updatedAt,
                 }
               : project,
