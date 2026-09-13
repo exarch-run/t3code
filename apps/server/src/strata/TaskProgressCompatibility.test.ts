@@ -3,6 +3,7 @@ import { EventId, ThreadId, TaskProgressCard } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
+import { isThreadDetailEvent } from "../ws.ts";
 import {
   legacyCardFor,
   legacyRepresentable,
@@ -113,6 +114,18 @@ describe("version 1 projection", () => {
   it("round-trips version 1 history into the canonical record", () => {
     const legacy = legacyCardFor(record, runningTurn)!;
     expect(recordFromLegacyCard(legacy)).toEqual(record);
+  });
+});
+
+describe("thread detail delivery", () => {
+  it("counts both card event versions as thread detail, so subscriptions carry them live and on replay", () => {
+    for (const type of [
+      "thread.task-progress-updated",
+      "thread.task-progress-v2-updated",
+    ] as const) {
+      const item = event(type, { threadId, record });
+      expect(item.kind === "event" && isThreadDetailEvent(item.event)).toBe(true);
+    }
   });
 });
 

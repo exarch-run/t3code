@@ -334,12 +334,14 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
       | "thread.activity-appended"
       | "thread.turn-diff-completed"
       | "thread.task-progress-updated"
+      | "thread.task-progress-v2-updated"
       | "thread.reverted"
       | "thread.session-set";
   }
 > {
   return (
     event.type === "thread.task-progress-updated" ||
+    event.type === "thread.task-progress-v2-updated" ||
     event.type === "thread.message-sent" ||
     event.type === "thread.proposed-plan-upserted" ||
     event.type === "thread.activity-appended" ||
