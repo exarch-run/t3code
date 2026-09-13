@@ -87,14 +87,25 @@ export function acknowledge(card: TaskProgressCardV2 | null): TaskProgressAcknow
   };
 }
 
+/** Where a write arrives from: the shared MCP toolkit, or the Codex dynamic-tool route. */
+export type ProgressWriteSource = "mcp" | "codex";
+let mcpRefusal: ((threadId: ThreadId) => string | null) | undefined;
+/** The Codex route tells the MCP writer which chats it owns; installed once, at module load. */
+export const installMcpRefusal = (check: (threadId: ThreadId) => string | null) => {
+  mcpRefusal = check;
+};
+
 /** Replace or clear the chat's card from a session's tool call; the acknowledgement is the tool's answer. */
 export const publishProgress = (
   threadId: ThreadId,
   rawInput: unknown,
+  source: ProgressWriteSource = "mcp",
 ): Effect.Effect<TaskProgressAcknowledgement, TaskProgressRefusedError> =>
   Effect.gen(function* () {
     const service = bridge;
     if (!service) return yield* new TaskProgressRefusedError({ detail: NOT_AVAILABLE });
+    const refusal = source === "mcp" ? mcpRefusal?.(threadId) : null;
+    if (refusal) return yield* new TaskProgressRefusedError({ detail: refusal });
     const input = yield* Effect.try({
       try: () => normalizeTaskProgressInput(rawInput),
       catch: (error) => (error instanceof TaskProgressInputError ? refused(error) : refused(error)),

@@ -14,6 +14,10 @@ import { createServer, type Server } from "node:http";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as StrataHostClient from "../../StrataHostClient.ts";
 import { installBridge } from "../../../strata/TaskProgressRuntime.ts";
+import {
+  CODEX_MCP_WRITE_REFUSED,
+  registerCodexRoute,
+} from "../../../strata/TaskProgressCodexRoute.ts";
 import { StrataToolkitHandlersLive } from "./handlers.ts";
 import { StrataToolkit } from "./tools.ts";
 
@@ -262,6 +266,30 @@ describe("task card handlers", () => {
         bridge.close();
       }
     }),
+  );
+
+  it.effect(
+    "refuses the MCP writer for a chat whose card travels the Codex route, but still reads",
+    () =>
+      Effect.gen(function* () {
+        const bridge = fakeBridge();
+        const route = registerCodexRoute({ threadId: THREAD_ID, root: Effect.succeed("root") });
+        try {
+          const harness = yield* makeHarness({});
+          const refused = yield* harness
+            .call("strata_progress_card", { markdown: "Through MCP" })
+            .pipe(Effect.flip);
+          expect(refused).toMatchObject({
+            _tag: "TaskProgressRefusedError",
+            detail: CODEX_MCP_WRITE_REFUSED,
+          });
+          expect(bridge.written).toEqual([]);
+          expect(yield* harness.call("strata_progress_card_read", {})).toEqual({ card });
+        } finally {
+          route.close();
+          bridge.close();
+        }
+      }),
   );
 
   it.effect("refuses a misnamed checklist before writing, so the previous card survives", () =>

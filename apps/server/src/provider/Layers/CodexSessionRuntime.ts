@@ -34,6 +34,10 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import * as CodexClient from "effect-codex-app-server/client";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as CodexRpc from "effect-codex-app-server/rpc";
+import {
+  CODEX_TASK_PROGRESS_TOOLS,
+  registerCodexRoute,
+} from "../../strata/TaskProgressCodexRoute.ts";
 import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
 import { buildCodexInitializeParams } from "./CodexProvider.ts";
@@ -733,6 +737,10 @@ export const openCodexThread = (input: {
   readonly requestedModel: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
   readonly resumeThreadId: string | undefined;
+  /** Strata: start the thread with the task card's dynamic tools (TaskProgressCodexRoute). */
+  readonly startRequest?: (
+    params: CodexRpc.ClientRequestParamsByMethod["thread/start"],
+  ) => Effect.Effect<typeof CodexThreadResumeMetadata.Type, CodexErrors.CodexAppServerError>;
 }): Effect.Effect<typeof CodexThreadResumeMetadata.Type, CodexErrors.CodexAppServerError> => {
   const resumeThreadId = input.resumeThreadId;
   const startParams = buildThreadStartParams({
@@ -742,9 +750,12 @@ export const openCodexThread = (input: {
     serviceTier: input.serviceTier,
   });
 
-  if (resumeThreadId === undefined) {
-    return input.client.request("thread/start", startParams);
-  }
+  const start = Effect.suspend(() =>
+    input.startRequest
+      ? input.startRequest(startParams)
+      : input.client.request("thread/start", startParams),
+  );
+  if (resumeThreadId === undefined) return start;
 
   // Older providers may still return history despite excludeTurns. Only the
   // session metadata is needed here, so unrelated historical items cannot
@@ -774,7 +785,7 @@ export const openCodexThread = (input: {
           resumeThreadId,
           recoverable: true,
           cause: error,
-        }).pipe(Effect.andThen(input.client.request("thread/start", startParams))),
+        }).pipe(Effect.andThen(start)),
       ),
     );
 };
@@ -1903,6 +1914,19 @@ export const makeCodexSessionRuntime = (
       });
 
     const currentSessionProviderThreadId = Effect.map(Ref.get(sessionRef), currentProviderThreadId);
+    // Strata: the task card reaches this chat as Codex dynamic tools; a call
+    // names its thread, so helper threads are turned away before a write.
+    const progressRoute = registerCodexRoute({
+      threadId: options.threadId,
+      root: Effect.map(currentSessionProviderThreadId, (id) => id ?? null),
+    });
+    yield* Scope.addFinalizer(
+      runtimeScope,
+      Effect.sync(() => {
+        progressRoute.close();
+      }),
+    );
+    yield* client.handleServerRequest("item/tool/call", (payload) => progressRoute.handle(payload));
 
     yield* client.handleServerNotification("thread/started", (payload) =>
       currentSessionProviderThreadId.pipe(
@@ -2295,6 +2319,22 @@ export const makeCodexSessionRuntime = (
         requestedModel,
         serviceTier: options.serviceTier,
         resumeThreadId: readResumeCursorThreadId(options.resumeCursor),
+        startRequest: (params) =>
+          client.raw
+            .request("thread/start", { ...params, dynamicTools: CODEX_TASK_PROGRESS_TOOLS })
+            .pipe(
+              Effect.flatMap((response) =>
+                decodeCodexThreadResumeMetadata(response).pipe(
+                  Effect.mapError((error) =>
+                    CodexErrors.CodexAppServerRequestError.invalidPayload(
+                      "thread/start",
+                      "decode-payload",
+                      error,
+                    ),
+                  ),
+                ),
+              ),
+            ),
       });
 
       const providerThreadId = opened.thread.id;

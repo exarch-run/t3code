@@ -946,6 +946,52 @@ describe("openCodexThread", () => {
     }),
   );
 
+  it.effect(
+    "starts through the Strata start override on fresh starts and after a recoverable resume failure",
+    () =>
+      Effect.gen(function* () {
+        const calls: Array<{ method: string; override: boolean }> = [];
+        const started = makeThreadOpenResponse("fresh-thread");
+        const client = {
+          raw: {
+            request: (method: "thread/resume") => {
+              calls.push({ method, override: false });
+              return Effect.fail(
+                new CodexErrors.CodexAppServerRequestError({
+                  code: -32603,
+                  errorMessage: "thread not found",
+                }),
+              );
+            },
+          },
+          request: (method: "thread/start") => {
+            calls.push({ method, override: false });
+            return Effect.succeed(started);
+          },
+        };
+        const startRequest = () => {
+          calls.push({ method: "thread/start", override: true });
+          return Effect.succeed(started);
+        };
+        const base = {
+          client,
+          threadId: ThreadId.make("thread-1"),
+          runtimeMode: "full-access" as const,
+          cwd: "/tmp/project",
+          requestedModel: "gpt-5.3-codex",
+          serviceTier: undefined,
+          startRequest,
+        };
+        yield* openCodexThread({ ...base, resumeThreadId: undefined });
+        yield* openCodexThread({ ...base, resumeThreadId: "stale-thread" });
+        NodeAssert.deepStrictEqual(calls, [
+          { method: "thread/start", override: true },
+          { method: "thread/resume", override: false },
+          { method: "thread/start", override: true },
+        ]);
+      }),
+  );
+
   it.effect("propagates non-recoverable resume failures", () =>
     Effect.gen(function* () {
       const client = {

@@ -5,7 +5,10 @@ import * as Toolkit from "effect/unstable/ai/Toolkit";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as StrataHostClient from "../../StrataHostClient.ts";
 import { TaskProgressRefusedError } from "../../../strata/TaskProgressRuntime.ts";
-import { TASK_PROGRESS_TOOL_JSON_SCHEMA } from "../../../strata/TaskProgressInput.ts";
+import {
+  TASK_PROGRESS_TOOL_DESCRIPTION,
+  TASK_PROGRESS_TOOL_JSON_SCHEMA,
+} from "../../../strata/TaskProgressInput.ts";
 import { TaskProgressAcknowledgement } from "@t3tools/contracts";
 
 /**
@@ -200,8 +203,7 @@ const StrataComponentsTool = strataTool(
  */
 const StrataProgressCardTool = strataTool(
   Tool.dynamic("strata_progress_card", {
-    description:
-      'Maintain this chat\'s task card: the single durable status surface Strata shows beside the owner\'s composer, for someone who is not reading the transcript. Create a card only for substantial work with at least two meaningful sequential steps. Do not create a card for greetings, quick questions, or single-step requests, and do not invent steps just to justify one. Existing cards may still be updated or cleared. Each call replaces the whole card. Pick the representation that fits the work, using either or both parts: `markdown` — a compact note; tables for comparisons or metrics, a bold one-liner for simple state, or one <progress aria-label="CI · 4/6" value="4" max="6"></progress> bar for a long operation. Put a progress bar first and give it a short aria-label with its purpose and current/total values. Other raw HTML is stripped. Known URL? Link it. Don\'t leave PRs or issues as bare IDs. And `plan` — an ordered step checklist (pending | in_progress | completed, at most one in_progress) for genuinely sequential work. The checklist is optional: omit it whenever a table, bar, or sentence says it better, and never repeat the same facts in both parts. Call with both parts empty to clear. Update on meaningful change — a step done, a blocker, results in — not every message. Max 8 KB markdown, 50 steps. No read is required first; the main agent keeps the card.',
+    description: TASK_PROGRESS_TOOL_DESCRIPTION,
     parameters: TASK_PROGRESS_TOOL_JSON_SCHEMA,
     success: TaskProgressAcknowledgement,
     failure: TaskProgressRefusedError,
