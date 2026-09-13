@@ -36,6 +36,7 @@ import {
   type GitManagerServiceError,
   OrchestrationDispatchCommandError,
   type OrchestrationEvent,
+  type OrchestrationThreadStreamItem,
   type OrchestrationShellStreamEvent,
   type OrchestrationShellStreamItem,
   OrchestrationGetFullThreadDiffError,
@@ -88,6 +89,11 @@ import {
   projectThreadDetailSnapshot,
 } from "./orchestration/ActivityPayloadProjection.ts";
 import { makeThreadLiveEventCoalescer } from "./orchestration/ThreadLiveEventCoalescer.ts";
+import {
+  progressEventWanted,
+  translateTaskProgressItem,
+} from "./strata/TaskProgressCompatibility.ts";
+import { readLegacyTurn } from "./strata/TaskProgressPersistence.ts";
 import { makeLiveStreamBudget, type RetainedLiveItem } from "./orchestration/LiveStreamBudget.ts";
 import {
   cleanupFailedUploadedAttachments,
@@ -1278,6 +1284,7 @@ const makeWsRpcLayer = (
             // toolkit, so every enabled driver publishes and no chat is special.
             taskProgress: {
               version: 1 as const,
+              supportedVersions: [1, 2],
               providers: [...new Set(providers.map((provider) => provider.driver))],
               newChatsOnly: false,
               enabled: settings.enableTaskProgress,
@@ -1637,7 +1644,30 @@ const makeWsRpcLayer = (
                 event.aggregateKind === "thread" &&
                 event.aggregateId === input.threadId &&
                 isThreadDetailEvent(event) &&
-                (event.type !== "thread.task-progress-updated" || input.taskProgressVersion === 1);
+                progressEventWanted(event, input.taskProgressVersion);
+              // Task card changes reach a reader in the version it negotiated
+              // (see strata/TaskProgressCompatibility.ts).
+              const translateProgress = (item: OrchestrationThreadStreamItem) =>
+                translateTaskProgressItem(item, input.taskProgressVersion, {
+                  turn: (threadId, turnId) =>
+                    readLegacyTurn(sql, threadId, turnId).pipe(Effect.orElseSucceed(() => null)),
+                  snapshot: (threadId) =>
+                    projectionSnapshotQuery.getThreadDetailSnapshot(threadId).pipe(
+                      Effect.map((snapshot) =>
+                        Option.isSome(snapshot)
+                          ? projectThreadDetailSnapshot(snapshot.value)
+                          : null,
+                      ),
+                      Effect.orElseSucceed(() => null),
+                    ),
+                });
+              const withProgressTranslation = <E, R>(
+                stream: Stream.Stream<OrchestrationThreadStreamItem, E, R>,
+              ) =>
+                stream.pipe(
+                  Stream.mapEffect(translateProgress),
+                  Stream.filter((item): item is OrchestrationThreadStreamItem => item !== null),
+                );
 
               const liveStream = orchestrationEngine.streamDomainEvents.pipe(
                 Stream.filter(isThisThreadDetailEvent),
@@ -1658,7 +1688,7 @@ const makeWsRpcLayer = (
                 ),
                 { startImmediately: true },
               );
-              const bufferedLiveStream = liveBuffer.stream;
+              const bufferedLiveStream = withProgressTranslation(liveBuffer.stream);
               let replayOnMissingSnapshot: typeof bufferedLiveStream | undefined;
 
               // When the client already loaded the snapshot over HTTP it passes
@@ -1715,6 +1745,7 @@ const makeWsRpcLayer = (
                         kind: "event" as const,
                         event: projectActivityEvent(event),
                       })),
+                      withProgressTranslation,
                       Stream.mapError(
                         (cause) =>
                           new OrchestrationGetSnapshotError({

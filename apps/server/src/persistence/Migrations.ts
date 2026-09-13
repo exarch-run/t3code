@@ -1,5 +1,6 @@
 import Migration0052 from "./Migrations/052_StrataTaskProgress.ts";
 import Migration0053 from "./Migrations/053_StrataTaskProgressSeed.ts";
+import Migration0054 from "./Migrations/054_StrataTaskProgressV2.ts";
 /**
  * Migration runner with an inline loader.
  *
@@ -79,6 +80,7 @@ import Migration0051 from "./Migrations/051_ProjectionProjectsSessionFiles.ts";
 const migrationEntries = [
   [52, "StrataTaskProgress", Migration0052],
   [53, "StrataTaskProgressSeed", Migration0053],
+  [54, "StrataTaskProgressV2", Migration0054],
   [1, "OrchestrationEvents", Migration0001],
   [2, "OrchestrationCommandReceipts", Migration0002],
   [3, "CheckpointDiffBlobs", Migration0003],

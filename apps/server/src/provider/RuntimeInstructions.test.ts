@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import { buildRuntimeInstructions } from "./RuntimeInstructions.ts";
+import { setProgressInstructionsEnabled } from "../strata/TaskProgressRuntime.ts";
 
 describe("buildRuntimeInstructions", () => {
   it("requires explicit registration of every PR and stack layer", () => {
@@ -16,12 +17,33 @@ describe("buildRuntimeInstructions", () => {
       const instructions = buildRuntimeInstructions({ harness });
       expect(instructions).toContain("<task_progress>");
       expect(instructions).toContain("strata_progress_card");
-      expect(instructions).toContain("write the result before you finish");
+      expect(instructions).toContain("at least two meaningful sequential steps");
+      expect(instructions).toContain(
+        "never for greetings, quick questions, or single-step requests",
+      );
+      expect(instructions).toContain("Update or clear existing cards as needed");
+      expect(instructions).not.toContain("write it when you start");
       expect(instructions.indexOf("<pull_request_linking>")).toBeLessThan(
         instructions.indexOf("<task_progress>"),
       );
     },
   );
+
+  it("leaves the task card out when publishing is disabled", () => {
+    expect(buildRuntimeInstructions({ harness: "Codex", taskProgress: false })).not.toContain(
+      "task_progress",
+    );
+    setProgressInstructionsEnabled(false);
+    try {
+      expect(buildRuntimeInstructions({ harness: "Claude Code" })).not.toContain("task_progress");
+      expect(buildRuntimeInstructions({ harness: "Claude Code", taskProgress: true })).toContain(
+        "<task_progress>",
+      );
+    } finally {
+      setProgressInstructionsEnabled(true);
+    }
+    expect(buildRuntimeInstructions({ harness: "Claude Code" })).toContain("<task_progress>");
+  });
 
   it("keeps known model and effort metadata on one line", () => {
     expect(

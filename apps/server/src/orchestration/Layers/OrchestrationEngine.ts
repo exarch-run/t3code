@@ -1,5 +1,8 @@
 import { registerProgressBridge } from "../../strata/TaskProgressBridge.ts";
-import { validateProgressCommand } from "../../strata/TaskProgressPersistence.ts";
+import {
+  isProgressCommand,
+  validateProgressCommand,
+} from "../../strata/TaskProgressPersistence.ts";
 import type {
   OrchestrationClientOrigin,
   OrchestrationEvent,
@@ -394,10 +397,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
               ),
             );
 
-            if (
-              isOrchestrationCommandRejection(error) &&
-              envelope.command.type !== "thread.task-progress.publish"
-            ) {
+            if (isOrchestrationCommandRejection(error) && !isProgressCommand(envelope.command)) {
               yield* commandReceiptRepository
                 .upsert({
                   commandId: envelope.command.commandId,

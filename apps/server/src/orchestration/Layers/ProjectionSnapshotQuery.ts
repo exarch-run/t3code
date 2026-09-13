@@ -1,4 +1,7 @@
-import { readProgressFields } from "../../strata/TaskProgressPersistence.ts";
+import {
+  readProgressFields,
+  readProgressSnapshotFields,
+} from "../../strata/TaskProgressPersistence.ts";
 import {
   AgentSessionImportSource,
   ApprovalRequestId,
@@ -3422,7 +3425,7 @@ pending_approval_requests AS (
       }
 
       const thread = {
-        ...(yield* readProgressFields(sql, threadRow.value.threadId)),
+        ...(yield* readProgressSnapshotFields(sql, threadRow.value.threadId)),
         id: threadRow.value.threadId,
         projectId: threadRow.value.projectId,
         title: threadRow.value.title,

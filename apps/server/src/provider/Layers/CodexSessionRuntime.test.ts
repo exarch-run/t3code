@@ -10,6 +10,7 @@ import * as CodexRpc from "effect-codex-app-server/rpc";
 import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
 import { buildCodexDeveloperInstructions } from "../CodexDeveloperInstructions.ts";
+import { setProgressInstructionsEnabled } from "../../strata/TaskProgressRuntime.ts";
 import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import {
   buildTurnStartParams,
@@ -459,6 +460,32 @@ describe("buildCodexDeveloperInstructions", () => {
     NodeAssert.match(instructions, /T3 Code/);
     NodeAssert.match(instructions, /Codex harness/);
     NodeAssert.match(instructions, /as gpt-5\.3-codex with high reasoning effort/);
+  });
+
+  it("carries the task card contract on every turn and drops it while publishing is off", () => {
+    for (const mode of ["default", "plan"] as const) {
+      const instructions = buildCodexDeveloperInstructions(mode, {
+        model: "gpt-5.3-codex",
+        reasoningEffort: "high",
+      });
+      NodeAssert.match(
+        instructions,
+        /<task_progress>[\s\S]*strata_progress_card[\s\S]*<\/task_progress>/,
+      );
+      NodeAssert.match(instructions, /at least two meaningful sequential steps/);
+    }
+    setProgressInstructionsEnabled(false);
+    try {
+      NodeAssert.doesNotMatch(
+        buildCodexDeveloperInstructions("default", {
+          model: "gpt-5.3-codex",
+          reasoningEffort: "high",
+        }),
+        /task_progress/,
+      );
+    } finally {
+      setProgressInstructionsEnabled(true);
+    }
   });
 
   it("describes Markdown media support in the runtime context in both modes", () => {

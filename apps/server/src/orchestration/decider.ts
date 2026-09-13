@@ -1965,6 +1965,49 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.task-progress.write": {
+      const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
+      if (thread.deletedAt !== null)
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "The conversation was deleted.",
+        });
+      // One durable card per chat: any session holding the chat's credential
+      // writes it, running turn or not. Clearing keeps the revision moving so
+      // a reader can order the clear against older snapshots.
+      const previousRevision =
+        thread.taskProgressV2?.revision ?? thread.taskProgress?.revision ?? 0;
+      const revision = previousRevision + 1;
+      const hasContent = command.markdown !== undefined || command.steps !== undefined;
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.task-progress-v2-updated",
+        payload: {
+          threadId: command.threadId,
+          record: {
+            card: hasContent
+              ? {
+                  version: 2,
+                  revision,
+                  updatedAt: command.createdAt,
+                  ...(command.markdown !== undefined ? { markdown: command.markdown } : {}),
+                  ...(command.steps !== undefined ? { steps: command.steps } : {}),
+                }
+              : null,
+            revision,
+            updatedAt: command.createdAt,
+            generation: thread.createdAt,
+            turnId: command.turnId,
+          },
+        },
+      };
+    }
+
     case "thread.task-progress.publish": {
       const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
       if (

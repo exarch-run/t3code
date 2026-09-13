@@ -87,6 +87,7 @@ import { claudeSignedOutMessage, makeClaudeEnvironment } from "../Drivers/Claude
 import { planClaudeSkillDispatch } from "../Drivers/ClaudeSkillDispatch.ts";
 import { discoverClaudeSkills } from "../Drivers/ClaudeSkills.ts";
 import { buildRuntimeInstructions } from "../RuntimeInstructions.ts";
+import { claudeTaskProgressOwnershipHooks } from "../../strata/TaskProgressOwnership.ts";
 import {
   BUNDLED_CLAUDE_MODEL_CATALOG,
   type ClaudeModelCatalog,
@@ -4699,6 +4700,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         canUseTool,
         onUserDialog,
         supportedDialogKinds: ["resume_return"],
+        // The task card belongs to the main agent; subagent writes are turned
+        // away before execution (strata/TaskProgressOwnership.ts).
+        hooks: claudeTaskProgressOwnershipHooks(),
         env: McpProviderSession.withAgentDeviceEnvironment(claudeEnvironment, mcpSession),
         additionalDirectories,
         ...(Object.keys(extraArgs).length > 0 ? { extraArgs } : {}),

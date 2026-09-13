@@ -549,6 +549,8 @@ export const ServerConfig = Schema.Struct({
   taskProgress: Schema.optional(
     Schema.Struct({
       version: Schema.Literal(1),
+      // Every version this server speaks; a reader picks the newest it knows.
+      supportedVersions: Schema.optional(Schema.Array(Schema.Number)),
       providers: Schema.Array(Schema.String),
       newChatsOnly: Schema.Boolean,
       enabled: Schema.Boolean,

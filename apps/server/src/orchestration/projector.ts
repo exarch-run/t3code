@@ -325,6 +325,15 @@ export function projectEvent(
   };
 
   switch (event.type) {
+    case "thread.task-progress-v2-updated":
+      return Effect.succeed({
+        ...nextBase,
+        threads: nextBase.threads.map((thread) =>
+          thread.id === event.payload.threadId
+            ? { ...thread, taskProgressV2: event.payload.record }
+            : thread,
+        ),
+      });
     case "thread.task-progress-updated":
       return Effect.succeed({
         ...nextBase,

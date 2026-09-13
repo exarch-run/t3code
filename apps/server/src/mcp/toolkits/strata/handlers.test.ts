@@ -1,4 +1,9 @@
-import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ProviderInstanceId,
+  ThreadId,
+  type TaskProgressCardV2,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -8,7 +13,7 @@ import { createServer, type Server } from "node:http";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as StrataHostClient from "../../StrataHostClient.ts";
-import { installBridge, NO_ACTIVE_RUN } from "../../../strata/TaskProgressRuntime.ts";
+import { installBridge } from "../../../strata/TaskProgressRuntime.ts";
 import { StrataToolkitHandlersLive } from "./handlers.ts";
 import { StrataToolkit } from "./tools.ts";
 
@@ -164,91 +169,139 @@ describe("strata toolkit handlers", () => {
 });
 
 describe("task card handlers", () => {
-  const receipt = {
-    revision: 1,
-    generation: "g",
-    updatedAt: "2026-01-01T00:00:00.000Z",
-    sequence: 7,
-  };
   const card = {
-    version: 1 as const,
+    version: 2 as const,
     revision: 1,
-    generation: "g",
-    runId: "turn-1",
-    providerTurnId: "turn-1",
-    markdown: "Halfway",
-    plan: [],
     updatedAt: "2026-01-01T00:00:00.000Z",
-    outcome: null,
-    endedAt: null,
+    markdown: "Halfway",
+    steps: [{ step: "Read", status: "completed" as const }],
   };
-  const fakeBridge = (activeTurn: string | null) => {
-    const published: unknown[] = [];
+  const fakeBridge = () => {
+    const written: unknown[] = [];
+    let current: TaskProgressCardV2 | null = card;
     const close = installBridge({
       enabled: Effect.succeed(true),
-      activeTurn: () => Effect.succeed(activeTurn),
-      publish: (input) => {
-        published.push(input);
-        return Effect.succeed(receipt);
+      write: (input) => {
+        written.push(input);
+        const empty = input.input.markdown === undefined && input.input.steps === undefined;
+        current = empty
+          ? null
+          : {
+              version: 2 as const,
+              revision: 2,
+              updatedAt: "2026-01-01T00:00:01.000Z",
+              ...(input.input.markdown !== undefined ? { markdown: input.input.markdown } : {}),
+              ...(input.input.steps !== undefined ? { steps: input.input.steps } : {}),
+            };
+        return Effect.succeed({
+          card: current,
+          revision: 2,
+          updatedAt: "2026-01-01T00:00:01.000Z",
+          generation: "g",
+          turnId: null,
+        });
       },
-      read: () => Effect.succeed(card),
+      read: () =>
+        Effect.succeed({
+          card: current,
+          revision: current ? current.revision : 2,
+          updatedAt: "2026-01-01T00:00:00.000Z",
+          generation: "g",
+          turnId: null,
+        }),
     });
-    return { published, close };
+    return { written, close };
   };
 
-  it.effect("writes the chat's card against the server's active turn and returns the receipt", () =>
+  it.effect("writes the chat's card from the raw call and answers with the acknowledgement", () =>
     Effect.gen(function* () {
-      const bridge = fakeBridge("turn-1");
+      const bridge = fakeBridge();
       try {
         const harness = yield* makeHarness({});
+        expect(yield* harness.call("strata_progress_card_read", {})).toEqual({ card });
         const result = yield* harness.call("strata_progress_card", {
-          writeId: "w1",
           markdown: "Halfway",
-          plan: [{ text: "Read", status: "completed" }],
+          plan: [
+            { step: "Read", status: "completed" },
+            { step: "Patch", status: "in_progress" },
+          ],
         });
-        expect(result).toEqual(receipt);
-        expect(bridge.published).toEqual([
+        expect(result).toEqual({
+          message: "Progress card updated (rev 2, 1/2 done)",
+          revision: 2,
+          steps: { completed: 1, total: 2 },
+        });
+        expect(bridge.written).toEqual([
           {
             threadId: "thread-1",
-            providerTurnId: "turn-1",
-            writeId: "w1",
-            digest: expect.any(String),
-            content: { markdown: "Halfway", plan: [{ text: "Read", status: "completed" }] },
+            input: {
+              markdown: "Halfway",
+              steps: [
+                { step: "Read", status: "completed" },
+                { step: "Patch", status: "in_progress" },
+              ],
+            },
           },
         ]);
-        expect(yield* harness.call("strata_progress_card_read", {})).toEqual({ card });
+        // The earlier Strata field names still decode into the same write.
+        yield* harness.call("strata_progress_card", {
+          writeId: "native-2",
+          plan: [{ text: "Legacy", status: "pending" }],
+        });
+        expect(bridge.written.at(-1)).toEqual({
+          threadId: "thread-1",
+          input: { steps: [{ step: "Legacy", status: "pending" }] },
+        });
+        expect(yield* harness.call("strata_progress_card", {})).toEqual({
+          message: "Progress card cleared",
+          revision: null,
+          steps: null,
+        });
+        expect(yield* harness.call("strata_progress_card_read", {})).toEqual({ card: null });
       } finally {
         bridge.close();
       }
     }),
   );
 
-  it.effect("refuses a write when no run is active and when the content is unusable", () =>
+  it.effect("refuses a misnamed checklist before writing, so the previous card survives", () =>
     Effect.gen(function* () {
-      const idle = fakeBridge(null);
+      const bridge = fakeBridge();
       try {
         const harness = yield* makeHarness({});
+        // The September 12 review sent its steps under the wrong name; the
+        // decoder must not turn that into a note-only update.
         const refused = yield* harness
-          .call("strata_progress_card", { writeId: "w1", markdown: "Late" })
+          .call("strata_progress_card", {
+            markdown: "Reviewing",
+            steps: [{ step: "Read", status: "completed" }],
+          })
           .pipe(Effect.flip);
-        expect(refused).toMatchObject({ _tag: "TaskProgressRefusedError", detail: NO_ACTIVE_RUN });
-        expect(idle.published).toEqual([]);
-      } finally {
-        idle.close();
-      }
-      const running = fakeBridge("turn-1");
-      try {
-        const harness = yield* makeHarness({});
-        const empty = yield* harness
-          .call("strata_progress_card", { writeId: "w2" })
-          .pipe(Effect.flip);
-        expect(empty).toMatchObject({
+        expect(refused).toMatchObject({
           _tag: "TaskProgressRefusedError",
-          detail: expect.stringContaining("Supply a status note, plan, or both"),
+          detail: expect.stringContaining('unknown field "steps"'),
         });
-        expect(running.published).toEqual([]);
+        const wrongStep = yield* harness
+          .call("strata_progress_card", { plan: [{ title: "Read", status: "completed" }] })
+          .pipe(Effect.flip);
+        expect(wrongStep).toMatchObject({
+          detail: expect.stringContaining('plan[0] has an unknown field "title"'),
+        });
+        const twoActive = yield* harness
+          .call("strata_progress_card", {
+            plan: [
+              { step: "a", status: "in_progress" },
+              { step: "b", status: "in_progress" },
+            ],
+          })
+          .pipe(Effect.flip);
+        expect(twoActive).toMatchObject({
+          detail: expect.stringContaining("at most one in_progress"),
+        });
+        expect(bridge.written).toEqual([]);
+        expect(yield* harness.call("strata_progress_card_read", {})).toEqual({ card });
       } finally {
-        running.close();
+        bridge.close();
       }
     }),
   );

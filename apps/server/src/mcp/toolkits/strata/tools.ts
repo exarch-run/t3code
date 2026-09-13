@@ -5,6 +5,8 @@ import * as Toolkit from "effect/unstable/ai/Toolkit";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as StrataHostClient from "../../StrataHostClient.ts";
 import { TaskProgressRefusedError } from "../../../strata/TaskProgressRuntime.ts";
+import { TASK_PROGRESS_TOOL_JSON_SCHEMA } from "../../../strata/TaskProgressInput.ts";
+import { TaskProgressAcknowledgement } from "@t3tools/contracts";
 
 /**
  * Strata's document tools (StrataMD plan: Strata and T3 as one app, phase
@@ -69,32 +71,6 @@ export const StrataRenderCheckInput = Schema.Struct({
   markdown: Schema.String.annotate({
     description: "Markdown that uses Strata components, checked the way Strata renders it.",
   }),
-});
-
-export const StrataProgressCardInput = Schema.Struct({
-  writeId: Schema.String.annotate({
-    description:
-      "A fresh id you make up for this update. A retry after a dropped connection reuses the same id and returns the original receipt without writing twice.",
-  }),
-  markdown: Schema.optional(
-    Schema.String.annotate({
-      description:
-        "General status as Markdown: what is done, what is happening, what is blocked, what was found. Up to 8 KiB. Omit it when the checklist says everything.",
-    }),
-  ),
-  plan: Schema.optional(
-    Schema.Array(
-      Schema.Struct({
-        text: Schema.String.annotate({ description: "One step, 1–500 characters." }),
-        status: Schema.Literals(["pending", "in_progress", "completed"]).annotate({
-          description: "pending, in_progress, or completed. At most one step is in_progress.",
-        }),
-      }),
-    ).annotate({
-      description:
-        "An ordered checklist of at most 50 steps. Send the whole list every time; it replaces the previous one.",
-    }),
-  ),
 });
 
 const strataTool = <T extends Tool.Any>(tool: T): T => tool.annotate(Tool.OpenWorld, false) as T;
@@ -215,14 +191,20 @@ const StrataComponentsTool = strataTool(
     .annotate(Tool.Idempotent, true),
 );
 
+/**
+ * The writer takes its raw JSON Schema, the closed object the reference tool
+ * advertises, so the handler validates the call itself: an Effect struct would
+ * drop a misnamed checklist before the handler saw it (this is how the
+ * September 12 review lost its steps). Description after OpenClaw's
+ * progress_card (commit 11921d88, MIT; see strata/THIRD_PARTY_NOTICES.md).
+ */
 const StrataProgressCardTool = strataTool(
-  Tool.make("strata_progress_card", {
+  Tool.dynamic("strata_progress_card", {
     description:
-      "Keep Strata's task card current. Strata shows one card beside the owner's composer for this chat: a general Markdown status, an ordered checklist, or both. Every call replaces the whole card; omitted parts are removed. Use it for substantial work: write it when you start, update it at meaningful milestones or blockers, and write the result before you finish. Not on every turn, and not for a short answer or a question. Do not repeat checklist facts in the note. The main agent keeps the card; subagents leave it alone. Every call needs a fresh writeId; a retry reuses it and returns the original receipt. No read is required first. Writes are accepted only while this chat has a running turn.",
-    parameters: StrataProgressCardInput,
-    success: StrataResult,
+      'Maintain this chat\'s task card: the single durable status surface Strata shows beside the owner\'s composer, for someone who is not reading the transcript. Create a card only for substantial work with at least two meaningful sequential steps. Do not create a card for greetings, quick questions, or single-step requests, and do not invent steps just to justify one. Existing cards may still be updated or cleared. Each call replaces the whole card. Pick the representation that fits the work, using either or both parts: `markdown` — a compact note; tables for comparisons or metrics, a bold one-liner for simple state, or one <progress aria-label="CI · 4/6" value="4" max="6"></progress> bar for a long operation. Put a progress bar first and give it a short aria-label with its purpose and current/total values. Other raw HTML is stripped. Known URL? Link it. Don\'t leave PRs or issues as bare IDs. And `plan` — an ordered step checklist (pending | in_progress | completed, at most one in_progress) for genuinely sequential work. The checklist is optional: omit it whenever a table, bar, or sentence says it better, and never repeat the same facts in both parts. Call with both parts empty to clear. Update on meaningful change — a step done, a blocker, results in — not every message. Max 8 KB markdown, 50 steps. No read is required first; the main agent keeps the card.',
+    parameters: TASK_PROGRESS_TOOL_JSON_SCHEMA,
+    success: TaskProgressAcknowledgement,
     failure: TaskProgressRefusedError,
-    dependencies: [McpInvocationContext.McpInvocationContext],
   })
     .annotate(Tool.Title, "Update the Strata task card")
     .annotate(Tool.Readonly, false)
@@ -233,7 +215,7 @@ const StrataProgressCardTool = strataTool(
 const StrataProgressCardReadTool = strataTool(
   Tool.make("strata_progress_card_read", {
     description:
-      "Read this chat's current Strata task card, for example after a resume. Returns card, which is null before any write. Reading is optional; publishing never requires it.",
+      "Read this chat's current Strata task card, for example after a resume. Returns card with markdown, steps and revision, or null before any write and after a clear. Reading is optional; publishing never requires it.",
     success: StrataResult,
     failure: TaskProgressRefusedError,
     dependencies: [McpInvocationContext.McpInvocationContext],

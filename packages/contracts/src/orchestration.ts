@@ -1,4 +1,9 @@
-import { TaskProgressCard, TaskProgressPublishFields } from "./taskProgress.ts";
+import {
+  TaskProgressCard,
+  TaskProgressPublishFields,
+  TaskProgressRecordV2,
+  TaskProgressWriteFields,
+} from "./taskProgress.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
@@ -727,6 +732,7 @@ export type ThreadPullRequestLink = typeof ThreadPullRequestLink.Type;
 
 export const OrchestrationThread = Schema.Struct({
   taskProgress: Schema.optional(Schema.NullOr(TaskProgressCard)),
+  taskProgressV2: Schema.optional(TaskProgressRecordV2),
   id: ThreadId,
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
@@ -936,7 +942,7 @@ export const OrchestrationSubscribeShellInput = Schema.Struct({
 export type OrchestrationSubscribeShellInput = typeof OrchestrationSubscribeShellInput.Type;
 
 export const OrchestrationSubscribeThreadInput = Schema.Struct({
-  taskProgressVersion: Schema.optional(Schema.Literal(1)),
+  taskProgressVersion: Schema.optional(Schema.Literals([1, 2])),
   threadId: ThreadId,
   /**
    * When provided, the server skips the initial snapshot frame and instead
@@ -1522,6 +1528,13 @@ const InternalOrchestrationCommand = Schema.Union([
     createdAt: IsoDateTime,
     ...TaskProgressPublishFields,
   }),
+  Schema.Struct({
+    type: Schema.Literal("thread.task-progress.write"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    createdAt: IsoDateTime,
+    ...TaskProgressWriteFields,
+  }),
   ThreadAutoSettleCommand,
   ThreadPullRequestSyncCommand,
   ThreadPullRequestLinkSyncCommand,
@@ -1578,6 +1591,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.proposed-plan-upserted",
   "thread.turn-diff-completed",
   "thread.task-progress-updated",
+  "thread.task-progress-v2-updated",
   "thread.activity-appended",
 ]);
 export type OrchestrationEventType = typeof OrchestrationEventType.Type;
@@ -1889,6 +1903,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.task-progress-updated"),
     payload: Schema.Struct({ threadId: ThreadId, card: TaskProgressCard, digest: Schema.String }),
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.task-progress-v2-updated"),
+    payload: Schema.Struct({ threadId: ThreadId, record: TaskProgressRecordV2 }),
   }),
   Schema.Struct({
     ...EventBaseFields,

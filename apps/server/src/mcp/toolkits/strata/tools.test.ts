@@ -65,11 +65,26 @@ it("tells the agent what it must know at session start", () => {
 
 it("tells every model how the task card works", () => {
   const card = StrataToolkit.tools.strata_progress_card.description ?? "";
-  expect(card).toContain("Every call replaces the whole card");
-  expect(card).toContain("fresh writeId");
-  expect(card).toContain("The main agent keeps the card");
-  expect(card).toContain("only while this chat has a running turn");
+  expect(card).toContain("Create a card only for substantial work");
+  expect(card).toContain("at least two meaningful sequential steps");
+  expect(card).toContain("Existing cards may still be updated or cleared");
+  expect(card).toContain(
+    "Do not create a card for greetings, quick questions, or single-step requests",
+  );
+  expect(card).toContain("The checklist is optional");
+  expect(card).toContain("Each call replaces the whole card");
+  expect(card).toContain("Call with both parts empty to clear");
+  expect(card).not.toContain("writeId");
+  expect(card).not.toContain("running turn");
   expect(card).not.toContain("Only the parent");
+  const schema = Tool.getJsonSchema(StrataToolkit.tools.strata_progress_card) as {
+    readonly additionalProperties?: unknown;
+    readonly properties?: Record<string, unknown>;
+    readonly required?: unknown;
+  };
+  expect(schema.additionalProperties).toBe(false);
+  expect(Object.keys(schema.properties ?? {})).toEqual(["markdown", "plan"]);
+  expect(schema.required).toBeUndefined();
   expect(StrataToolkit.tools.strata_progress_card_read.description).toContain(
     "Reading is optional",
   );

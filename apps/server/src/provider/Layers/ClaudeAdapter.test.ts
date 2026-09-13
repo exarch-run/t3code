@@ -1,4 +1,9 @@
 import { buildRuntimeInstructions } from "../RuntimeInstructions.ts";
+import { setProgressInstructionsEnabled } from "../../strata/TaskProgressRuntime.ts";
+import {
+  CLAUDE_TASK_PROGRESS_TOOL,
+  SUBAGENT_WRITE_REFUSED,
+} from "../../strata/TaskProgressOwnership.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
@@ -6075,6 +6080,119 @@ describe("ClaudeAdapterLive", () => {
       Effect.provide(harness.layer),
     );
   });
+
+  it.effect(
+    "delivers the task card contract to new and resumed sessions unless publishing is off",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const appended = () => {
+          const prompt = harness.getLastCreateQueryInput()?.options.systemPrompt;
+          return prompt && typeof prompt === "object" && "append" in prompt
+            ? String(prompt.append)
+            : "";
+        };
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+        assert.match(
+          appended(),
+          /<task_progress>[\s\S]*strata_progress_card[\s\S]*<\/task_progress>/,
+        );
+        assert.match(appended(), /at least two meaningful sequential steps/);
+        // A resumed chat rebuilds its standing instructions, so an existing chat gets the current contract.
+        yield* adapter.startSession({
+          threadId: RESUME_THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          resumeCursor: {
+            threadId: "resume-thread-1",
+            resume: "550e8400-e29b-41d4-a716-446655440000",
+            resumeSessionAt: "assistant-99",
+            turnCount: 3,
+          },
+          runtimeMode: "full-access",
+        });
+        assert.equal(
+          harness.getLastCreateQueryInput()?.options.resume,
+          "550e8400-e29b-41d4-a716-446655440000",
+        );
+        assert.match(appended(), /<task_progress>/);
+        // The setting suppresses the guidance for the next session start; the tool itself refuses writes at once.
+        setProgressInstructionsEnabled(false);
+        try {
+          yield* adapter.startSession({
+            threadId: ThreadId.make("thread-claude-progress-off"),
+            provider: ProviderDriverKind.make("claudeAgent"),
+            runtimeMode: "full-access",
+          });
+          assert.notMatch(appended(), /task_progress/);
+          assert.match(appended(), /<pull_request_linking>/);
+        } finally {
+          setProgressInstructionsEnabled(true);
+        }
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
+  it.effect(
+    "turns subagent task card writes away before execution and leaves the main agent's alone",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+        const options = harness.getLastCreateQueryInput()?.options;
+        assert.equal(options?.permissionMode, "bypassPermissions");
+        const matchers = options?.hooks?.PreToolUse ?? [];
+        assert.deepEqual(
+          matchers.map((matcher) => matcher.matcher),
+          [CLAUDE_TASK_PROGRESS_TOOL],
+        );
+        const hook = matchers[0]?.hooks[0];
+        assert.ok(hook);
+        const call = (toolName: string, agentId?: string) =>
+          Effect.promise(() =>
+            hook(
+              {
+                hook_event_name: "PreToolUse",
+                tool_name: toolName,
+                tool_input: { markdown: "From a worker" },
+                tool_use_id: "toolu-1",
+                session_id: "sdk-session",
+                transcript_path: "/tmp/transcript",
+                cwd: "/tmp",
+                ...(agentId ? { agent_id: agentId } : {}),
+              },
+              "toolu-1",
+              { signal: new AbortController().signal },
+            ),
+          );
+        assert.deepEqual(yield* call(CLAUDE_TASK_PROGRESS_TOOL, "agent-7"), {
+          hookSpecificOutput: {
+            hookEventName: "PreToolUse",
+            permissionDecision: "deny",
+            permissionDecisionReason: SUBAGENT_WRITE_REFUSED,
+          },
+        });
+        assert.deepEqual(yield* call(CLAUDE_TASK_PROGRESS_TOOL), {});
+        assert.deepEqual(yield* call("mcp__t3-code__strata_progress_card_read", "agent-7"), {});
+        assert.deepEqual(yield* call("Bash", "agent-7"), {});
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
 
   it.effect("passes Claude resume ids without pinning a stale assistant checkpoint", () => {
     const harness = makeHarness();
