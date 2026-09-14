@@ -25,6 +25,13 @@ describe("normalizeTaskProgressInput", () => {
     expect(normalizeTaskProgressInput({ markdown: "  \n ", plan: [] })).toEqual({});
   });
 
+  it.each([[], [{ step: "Read", status: "pending" }], '{"markdown":"Note"}', 7, null, false])(
+    "refuses malformed top-level input %j",
+    (input) => {
+      expect(() => normalizeTaskProgressInput(input)).toThrow("arguments must be an object");
+    },
+  );
+
   it("preserves authored whitespace and line endings after stripping invisible characters", () => {
     expect(normalizeTaskProgressInput({ markdown: "  Note\r\ntext‮  " })).toEqual({
       markdown: "  Note\r\ntext  ",

@@ -49,7 +49,8 @@ const STEP_FIELDS = new Set(["step", "status", "text"]);
 
 /** Validates and normalizes the replace-on-write task card payload. */
 export function normalizeTaskProgressInput(rawArgs: unknown): NormalizedTaskProgressInput {
-  const input = asRecord(rawArgs) ?? {};
+  const input = rawArgs === undefined ? {} : asRecord(rawArgs);
+  if (!input) throw new TaskProgressInputError("strata_progress_card arguments must be an object");
   for (const key of Object.keys(input)) {
     if (!TOP_LEVEL_FIELDS.has(key)) {
       throw new TaskProgressInputError(

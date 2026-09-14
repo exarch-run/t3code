@@ -8,6 +8,7 @@ import type {
 import {
   TaskProgressCard as CardSchema,
   TaskProgressReceipt,
+  TaskProgressRecordV2 as RecordSchema,
   TaskProgressStep as StepSchema,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -21,6 +22,10 @@ import {
   recordFromLegacyCard,
   type LegacyTurnFacts,
 } from "./TaskProgressCompatibility.ts";
+
+const decodeCommittedProgress = Schema.decodeUnknownSync(
+  Schema.fromJsonString(Schema.Struct({ record: RecordSchema })),
+);
 
 const encodeCard = Schema.encodeSync(Schema.fromJsonString(CardSchema));
 const decodeReceipt = Schema.decodeUnknownSync(Schema.fromJsonString(TaskProgressReceipt));
@@ -66,6 +71,24 @@ export const readProgressRecord = (sql: SqlClient.SqlClient, threadId: string) =
   sql<RecordRow>`SELECT thread_id, revision, generation, markdown, steps_json, turn_id, updated_at FROM strata_task_progress_v2 WHERE thread_id = ${threadId}`.pipe(
     Effect.map((rows) => (rows[0] ? recordFromRow(rows[0]) : null)),
     Effect.mapError(toPersistenceSqlError("task-progress.read")),
+  );
+
+/** A write acknowledgment reads its immutable event, never the latest projection. */
+export const readCommittedProgressRecord = (
+  sql: SqlClient.SqlClient,
+  threadId: string,
+  sequence: number,
+) =>
+  sql<{ payload_json: string }>`SELECT payload_json FROM orchestration_events
+    WHERE sequence = ${sequence} AND stream_id = ${threadId} AND event_type = 'thread.task-progress-v2-updated'`.pipe(
+    Effect.flatMap((rows) =>
+      Effect.try(() => {
+        if (!rows[0])
+          throw new Error(`Missing committed progress event ${sequence} for ${threadId}`);
+        return decodeCommittedProgress(rows[0].payload_json).record;
+      }),
+    ),
+    Effect.mapError(toPersistenceSqlError("task-progress.committed-event")),
   );
 
 const writeRecord = (sql: SqlClient.SqlClient, threadId: string, record: TaskProgressRecordV2) =>

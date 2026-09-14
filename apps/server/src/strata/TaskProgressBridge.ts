@@ -2,7 +2,7 @@ import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import { ServerSettingsService } from "../serverSettings.ts";
-import { randomUUID } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 import { CommandId } from "@t3tools/contracts";
 import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
 import type * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -12,7 +12,7 @@ import {
   setProgressInstructionsEnabled,
   type ProgressWrite,
 } from "./TaskProgressRuntime.ts";
-import { readProgressRecord } from "./TaskProgressPersistence.ts";
+import { readProgressRecord, readCommittedProgressRecord } from "./TaskProgressPersistence.ts";
 import { toPersistenceSqlError } from "../persistence/Errors.ts";
 
 /**
@@ -20,7 +20,7 @@ import { toPersistenceSqlError } from "../persistence/Errors.ts";
  * call once; a model that retries after a dropped answer writes the same
  * content again and moves the revision on, as the reference does.
  */
-const freshCommandId = () => CommandId.make(`strata-progress-${randomUUID()}`);
+const freshCommandId = () => CommandId.make(`strata-progress-${NodeCrypto.randomUUID()}`);
 
 export const registerProgressBridge = (
   sql: SqlClient.SqlClient,
@@ -74,7 +74,7 @@ export const registerProgressBridge = (
                 const current = yield* readProgressRecord(sql, write.threadId);
                 if (!current || current.revision === 0) return current;
               }
-              yield* dispatch({
+              const committed = yield* dispatch({
                 type: "thread.task-progress.write",
                 commandId: freshCommandId(),
                 threadId: write.threadId,
@@ -83,7 +83,7 @@ export const registerProgressBridge = (
                 ...(write.input.steps !== undefined ? { steps: write.input.steps } : {}),
                 turnId: yield* activeTurn(write.threadId),
               });
-              return yield* readProgressRecord(sql, write.threadId);
+              return yield* readCommittedProgressRecord(sql, write.threadId, committed.sequence);
             }),
         }),
       ),

@@ -10,13 +10,11 @@ import * as Schema from "effect/Schema";
  * sources the same two values from Strata's `strata-host.env`. Every tool
  * request is one JSON POST carrying the invocation's thread and environment
  * ids, so Strata can refuse a call that does not belong to the engine it is
- * running. An unset variable or an unreachable host is one error the agent
- * can act on: propose the action in a strata block instead.
+ * running. A lost write reply is uncertain: retries must retain the action ID.
  */
 export const STRATA_HOST_URL = "STRATA_HOST_URL";
 export const STRATA_HOST_TOKEN = "STRATA_HOST_TOKEN";
-export const STRATA_NOT_CONNECTED_MESSAGE =
-  "Strata is not connected. Propose the action in a strata block instead.";
+export const STRATA_NOT_CONNECTED_MESSAGE = "Strata is not connected. Connect Strata and retry.";
 export const DEFAULT_STRATA_REQUEST_TIMEOUT_MS = 30_000;
 
 export class StrataNotConnectedError extends Schema.TaggedError<StrataNotConnectedError>()(
@@ -25,6 +23,16 @@ export class StrataNotConnectedError extends Schema.TaggedError<StrataNotConnect
 ) {
   override get message(): string {
     return STRATA_NOT_CONNECTED_MESSAGE;
+  }
+}
+
+/** A request was attempted, but no authoritative outcome reached the caller. */
+export class StrataOutcomeUncertainError extends Schema.TaggedError<StrataOutcomeUncertainError>()(
+  "StrataOutcomeUncertainError",
+  { actionId: Schema.String, reason: Schema.String },
+) {
+  override get message(): string {
+    return `The outcome of Strata action ${this.actionId} is unknown. It may already have been applied. Retry strata_act with the same actionId ${JSON.stringify(this.actionId)} and the same entries. Do not create a new action ID or repeat it in a strata block.`;
   }
 }
 
@@ -38,7 +46,11 @@ export class StrataToolFailedError extends Schema.TaggedError<StrataToolFailedEr
   }
 }
 
-export const StrataHostError = Schema.Union([StrataNotConnectedError, StrataToolFailedError]);
+export const StrataHostError = Schema.Union([
+  StrataNotConnectedError,
+  StrataToolFailedError,
+  StrataOutcomeUncertainError,
+]);
 export type StrataHostError = typeof StrataHostError.Type;
 
 export interface StrataHostRequest {
@@ -69,6 +81,8 @@ interface StrataHostReply {
   readonly error?: { readonly code?: unknown; readonly message?: unknown };
 }
 
+const encodeJsonText = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+
 const readReply = async (response: Response): Promise<StrataHostReply> => {
   const text = await response.text();
   try {
@@ -91,6 +105,20 @@ export function makeStrataHostClient(options: StrataHostClientOptions = {}): Str
       if (!url || !token) {
         return yield* new StrataNotConnectedError({ reason: "host variables unset" });
       }
+      const actionId =
+        request.tool === "strata_act" &&
+        typeof request.input === "object" &&
+        request.input !== null &&
+        "actionId" in request.input &&
+        typeof request.input.actionId === "string"
+          ? request.input.actionId
+          : null;
+      const uncertain = (cause: unknown) => {
+        const reason = cause instanceof Error ? cause.message : String(cause);
+        return actionId === null
+          ? new StrataNotConnectedError({ reason })
+          : new StrataOutcomeUncertainError({ actionId, reason });
+      };
       const response = yield* Effect.tryPromise({
         try: () =>
           fetchImpl(`${url.replace(/\/+$/, "")}/tools/${request.tool}`, {
@@ -99,27 +127,29 @@ export function makeStrataHostClient(options: StrataHostClientOptions = {}): Str
               authorization: `Bearer ${token}`,
               "content-type": "application/json",
             },
-            body: JSON.stringify({
+            body: encodeJsonText({
               threadId: request.threadId,
               environmentId: request.environmentId,
               input: request.input ?? {},
             }),
             signal: AbortSignal.timeout(timeoutMs),
           }),
-        catch: (cause) =>
-          new StrataNotConnectedError({
-            reason: cause instanceof Error ? cause.message : String(cause),
-          }),
+        catch: uncertain,
       });
       const reply = yield* Effect.tryPromise({
         try: () => readReply(response),
-        catch: (cause) =>
-          new StrataNotConnectedError({
-            reason: cause instanceof Error ? cause.message : String(cause),
-          }),
+        catch: uncertain,
       });
       if (response.ok && reply.ok === true) return reply.result;
-      const code = typeof reply.error?.code === "string" ? reply.error.code : `HTTP_${response.status}`;
+      if (
+        actionId !== null &&
+        (response.ok || response.status >= 500) &&
+        !(reply.ok === false && typeof reply.error?.code === "string")
+      ) {
+        return yield* uncertain(`Strata answered ${response.status} without a valid outcome.`);
+      }
+      const code =
+        typeof reply.error?.code === "string" ? reply.error.code : `HTTP_${response.status}`;
       const detail =
         typeof reply.error?.message === "string"
           ? reply.error.message

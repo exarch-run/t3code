@@ -1,6 +1,4 @@
-import Migration0052 from "./Migrations/052_StrataTaskProgress.ts";
-import Migration0053 from "./Migrations/053_StrataTaskProgressSeed.ts";
-import Migration0054 from "./Migrations/054_StrataTaskProgressV2.ts";
+import { prepareStrataHistory, runStrataMigrations } from "./StrataMigrations.ts";
 /**
  * Migration runner with an inline loader.
  *
@@ -65,7 +63,6 @@ import Migration0047 from "./Migrations/047_ProjectionProjectIcon.ts";
 import Migration0048 from "./Migrations/048_ProjectionThreadBranchPullRequest.ts";
 import Migration0049 from "./Migrations/049_ProjectionThreadsActiveOrderKey.ts";
 import Migration0050 from "./Migrations/050_ProjectionThreadPullRequests.ts";
-import Migration0051 from "./Migrations/051_ProjectionProjectsSessionFiles.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -78,9 +75,6 @@ import Migration0051 from "./Migrations/051_ProjectionProjectsSessionFiles.ts";
  * returns migrations sorted by ID.
  */
 const migrationEntries = [
-  [52, "StrataTaskProgress", Migration0052],
-  [53, "StrataTaskProgressSeed", Migration0053],
-  [54, "StrataTaskProgressV2", Migration0054],
   [1, "OrchestrationEvents", Migration0001],
   [2, "OrchestrationCommandReceipts", Migration0002],
   [3, "CheckpointDiffBlobs", Migration0003],
@@ -131,7 +125,6 @@ const migrationEntries = [
   [48, "ProjectionThreadBranchPullRequest", Migration0048],
   [49, "ProjectionThreadsActiveOrderKey", Migration0049],
   [50, "ProjectionThreadPullRequests", Migration0050],
-  [51, "ProjectionProjectsSessionFiles", Migration0051],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
@@ -168,7 +161,10 @@ export interface RunMigrationsOptions {
 export const runMigrations = Effect.fn("runMigrations")(function* ({
   toMigrationInclusive,
 }: RunMigrationsOptions = {}) {
-  const executedMigrations = yield* run({ loader: makeMigrationLoader(toMigrationInclusive) });
+  yield* prepareStrataHistory(migrationManifest);
+  const upstream = yield* run({ loader: makeMigrationLoader(toMigrationInclusive) });
+  const strata = yield* runStrataMigrations(toMigrationInclusive);
+  const executedMigrations = [...upstream, ...strata];
   const migrations = executedMigrations.map(([id, name]) => `${id}_${name}`);
   yield* migrations.length === 0
     ? Effect.logDebug("Database schema is current")

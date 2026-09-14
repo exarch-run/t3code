@@ -64,6 +64,11 @@ jobs:
             echo "Tag must look like v0.0.41-strata.1, got: $tag" >&2
             exit 1
           fi
+          source_commit="$(git rev-parse --verify "refs/tags/$tag^{commit}")"
+          if [[ "$source_commit" != "$(git rev-parse HEAD)" ]]; then
+            echo "Selected tag $tag does not match the checked-out source" >&2
+            exit 1
+          fi
           version="${tag#v}"
           base_tag="$(node -p "require('./strata/base.json').upstreamTag")"
           base_commit="$(node -p "require('./strata/base.json').upstreamCommit")"
@@ -81,12 +86,13 @@ jobs:
           {
             echo "tag=$tag"
             echo "version=$version"
+            echo "source_commit=$source_commit"
             echo "base_tag=$base_tag"
             echo "base_commit=$base_commit"
             echo "base_version=$base_version"
             echo "base_integrity=$base_integrity"
           } >> "$GITHUB_OUTPUT"
-          echo "Building $version from $base_tag ($base_commit) at $(git rev-parse HEAD)"
+          echo "Building $version from $base_tag ($base_commit) at $source_commit"
 
       - name: Use the public T3 Connect identifiers
         run: cp .env.example .env
@@ -160,6 +166,7 @@ jobs:
         env:
           TAG: ${{ steps.meta.outputs.tag }}
           VERSION: ${{ steps.meta.outputs.version }}
+          SOURCE_COMMIT: ${{ steps.meta.outputs.source_commit }}
           BASE_TAG: ${{ steps.meta.outputs.base_tag }}
           BASE_COMMIT: ${{ steps.meta.outputs.base_commit }}
           BASE_VERSION: ${{ steps.meta.outputs.base_version }}
@@ -169,7 +176,7 @@ jobs:
           OUT: ${{ steps.pack.outputs.dir }}
         run: |
           set -euo pipefail
-          git log --format='%H%x09%s' "$BASE_COMMIT..HEAD" > "$OUT/commits.tsv"
+          git log --format='%H%x09%s' "$BASE_COMMIT..$SOURCE_COMMIT" > "$OUT/commits.tsv"
           node -e '
             const fs = require("node:fs");
             const env = process.env;
@@ -182,7 +189,7 @@ jobs:
               version: env.VERSION,
               tag: env.TAG,
               forkRepository: `https://github.com/${env.GITHUB_REPOSITORY}`,
-              forkCommit: env.GITHUB_SHA,
+              forkCommit: env.SOURCE_COMMIT,
               upstreamRepository: "https://github.com/pingdotgg/t3code",
               upstreamTag: env.BASE_TAG,
               upstreamCommit: env.BASE_COMMIT,
@@ -196,6 +203,8 @@ jobs:
             fs.writeFileSync(`${env.OUT}/provenance.json`, JSON.stringify(record, null, 2) + "\n");
             const notes = [
               `Strata engine ${env.VERSION}`,
+              "",
+              `Source: ${env.TAG} (${env.SOURCE_COMMIT}).`,
               "",
               `Built from ${env.BASE_TAG} (${env.BASE_COMMIT}) plus ${commits.length} Strata commit(s).`,
               "",

@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off
 import {
   EnvironmentId,
   ProviderInstanceId,
@@ -8,8 +9,9 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
-import type { Tool } from "effect/unstable/ai";
-import { createServer, type Server } from "node:http";
+import { McpSchema, McpServer, type Tool } from "effect/unstable/ai";
+import * as NodeHttp from "node:http";
+import * as Fiber from "effect/Fiber";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as StrataHostClient from "../../StrataHostClient.ts";
@@ -42,9 +44,14 @@ interface Received {
 /** A stand-in for Strata's listener: records every request and answers what the test scripted. */
 async function stubHost(
   answer: (received: Received) => { status: number; body: unknown },
-): Promise<{ url: string; received: Received[]; close: () => Promise<void>; server: Server }> {
+): Promise<{
+  url: string;
+  received: Received[];
+  close: () => Promise<void>;
+  server: NodeHttp.Server;
+}> {
   const received: Received[] = [];
-  const server = createServer((request, response) => {
+  const server = NodeHttp.createServer((request, response) => {
     const chunks: Buffer[] = [];
     request.on("data", (chunk: Buffer) => chunks.push(chunk));
     request.on("end", () => {
@@ -70,9 +77,12 @@ async function stubHost(
   };
 }
 
-const makeHarness = (env: NodeJS.ProcessEnv) =>
+const makeHarness = (
+  env: NodeJS.ProcessEnv,
+  options: Omit<StrataHostClient.StrataHostClientOptions, "env"> = {},
+) =>
   Effect.gen(function* () {
-    const client = StrataHostClient.layer({ env: () => env, timeoutMs: 2_000 });
+    const client = StrataHostClient.layer({ env: () => env, timeoutMs: 2_000, ...options });
     const toolkit = yield* StrataToolkit.pipe(
       Effect.provide(StrataToolkitHandlersLive.pipe(Layer.provide(client))),
     );
@@ -333,4 +343,171 @@ describe("task card handlers", () => {
       }
     }),
   );
+});
+
+describe("uncertain document action outcomes", () => {
+  for (const ending of ["lost-reply", "host-stop", "timeout"] as const) {
+    it.effect(`keeps the action ID through ${ending} after admission`, () =>
+      Effect.gen(function* () {
+        let admitted!: () => void, release!: () => void, committed!: () => void;
+        const admission = new Promise<void>((resolve) => {
+          admitted = resolve;
+        });
+        const gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const commit = new Promise<void>((resolve) => {
+          committed = resolve;
+        });
+        let effects = 0;
+        const server = NodeHttp.createServer((request, response) => {
+          request.resume();
+          request.on("end", () => {
+            admitted();
+            void (async () => {
+              if (ending === "host-stop") await gate;
+              effects++;
+              committed();
+              if (ending === "lost-reply") response.destroy();
+            })();
+          });
+        });
+        yield* Effect.promise(
+          () => new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve)),
+        );
+        const address = server.address();
+        if (!address || typeof address === "string") throw new Error("host did not bind");
+        const harness = yield* makeHarness(
+          { STRATA_HOST_URL: `http://127.0.0.1:${address.port}`, STRATA_HOST_TOKEN: "synthetic" },
+          { timeoutMs: ending === "timeout" ? 100 : 2_000 },
+        );
+        try {
+          const pending = yield* harness
+            .call("strata_act", { actionId: "original-action", entries: [{ verb: "comment" }] })
+            .pipe(Effect.flip, Effect.forkScoped);
+          yield* Effect.promise(() => admission);
+          if (ending === "host-stop") server.closeAllConnections();
+          const error = yield* Fiber.join(pending);
+          expect(error).toMatchObject({
+            _tag: "StrataOutcomeUncertainError",
+            actionId: "original-action",
+          });
+          expect(error.message).toContain('same actionId "original-action"');
+          expect(error.message).toContain("Do not create a new action ID");
+          expect(error.message).not.toContain("Propose the action");
+          if (ending === "host-stop") {
+            expect(effects).toBe(0);
+            release();
+          }
+          yield* Effect.promise(() => commit);
+          expect(effects).toBe(1);
+        } finally {
+          release();
+          server.closeAllConnections();
+          yield* Effect.promise(
+            () => new Promise<void>((resolve) => server.close(() => resolve())),
+          );
+        }
+      }),
+    );
+  }
+
+  it.effect("preserves uncertainty for a failed or malformed successful response body", () =>
+    Effect.gen(function* () {
+      for (const body of ["throws", "malformed"] as const) {
+        const fetch = (async () =>
+          new Response(
+            body === "throws"
+              ? new ReadableStream({
+                  start(controller) {
+                    controller.error(new Error("body connection lost"));
+                  },
+                })
+              : "not-json",
+            { status: 200 },
+          )) as typeof globalThis.fetch;
+        const harness = yield* makeHarness(
+          { STRATA_HOST_URL: "http://synthetic.invalid", STRATA_HOST_TOKEN: "synthetic" },
+          { fetch },
+        );
+        const error = yield* harness
+          .call("strata_act", { actionId: "body-action", entries: [] })
+          .pipe(Effect.flip);
+        expect(error).toMatchObject({
+          _tag: "StrataOutcomeUncertainError",
+          actionId: "body-action",
+        });
+        expect(error.message).toContain('same actionId "body-action"');
+      }
+    }),
+  );
+
+  it.effect("distinguishes an unsent action and an explicit refusal", () =>
+    Effect.gen(function* () {
+      const missing = yield* makeHarness({});
+      expect(
+        yield* missing.call("strata_act", { actionId: "unsent", entries: [] }).pipe(Effect.flip),
+      ).toMatchObject({ _tag: "StrataNotConnectedError" });
+      const host = yield* Effect.promise(() =>
+        stubHost(() => ({
+          status: 409,
+          body: {
+            ok: false,
+            error: { code: "NOT_LEAD", message: "The owner has not assigned the Lead." },
+          },
+        })),
+      );
+      try {
+        const refused = yield* makeHarness({
+          STRATA_HOST_URL: host.url,
+          STRATA_HOST_TOKEN: "synthetic",
+        });
+        const error = yield* refused
+          .call("strata_act", { actionId: "refused", entries: [] })
+          .pipe(Effect.flip);
+        expect(error).toMatchObject({ _tag: "StrataToolFailedError", code: "NOT_LEAD" });
+      } finally {
+        yield* Effect.promise(host.close);
+      }
+    }),
+  );
+});
+
+it.effect("returns same-ID uncertainty advice in the actual MCP tool error result", () => {
+  const host = StrataHostClient.layer({
+    env: () => ({ STRATA_HOST_URL: "http://synthetic.invalid", STRATA_HOST_TOKEN: "synthetic" }),
+    fetch: (async () => {
+      throw new Error("reply lost");
+    }) as typeof globalThis.fetch,
+  });
+  const registration = McpServer.toolkit(StrataToolkit).pipe(
+    Layer.provide(StrataToolkitHandlersLive),
+    Layer.provide(host),
+    Layer.provideMerge(McpServer.McpServer.layer),
+  );
+  const client = McpSchema.McpServerClient.of({
+    clientId: 1,
+    clientCapabilities: {},
+    clientInfo: { name: "strata-test", version: "1" },
+    protocolVersion: "2025-06-18",
+    initializePayload: {
+      protocolVersion: "2025-06-18",
+      capabilities: {},
+      clientInfo: { name: "strata-test", version: "1" },
+    },
+    getClient: Effect.die("unused"),
+  });
+  return Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const result = yield* server
+      .callTool({ name: "strata_act", arguments: { actionId: "wire-action", entries: [] } })
+      .pipe(
+        Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+        Effect.provideService(McpSchema.McpServerClient, client),
+      );
+    expect(result.isError).toBe(true);
+    expect(result.content).toEqual([
+      { type: "text", text: expect.stringContaining('same actionId "wire-action"') },
+    ]);
+  }).pipe(Effect.provide(registration));
 });

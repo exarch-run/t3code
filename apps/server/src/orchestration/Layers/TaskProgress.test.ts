@@ -1,8 +1,9 @@
+import { registerCodexRoute } from "../../strata/TaskProgressCodexRoute.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import * as NodeSqlite from "node:sqlite";
 import {
   CommandId,
   ProjectId,
@@ -13,6 +14,8 @@ import {
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { registerProgressBridge } from "../../strata/TaskProgressBridge.ts";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Option from "effect/Option";
@@ -69,7 +72,7 @@ function makeOrchestrationLayer(
           )
         : RepositoryIdentityResolver.layer,
     ),
-    Layer.provide(persistence),
+    Layer.provideMerge(persistence),
     Layer.provideMerge(ServerConfigLayer),
     Layer.provideMerge(settings),
     Layer.provideMerge(NodeServices.layer),
@@ -91,7 +94,8 @@ async function createOrchestrationSystem(
     readModel: () => runtime.runPromise(snapshotQuery.getSnapshot()),
     readThread: (threadId: ThreadId) =>
       runtime.runPromise(snapshotQuery.getThreadDetailById(threadId)),
-    run: <A, E>(effect: Effect.Effect<A, E, ServerSettingsService>) => runtime.runPromise(effect),
+    run: <A, E>(effect: Effect.Effect<A, E, ServerSettingsService | SqlClient.SqlClient>) =>
+      runtime.runPromise(effect),
     dispose: () => runtime.dispose(),
   };
 }
@@ -108,7 +112,7 @@ describe("task progress durable card", () => {
     const threadId = ThreadId.make("progress-thread"),
       projectId = ProjectId.make("progress-project");
     const execSql = (statement: string) => {
-      const connection = new DatabaseSync(database);
+      const connection = new NodeSqlite.DatabaseSync(database);
       try {
         connection.exec(statement);
       } finally {
@@ -189,6 +193,34 @@ describe("task progress durable card", () => {
         turnId: null,
       });
       expect((await thread())?.taskProgress).toBeUndefined();
+
+      const route = registerCodexRoute({ threadId, root: Effect.succeed("root-thread") });
+      try {
+        const stored = (await thread())?.taskProgressV2;
+        for (const input of [
+          [{ step: "Read", status: "pending" }],
+          '{"markdown":"Wrong shape"}',
+          7,
+          null,
+        ]) {
+          const result = await system.run(
+            route.handle({
+              tool: "strata_progress_card",
+              threadId: "root-thread",
+              turnId: "turn-1",
+              callId: "malformed",
+              arguments: input,
+            }),
+          );
+          expect(result.success).toBe(false);
+          expect(result.contentItems[0]).toMatchObject({
+            text: expect.stringContaining("arguments must be an object"),
+          });
+          expect((await thread())?.taskProgressV2).toEqual(stored);
+        }
+      } finally {
+        route.close();
+      }
 
       // A running turn attributes the write for version 1 readers.
       await session("start-1", "running", "turn-1");
@@ -307,6 +339,25 @@ describe("task progress durable card", () => {
       expect(latest?.taskProgressV2?.revision).toBe(10);
       expect(latest?.taskProgress?.runId).toBe("turn-2");
 
+      const clearingRoute = registerCodexRoute({ threadId, root: Effect.succeed("root-thread") });
+      try {
+        for (const input of [undefined, {}]) {
+          const result = await system.run(
+            clearingRoute.handle({
+              tool: "strata_progress_card",
+              threadId: "root-thread",
+              turnId: "turn-2",
+              callId: "clear",
+              arguments: input,
+            }),
+          );
+          expect(result.success).toBe(true);
+          expect((await thread())?.taskProgressV2?.card).toBeNull();
+        }
+      } finally {
+        clearingRoute.close();
+      }
+
       await system.run(
         system.engine.dispatch({
           type: "thread.delete",
@@ -408,7 +459,7 @@ describe("task progress durable card", () => {
       );
       await system.dispose();
       // What the earlier engine left behind: its table only, no canonical record.
-      const connection = new DatabaseSync(database);
+      const connection = new NodeSqlite.DatabaseSync(database);
       try {
         connection.exec("DELETE FROM strata_task_progress_v2");
         connection
@@ -428,7 +479,9 @@ describe("task progress durable card", () => {
               endedAt: now(),
             }),
           );
-        connection.exec("DELETE FROM effect_sql_migrations WHERE migration_id = 54");
+        connection.exec(
+          "INSERT INTO effect_sql_migrations SELECT * FROM strata_sql_migrations WHERE migration_id < 54; DROP TABLE strata_sql_migrations",
+        );
       } finally {
         connection.close();
       }
@@ -452,3 +505,103 @@ describe("task progress durable card", () => {
     }
   });
 });
+
+it.each([false, true])(
+  "acknowledges its committed write when the next write clears=%s before its read",
+  async (clear) => {
+    const system = await createOrchestrationSystem();
+    const threadId = ThreadId.make("race-thread"),
+      projectId = ProjectId.make("race-project");
+    try {
+      await system.run(
+        system.engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("race-project"),
+          projectId,
+          title: "Race",
+          workspaceRoot: process.cwd(),
+          createdAt: now(),
+        }),
+      );
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("race-thread"),
+          threadId,
+          projectId,
+          title: "Race",
+          modelSelection: { instanceId: ProviderInstanceId.make("claudeAgent"), model: "claude" },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt: now(),
+        }),
+      );
+      await system.run(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            let reached!: () => void, release!: () => void;
+            const committed = new Promise<void>((resolve) => {
+              reached = resolve;
+            });
+            const held = new Promise<void>((resolve) => {
+              release = resolve;
+            });
+            yield* registerProgressBridge(sql, (command) =>
+              system.engine.dispatch(command).pipe(
+                Effect.tap(() =>
+                  command.type === "thread.task-progress.write" && command.markdown === "A"
+                    ? Effect.promise(async () => {
+                        reached();
+                        await held;
+                      })
+                    : Effect.void,
+                ),
+              ),
+            );
+            yield* Effect.promise(async () => {
+              const a = system.run(
+                publishProgress(threadId, {
+                  markdown: "A",
+                  plan: [{ step: "A complete", status: "completed" }],
+                }),
+              );
+              try {
+                await committed;
+                const b = await system.run(
+                  publishProgress(
+                    threadId,
+                    clear
+                      ? {}
+                      : {
+                          markdown: "B",
+                          plan: [
+                            { step: "B pending", status: "pending" },
+                            { step: "B next", status: "pending" },
+                          ],
+                        },
+                  ),
+                );
+                expect(b).toMatchObject(
+                  clear
+                    ? { revision: null, steps: null }
+                    : { revision: 2, steps: { completed: 0, total: 2 } },
+                );
+                release();
+                expect(await a).toMatchObject({ revision: 1, steps: { completed: 1, total: 1 } });
+                const current = await system.run(readProgressCard(threadId));
+                expect(current?.markdown ?? null).toBe(clear ? null : "B");
+              } finally {
+                release();
+              }
+            });
+          }),
+        ),
+      );
+    } finally {
+      await system.dispose();
+    }
+  },
+);
