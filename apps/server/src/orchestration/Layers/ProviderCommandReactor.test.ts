@@ -3711,6 +3711,34 @@ describe("ProviderCommandReactor", () => {
 
     await Effect.runPromise(
       harness.engine.dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.make("cmd-user-input-requested-blocking"),
+        threadId: ThreadId.make("thread-1"),
+        activity: {
+          id: EventId.make("activity-user-input-requested-blocking"),
+          tone: "info",
+          kind: "user-input.requested",
+          summary: "User input requested",
+          payload: {
+            requestId: "user-input-request-1",
+            questions: [
+              {
+                id: "sandbox_mode",
+                header: "Sandbox",
+                question: "Which mode should be used?",
+                options: [{ label: "workspace-write", description: "" }],
+              },
+            ],
+          },
+          turnId: null,
+          createdAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
         type: "thread.user-input.respond",
         commandId: CommandId.make("cmd-user-input-respond"),
         threadId: ThreadId.make("thread-1"),
@@ -3730,6 +3758,76 @@ describe("ProviderCommandReactor", () => {
         sandbox_mode: "workspace-write",
       },
     });
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+  });
+
+  it("delivers an asynchronous answer as attributed content, never as a command", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const answer = '/compact\n\nquestion: not a label\n"quoted" and `fenced`';
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.make("cmd-user-input-requested-async"),
+        threadId: ThreadId.make("thread-1"),
+        activity: {
+          id: EventId.make("activity-user-input-requested-async"),
+          tone: "info",
+          kind: "user-input.requested",
+          summary: "User input requested",
+          payload: {
+            requestId: "codex-async:thread-1:item-1",
+            responseMode: "message",
+            questions: [
+              {
+                id: "0",
+                header: "Question",
+                question: "Where are keystrokes going missing?",
+                options: [],
+                allowCustomAnswer: true,
+              },
+            ],
+          },
+          turnId: null,
+          createdAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.user-input.respond",
+        commandId: CommandId.make("cmd-user-input-respond-async"),
+        threadId: ThreadId.make("thread-1"),
+        requestId: asApprovalRequestId("codex-async:thread-1:item-1"),
+        answers: { "0": answer },
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    await harness.drain();
+    const input = String(
+      (harness.sendTurn.mock.calls[0]?.[0] as { readonly input?: string } | undefined)?.input,
+    );
+    expect(input).toContain("answered the questions you asked earlier");
+    expect(JSON.parse(input.slice(input.indexOf("```json") + 7, input.lastIndexOf("```")))).toEqual(
+      {
+        requestId: "codex-async:thread-1:item-1",
+        answers: [{ questionId: "0", question: "Where are keystrokes going missing?", answer }],
+      },
+    );
+    expect(harness.compactThread).not.toHaveBeenCalled();
+    expect(harness.tryHandlePromptCommand).not.toHaveBeenCalled();
+    expect(harness.respondToUserInput).not.toHaveBeenCalled();
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === "thread-1");
+    const message = thread?.messages.find((entry) => entry.role === "user");
+    expect(message?.text).toBe(answer);
+    expect(message?.questionResponse?.answers[0]?.question).toBe(
+      "Where are keystrokes going missing?",
+    );
   });
 
   it("normalizes stale Codex approval callbacks without faking approval resolution", async () => {

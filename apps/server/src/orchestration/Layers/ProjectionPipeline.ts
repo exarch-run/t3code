@@ -1167,6 +1167,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             role: event.payload.role,
             text: nextText,
             ...(nextAttachments !== undefined ? { attachments: [...nextAttachments] } : {}),
+            ...(event.payload.questionResponse !== undefined
+              ? { questionResponse: event.payload.questionResponse }
+              : previousMessage?.questionResponse !== undefined
+                ? { questionResponse: previousMessage.questionResponse }
+                : {}),
             isStreaming: false,
             createdAt: previousMessage?.createdAt ?? event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
@@ -1373,6 +1378,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             if (
               Option.isSome(pendingMessage) &&
               pendingMessage.value.role === "user" &&
+              pendingMessage.value.questionResponse === undefined &&
               (pendingMessage.value.attachments?.length ?? 0) === 0 &&
               pendingMessage.value.text.trim().toLowerCase() === "/compact"
             ) {

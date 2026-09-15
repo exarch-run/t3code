@@ -107,6 +107,32 @@ it.layer(NodeServices.layer)("question attachment answers", (it) => {
       });
     }),
   );
+  it.effect("records a text-only blocking answer with its question, then the callback intent", () =>
+    Effect.gen(function* () {
+      const { attachmentsByQuestionId: _files, ...textOnly } = command;
+      const result = yield* decideOrchestrationCommand({
+        readModel,
+        command: { ...textOnly, answers: { q: "Use the spec in docs." } },
+        userInputActivity: request,
+      });
+      const events = Array.isArray(result) ? result : [result];
+      expect(events.map((event) => event.type)).toEqual([
+        "thread.activity-appended",
+        "thread.user-input-response-requested",
+      ]);
+      expect(events[0]?.payload).toMatchObject({
+        activity: {
+          id: "question-answer:answer",
+          kind: "user-input.answer-submitted",
+          payload: {
+            requestId,
+            answers: { q: "Use the spec in docs." },
+            questionTextById: { q: "Provide a spec" },
+          },
+        },
+      });
+    }),
+  );
   it.effect("rejects attachments for a resolved or unknown request", () =>
     Effect.gen(function* () {
       const result = yield* decideOrchestrationCommand({ readModel, command }).pipe(Effect.result);

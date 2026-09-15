@@ -6,6 +6,9 @@ import {
   ThreadLinkedPullRequest,
   UserInputRequestedPayload,
   isImportedAgentSessionMessageId,
+  questionResponseText,
+  type QuestionResponse,
+  type QuestionResponseAnswer,
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationReadModel,
@@ -1321,6 +1324,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           role: "user",
           text: command.message.text,
           attachments: command.message.attachments,
+          ...(command.message.questionResponse !== undefined
+            ? { questionResponse: command.message.questionResponse }
+            : {}),
           turnId: null,
           streaming: false,
           createdAt: command.createdAt,
@@ -1445,69 +1451,76 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         threadId: command.threadId,
       });
       const request = userInputActivity;
+      const requestPayload =
+        request?.kind === "user-input.requested"
+          ? decodeUserInputRequestedPayload(request.payload)
+          : Option.none();
+      if (!request || Option.isNone(requestPayload)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail:
+            request?.kind === "user-input.resolved"
+              ? "This question has already been answered."
+              : "This question is no longer pending.",
+        });
+      }
+      const questions = requestPayload.value.questions;
       const attachments = Object.values(command.attachmentsByQuestionId ?? {}).flat();
-      let questionTextById: Record<string, string> = {};
-      if (attachments.length > 0) {
-        const payload =
-          request?.kind === "user-input.requested"
-            ? decodeUserInputRequestedPayload(request.payload)
-            : Option.none();
-        if (Option.isNone(payload)) {
+      const questionTextById: Record<string, string> = Object.fromEntries(
+        questions.map((question) => [question.id, question.question]),
+      );
+      for (const questionId of Object.keys(command.attachmentsByQuestionId ?? {})) {
+        const question = questions.find((question) => question.id === questionId);
+        if (!question || question.allowCustomAnswer === false) {
           return yield* new OrchestrationCommandInvariantError({
             commandType: command.type,
-            detail:
-              request?.kind === "user-input.resolved"
-                ? "This question has already been answered."
-                : "This question is no longer pending.",
+            detail: "This question does not accept file references.",
           });
-        }
-        questionTextById = Object.fromEntries(
-          payload.value.questions.map((question) => [question.id, question.question]),
-        );
-        for (const questionId of Object.keys(command.attachmentsByQuestionId ?? {})) {
-          const question = payload.value.questions.find((question) => question.id === questionId);
-          if (!question || question.allowCustomAnswer === false) {
-            return yield* new OrchestrationCommandInvariantError({
-              commandType: command.type,
-              detail: "This question does not accept file references.",
-            });
-          }
         }
       }
-      if (
-        request &&
-        Predicate.isObject(request.payload) &&
-        request.payload.responseMode === "message"
-      ) {
-        const payload = decodeUserInputRequestedPayload(request.payload);
-        if (request.kind !== "user-input.requested" || Option.isNone(payload)) {
-          return yield* new OrchestrationCommandInvariantError({
-            commandType: command.type,
-            detail: "This question has already been answered.",
-          });
-        }
-        const replies: string[] = [];
-        for (const question of payload.value.questions) {
-          const answer = command.answers[question.id];
-          if (
-            typeof answer !== "string" ||
-            (answer.trim().length === 0 && !command.attachmentsByQuestionId?.[question.id]?.length)
-          ) {
+      if (requestPayload.value.responseMode === "message") {
+        const answers: Array<QuestionResponseAnswer> = [];
+        for (const question of questions) {
+          const raw = command.answers[question.id];
+          const answer =
+            typeof raw === "string"
+              ? raw
+              : Array.isArray(raw) && raw.every((value) => typeof value === "string")
+                ? (raw as ReadonlyArray<string>)
+                : undefined;
+          const questionAttachments = command.attachmentsByQuestionId?.[question.id] ?? [];
+          const answered =
+            typeof answer === "string"
+              ? answer.trim().length > 0
+              : (answer?.some((value) => value.trim().length > 0) ?? false);
+          if (answer === undefined || (!answered && questionAttachments.length === 0)) {
             return yield* new OrchestrationCommandInvariantError({
               commandType: command.type,
               detail: "Answer each question before sending.",
             });
           }
-          const questionAttachments = command.attachmentsByQuestionId?.[question.id] ?? [];
-          const attachmentLabels = questionAttachments
-            .map((attachment) => `Attached file: ${attachment.name} (${attachment.id})`)
-            .join("\n");
-          replies.push(
-            [`${question.question}\n${answer.trim()}`, attachmentLabels].filter(Boolean).join("\n"),
-          );
+          const labelFor = (value: string) =>
+            question.options.find((option) => option.value === value)?.label;
+          const label =
+            typeof answer === "string"
+              ? labelFor(answer)
+              : answer.map((value) => labelFor(value) ?? value);
+          const labelDiffers =
+            typeof answer === "string"
+              ? label !== undefined && label !== answer
+              : Array.isArray(label) && label.some((entry, index) => entry !== answer[index]);
+          answers.push({
+            questionId: question.id,
+            question: question.question,
+            answer,
+            ...(labelDiffers && label !== undefined ? { label } : {}),
+            ...(questionAttachments.length > 0 ? { attachments: questionAttachments } : {}),
+          });
         }
+        const questionResponse: QuestionResponse = { requestId: command.requestId, answers };
         // Commit the answer and its message together. The normal turn path
-        // steers a running agent or resumes an idle session.
+        // steers a running agent or resumes an idle session. The message's
+        // text is the owner's words alone; the questions ride beside them.
         return yield* decideCommandSequence({
           readModel,
           commands: [
@@ -1543,8 +1556,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               message: {
                 messageId: MessageId.make(`async-answer:${command.requestId}`),
                 role: "user",
-                text: replies.join("\n\n"),
+                text: questionResponseText(questionResponse),
                 attachments,
+                questionResponse,
               },
             },
           ],
@@ -1569,7 +1583,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           createdAt: command.createdAt,
         },
       };
-      if (attachments.length === 0) return responseEvent;
+      // The submission is history whether or not files ride along; the
+      // provider's own resolution proves acceptance separately.
       const historyEvent = yield* decideOrchestrationCommand({
         readModel,
         command: {

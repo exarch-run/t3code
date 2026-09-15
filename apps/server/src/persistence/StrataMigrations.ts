@@ -5,12 +5,14 @@ import SessionFiles from "./Migrations/051_ProjectionProjectsSessionFiles.ts";
 import Progress from "./Migrations/052_StrataTaskProgress.ts";
 import ProgressSeed from "./Migrations/053_StrataTaskProgressSeed.ts";
 import ProgressV2 from "./Migrations/054_StrataTaskProgressV2.ts";
+import QuestionResponse from "./Migrations/055_ProjectionThreadMessageQuestionResponse.ts";
 
 const entries = [
   [51, "ProjectionProjectsSessionFiles", SessionFiles],
   [52, "StrataTaskProgress", Progress],
   [53, "StrataTaskProgressSeed", ProgressSeed],
   [54, "StrataTaskProgressV2", ProgressV2],
+  [55, "ProjectionThreadMessageQuestionResponse", QuestionResponse],
 ] as const;
 const table = "strata_sql_migrations";
 interface Row {

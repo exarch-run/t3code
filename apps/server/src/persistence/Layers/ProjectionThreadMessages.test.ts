@@ -1,4 +1,5 @@
-import { MessageId, ThreadId, TurnId } from "@t3tools/contracts";
+import { ApprovalRequestId, MessageId, ThreadId, TurnId } from "@t3tools/contracts";
+import * as Option from "effect/Option";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -12,6 +13,40 @@ const layer = it.layer(
 );
 
 layer("ProjectionThreadMessageRepository", (it) => {
+  it.effect("keeps an answer record through an update that omits it", () =>
+    Effect.gen(function* () {
+      const repository = yield* ProjectionThreadMessageRepository;
+      const threadId = ThreadId.make("thread-question-response");
+      const messageId = MessageId.make("async-answer:request-1");
+      const questionResponse = {
+        requestId: ApprovalRequestId.make("request-1"),
+        answers: [{ questionId: "0", question: "Which release?", answer: ["one", "two"] }],
+      };
+      const base = {
+        messageId,
+        threadId,
+        turnId: null,
+        role: "user" as const,
+        text: "one, two",
+        isStreaming: false,
+        createdAt: "2026-02-28T19:05:06.000Z",
+        updatedAt: "2026-02-28T19:05:06.000Z",
+      };
+      yield* repository.upsert({ ...base, questionResponse });
+      yield* repository.upsert({ ...base, turnId: TurnId.make("turn-1") });
+      const stored = yield* repository.getByMessageId({ messageId });
+      assert.deepStrictEqual(Option.getOrThrow(stored), {
+        ...base,
+        turnId: TurnId.make("turn-1"),
+        questionResponse,
+      });
+      const plain = yield* repository.getByMessageId({
+        messageId: MessageId.make("missing"),
+      });
+      assert.isTrue(Option.isNone(plain));
+    }),
+  );
+
   it.effect("finds the latest live user-message time within one thread", () =>
     Effect.gen(function* () {
       const repository = yield* ProjectionThreadMessageRepository;

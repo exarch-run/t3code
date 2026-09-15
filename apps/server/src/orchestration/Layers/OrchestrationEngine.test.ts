@@ -213,6 +213,16 @@ describe("OrchestrationEngine", () => {
                     question: "What should it be named?",
                     options: [],
                   },
+                  {
+                    id: "2",
+                    header: "Question",
+                    question: "Which checks?",
+                    multiSelect: true,
+                    options: [
+                      { label: "First check", description: "", value: "first" },
+                      { label: "Second check", description: "", value: "second" },
+                    ],
+                  },
                 ],
               },
             },
@@ -253,7 +263,7 @@ describe("OrchestrationEngine", () => {
           commandId: CommandId.make("async-response"),
           threadId,
           requestId,
-          answers: { "0": "pnpm", "1": "Example" },
+          answers: { "0": "pnpm", "1": "Example", "2": ["first", "second"] },
           attachmentsByQuestionId: {
             "1": [
               {
@@ -276,6 +286,15 @@ describe("OrchestrationEngine", () => {
             }),
           ),
         ).rejects.toThrow("Answer each question before sending.");
+        await expect(
+          system.run(
+            system.engine.dispatch({
+              ...response,
+              commandId: CommandId.make("empty-selection"),
+              answers: { ...response.answers, "2": [] },
+            }),
+          ),
+        ).rejects.toThrow("Answer each question before sending.");
         await system.run(system.engine.dispatch(response));
         const after = await system.readModel();
         const userMessages = after.threads[0]?.messages.filter(
@@ -283,9 +302,27 @@ describe("OrchestrationEngine", () => {
         );
         expect(userMessages).toHaveLength(1);
         expect(userMessages?.[0]?.attachments).toEqual(response.attachmentsByQuestionId["1"]);
-        expect(userMessages?.[0]?.text).toBe(
-          "Which package manager?\npnpm\n\nWhat should it be named?\nExample\nAttached file: spec.txt (thread-1-00000000-0000-4000-8000-0000000000aa-txt)",
-        );
+        // The owner's words alone; the questions ride beside them, never inside them.
+        expect(userMessages?.[0]?.text).toBe("pnpm\n\nExample\n\nfirst, second");
+        const expectedQuestionResponse = {
+          requestId,
+          answers: [
+            { questionId: "0", question: "Which package manager?", answer: "pnpm" },
+            {
+              questionId: "1",
+              question: "What should it be named?",
+              answer: "Example",
+              attachments: response.attachmentsByQuestionId["1"],
+            },
+            {
+              questionId: "2",
+              question: "Which checks?",
+              answer: ["first", "second"],
+              label: ["First check", "Second check"],
+            },
+          ],
+        };
+        expect(userMessages?.[0]?.questionResponse).toEqual(expectedQuestionResponse);
         expect(
           after.threads[0]?.activities.find((activity) => activity.kind === "user-input.resolved")
             ?.payload,
@@ -325,6 +362,19 @@ describe("OrchestrationEngine", () => {
             }),
           ),
         ).rejects.toThrow("This question has already been answered.");
+        const reloaded = Option.getOrThrow(await system.readThread(threadId));
+        expect(
+          reloaded.messages.find((message) => message.role === "user")?.questionResponse,
+        ).toEqual(expectedQuestionResponse);
+        await expect(
+          system.run(
+            system.engine.dispatch({
+              ...response,
+              commandId: CommandId.make("reply-to-unknown-request"),
+              requestId: ApprovalRequestId.make("codex-async:never-asked"),
+            }),
+          ),
+        ).rejects.toThrow("This question is no longer pending.");
       } finally {
         await system.dispose();
         await NodeFSP.rm(directory, { recursive: true, force: true });

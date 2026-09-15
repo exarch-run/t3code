@@ -670,7 +670,13 @@ const SCRIPT_TERMINAL_ROWS = 30;
 
 function isCompactCommandMessage(message: ChatMessage): boolean {
   const text = message.text.trim().toLowerCase();
-  return message.role === "user" && text === "/compact" && !message.attachments?.length;
+  // An answer to the agent's questions is content, whatever it says.
+  return (
+    message.role === "user" &&
+    message.questionResponse === undefined &&
+    text === "/compact" &&
+    !message.attachments?.length
+  );
 }
 
 type ChatViewProps =

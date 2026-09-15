@@ -398,6 +398,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
         entry.type === "message" &&
         entry.message.role === "user" &&
         ((entry.message.attachments?.length ?? 0) > 0 ||
+          entry.message.questionResponse !== undefined ||
           entry.message.text.trim().toLowerCase() !== "/compact"),
     ) ||
     (Boolean(props.loadEarlier) && props.selectedThread.latestUserMessageAt !== null);

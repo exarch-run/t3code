@@ -7,11 +7,13 @@ import {
   ProviderDriverKind,
   type ProjectId,
   type OrchestrationSession,
+  type QuestionResponse,
   ThreadId,
   type ProviderSession,
   type RuntimeMode,
   type TurnId,
 } from "@t3tools/contracts";
+import { formatQuestionResponseForProvider } from "../questionResponseInput.ts";
 import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
 import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@t3tools/shared/git";
 import * as Cache from "effect/Cache";
@@ -83,6 +85,7 @@ function toNonEmptyProviderInput(value: string | undefined): string | undefined 
 
 const isCompactCommandMessage = (message: ThreadTitleMessage): boolean =>
   message.role === "user" &&
+  message.questionResponse === undefined &&
   (message.attachments?.length ?? 0) === 0 &&
   message.text.trim().toLowerCase() === "/compact";
 function mapProviderSessionStatusToOrchestrationStatus(
@@ -119,6 +122,8 @@ type ThreadTitleMessage = {
   readonly role: "user" | "assistant" | "system";
   readonly text: string;
   readonly attachments?: ReadonlyArray<ChatAttachment> | undefined;
+  /** An answer to the agent's questions is content, never a command. */
+  readonly questionResponse?: QuestionResponse | undefined;
 };
 
 function formatThreadTitleSection(message: ThreadTitleMessage): string | undefined {
@@ -1258,6 +1263,9 @@ const make = Effect.gen(function* () {
       );
 
     const authCommandHandled = yield* Effect.gen(function* () {
+      if (message.questionResponse !== undefined) {
+        return false;
+      }
       // Native account commands belong to the thread's existing provider session.
       const instanceId =
         thread.session?.providerInstanceId ??
@@ -1434,7 +1442,10 @@ const make = Effect.gen(function* () {
     }
     const sendTurnRequest = yield* buildSendTurnRequestForThread({
       threadId: event.payload.threadId,
-      messageText: message.text,
+      messageText:
+        message.questionResponse !== undefined
+          ? formatQuestionResponseForProvider(message.questionResponse)
+          : message.text,
       ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
       ...(event.payload.modelSelection !== undefined
         ? { modelSelection: event.payload.modelSelection }

@@ -239,6 +239,7 @@ export function useThreadComposerState() {
     const latestCompactMessage = selectedThreadDetail?.messages.findLast(
       (message) =>
         message.role === "user" &&
+        message.questionResponse === undefined &&
         message.text.trim().toLowerCase() === "/compact" &&
         !message.attachments?.length,
     );

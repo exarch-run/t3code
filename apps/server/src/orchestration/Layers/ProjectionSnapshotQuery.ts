@@ -6,6 +6,7 @@ import {
   AgentSessionImportSource,
   ApprovalRequestId,
   ChatAttachment,
+  QuestionResponse,
   CheckpointRef,
   IsoDateTime,
   MessageId,
@@ -118,6 +119,7 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
   Struct.assign({
     isStreaming: Schema.Number,
     attachments: Schema.NullOr(Schema.fromJsonString(Schema.Array(ChatAttachment))),
+    questionResponse: Schema.NullOr(Schema.fromJsonString(QuestionResponse)),
   }),
 );
 const ProjectionTurnStartMessageDbRowSchema = ProjectionThreadMessageDbRowSchema.mapFields(
@@ -686,6 +688,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           role,
           text,
           attachments_json AS "attachments",
+          question_response_json AS "questionResponse",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -1281,6 +1284,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         role,
         text,
         attachments_json AS "attachments",
+        question_response_json AS "questionResponse",
         is_streaming AS "isStreaming",
         created_at AS "createdAt",
         updated_at AS "updatedAt",
@@ -1293,6 +1297,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             AND (
               LOWER(TRIM(other.text, ${MESSAGE_TRIM_WHITESPACE})) != '/compact'
               OR COALESCE(json_array_length(other.attachments_json), 0) > 0
+              OR other.question_response_json IS NOT NULL
             )
         ) AS "hasOtherUserMessages"
       FROM projection_thread_messages
@@ -1313,6 +1318,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           role,
           text,
           attachments_json AS "attachments",
+          question_response_json AS "questionResponse",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -1691,6 +1697,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           role,
           text,
           attachments_json AS "attachments",
+          question_response_json AS "questionResponse",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -2100,6 +2107,9 @@ pending_approval_requests AS (
                   role: row.role,
                   text: row.text,
                   ...(row.attachments !== null ? { attachments: row.attachments } : {}),
+                  ...(row.questionResponse !== null
+                    ? { questionResponse: row.questionResponse }
+                    : {}),
                   turnId: row.turnId,
                   streaming: row.isStreaming === 1,
                   createdAt: row.createdAt,
@@ -3208,6 +3218,7 @@ pending_approval_requests AS (
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
         ...(row.attachments !== null ? { attachments: row.attachments } : {}),
+        ...(row.questionResponse !== null ? { questionResponse: row.questionResponse } : {}),
       },
       hasOtherUserMessages: row.hasOtherUserMessages === 1,
     }));
@@ -3467,10 +3478,11 @@ pending_approval_requests AS (
             createdAt: row.createdAt,
             updatedAt: row.updatedAt,
           };
-          if (row.attachments !== null) {
-            return Object.assign(message, { attachments: row.attachments });
-          }
-          return message;
+          return Object.assign(
+            message,
+            row.attachments !== null ? { attachments: row.attachments } : {},
+            row.questionResponse !== null ? { questionResponse: row.questionResponse } : {},
+          );
         }),
         proposedPlans: proposedPlanRows.map(mapProposedPlanRow),
         activities,

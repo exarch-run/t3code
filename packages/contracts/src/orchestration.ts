@@ -383,6 +383,42 @@ export const UserInputAttachmentAnswerPayload = Schema.Struct({
   attachmentsByQuestionId: UserInputAttachments,
 });
 export type UserInputAttachmentAnswerPayload = typeof UserInputAttachmentAnswerPayload.Type;
+
+/**
+ * One answer to one asynchronous native question, frozen from the pending
+ * request: the question as the agent asked it, the exact owner answer, and
+ * the files the owner attached to that answer. `label` is present only when
+ * the selected option's label differs from the value the provider defined.
+ */
+export const QuestionResponseAnswer = Schema.Struct({
+  questionId: Schema.String,
+  question: Schema.String,
+  answer: Schema.Union([Schema.String, Schema.Array(Schema.String)]),
+  label: Schema.optional(Schema.Union([Schema.String, Schema.Array(Schema.String)])),
+  attachments: Schema.optional(
+    Schema.Array(Schema.Union([ChatImageAttachment, ChatFileAttachment])),
+  ),
+});
+export type QuestionResponseAnswer = typeof QuestionResponseAnswer.Type;
+
+/**
+ * An owner's reply to asynchronous agent questions, kept on the user message
+ * that carries it. The message's `text` holds only the owner's words; the
+ * question is context here so no reader can mistake it for the owner's.
+ */
+export const QuestionResponse = Schema.Struct({
+  requestId: ApprovalRequestId,
+  answers: Schema.Array(QuestionResponseAnswer),
+});
+export type QuestionResponse = typeof QuestionResponse.Type;
+
+/** The owner's words alone: each answer in question order, array selections joined with commas, blank when the owner sent only files. */
+export function questionResponseText(response: QuestionResponse): string {
+  return response.answers
+    .map((entry) => (Array.isArray(entry.answer) ? entry.answer.join(", ") : entry.answer))
+    .filter((text) => text.length > 0)
+    .join("\n\n");
+}
 const UploadChatAttachment = Schema.Union([UploadChatImageAttachment]);
 export type UploadChatAttachment = typeof UploadChatAttachment.Type;
 
@@ -525,6 +561,7 @@ export const OrchestrationMessage = Schema.Struct({
   role: OrchestrationMessageRole,
   text: Schema.String,
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
+  questionResponse: Schema.optional(QuestionResponse),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
   createdAt: IsoDateTime,
@@ -1254,6 +1291,8 @@ export const ThreadTurnStartCommand = Schema.Struct({
     role: Schema.Literal("user"),
     text: Schema.String,
     attachments: Schema.Array(ChatAttachment),
+    /** Set by the engine when this message answers asynchronous questions; clients cannot send one. */
+    questionResponse: Schema.optional(QuestionResponse),
   }),
   modelSelection: Schema.optional(ModelSelection),
   titleSeed: Schema.optional(TrimmedNonEmptyString),
@@ -1781,6 +1820,7 @@ export const ThreadMessageSentPayload = Schema.Struct({
   role: OrchestrationMessageRole,
   text: Schema.String,
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
+  questionResponse: Schema.optional(QuestionResponse),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
   createdAt: IsoDateTime,

@@ -2092,6 +2092,7 @@ const make = Effect.gen(function* () {
         );
         if (
           pendingMessage?.role === "user" &&
+          pendingMessage.questionResponse === undefined &&
           (pendingMessage.attachments?.length ?? 0) === 0 &&
           pendingMessage.text.trim().toLowerCase() === "/compact"
         ) {
