@@ -1,5 +1,7 @@
 import {
   PreviewAutomationClickInput,
+  PreviewAutomationEmulateInput,
+  PreviewAutomationGestureInput,
   PreviewAutomationError,
   PreviewAutomationEvaluateInput,
   PreviewAutomationNavigateInput,
@@ -87,7 +89,7 @@ const PreviewNavigateTool = safeBrowserTool(
 const PreviewResizeTool = safeBrowserTool(
   Tool.make("preview_resize", {
     description:
-      "Resize a collaborative browser tab, optionally selected by tabId. Use {mode:'fill'}, {mode:'freeform',width:1024,height:768}, or {mode:'preset',preset:'iphone-12-pro',orientation:'portrait'}. This changes CSS layout breakpoints without changing the desktop browser user agent.",
+      "Resize a collaborative browser tab, optionally selected by tabId. Use {mode:'fill'}, {mode:'freeform',width:1024,height:768}, or {mode:'preset',preset:'iphone-12-pro',orientation:'portrait'}. On Strata, phone presets also select Chromium mobile identity and touch. A loaded page retains its applied identity until preview_emulate with reload=true. Other hosts may provide dimensions only.",
     parameters: PreviewAutomationResizeInput,
     success: PreviewAutomationResizeResult,
     failure: PreviewAutomationError,
@@ -234,11 +236,34 @@ const PreviewRecordingStopTool = safeBrowserTool(
   }).annotate(Tool.Title, "Stop browser recording"),
 );
 
+const PreviewEmulateTool = browserTool(
+  Tool.make("preview_emulate", {
+    description:
+      "Configure a Chromium device and testing conditions on a supporting host. Open a blank tab, configure it, then navigate for first-request identity. Loaded pages return pending until reload=true explicitly applies identity changes. Fit clears all overrides; resetTests preserves the device. Generic tests do not simulate Safari or an operating-system keyboard.",
+    parameters: PreviewAutomationEmulateInput,
+    success: PreviewAutomationStatus,
+    failure: PreviewAutomationError,
+    dependencies,
+  }),
+);
+const PreviewGestureTool = browserTool(
+  Tool.make("preview_gesture", {
+    description:
+      "Send a native touch gesture to a touch-enabled browser tab. Coordinates are viewport CSS pixels. Use preview_click for located taps. Swipe requires end; pinch requires scale (0.25–4). Gestures stop on takeover or navigation.",
+    parameters: PreviewAutomationGestureInput,
+    success: PreviewActionResult,
+    failure: PreviewAutomationError,
+    dependencies,
+  }),
+);
+
 export const PreviewToolkit = Toolkit.make(
   PreviewStatusTool,
   PreviewOpenTool,
   PreviewNavigateTool,
   PreviewResizeTool,
+  PreviewEmulateTool,
+  PreviewGestureTool,
   PreviewSetAppearanceTool,
   PreviewSnapshotTool,
   PreviewClickTool,
@@ -256,6 +281,8 @@ export const PreviewStandardToolkit = Toolkit.make(
   PreviewOpenTool,
   PreviewNavigateTool,
   PreviewResizeTool,
+  PreviewEmulateTool,
+  PreviewGestureTool,
   PreviewSetAppearanceTool,
   PreviewClickTool,
   PreviewTypeTool,

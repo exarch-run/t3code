@@ -294,7 +294,9 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
     () => ({
       clientId: automationClientId,
       environmentId,
-      supportedOperations: [...PREVIEW_AUTOMATION_OPERATIONS],
+      supportedOperations: PREVIEW_AUTOMATION_OPERATIONS.filter(
+        (operation) => operation !== "emulate" && operation !== "gesture",
+      ),
     }),
     [automationClientId, environmentId],
   );
@@ -556,6 +558,11 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
             );
             return await currentStatus(threadRef, ready.tabId);
           }
+          case "emulate":
+          case "gesture":
+            throw new Error(
+              "Device testing requires a Strata browser host. This browser host does not support the requested operation.",
+            );
           case "resize": {
             const ready = await requireReadyTab();
             const input = request.input as PreviewAutomationResizeInput;
