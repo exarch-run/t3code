@@ -1,3 +1,6 @@
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import { readSessionFiles } from "../provider/SessionFiles.ts";
 import {
   ModelSelection,
   OrchestrationV2AppThread,
@@ -72,42 +75,34 @@ export const layer: Layer.Layer<RuntimePolicyV2> = Layer.succeed(RuntimePolicyV2
 export const layerFromProjectRepository: Layer.Layer<
   RuntimePolicyV2,
   never,
-  ProjectionProjects.ProjectionProjectRepository
+  ProjectionProjects.ProjectionProjectRepository | FileSystem.FileSystem | Path.Path
 > = Layer.effect(
   RuntimePolicyV2,
   Effect.gen(function* () {
     const projects = yield* ProjectionProjects.ProjectionProjectRepository;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
     return RuntimePolicyV2.of({
       resolve: Effect.fn("RuntimePolicyV2.resolve")(function* (input) {
-        const cwd =
-          input.thread.worktreePath ??
-          (yield* projects.getById({ projectId: input.thread.projectId }).pipe(
-            Effect.mapError(
-              (cause) =>
-                new RuntimePolicyResolveError({
-                  projectId: input.thread.projectId,
-                  providerInstanceId: input.modelSelection.instanceId,
-                  cause,
-                }),
-            ),
-            Effect.flatMap(
-              Option.match({
-                onNone: () =>
-                  Effect.fail(
-                    new RuntimePolicyResolveError({
-                      projectId: input.thread.projectId,
-                      providerInstanceId: input.modelSelection.instanceId,
-                      cause: "Project not found.",
-                    }),
-                  ),
-                onSome: (project) => Effect.succeed(project.workspaceRoot),
-              }),
-            ),
-          ));
+        const project = yield* projects.getById({ projectId: input.thread.projectId }).pipe(
+          Effect.mapError(cause => new RuntimePolicyResolveError({ projectId: input.thread.projectId,
+            providerInstanceId: input.modelSelection.instanceId, cause })),
+          Effect.map(Option.getOrNull),
+        );
+        const cwd = input.thread.worktreePath ?? project?.workspaceRoot;
+        if (cwd === undefined) return yield* new RuntimePolicyResolveError({
+          projectId: input.thread.projectId, providerInstanceId: input.modelSelection.instanceId,
+          cause: "Project not found.",
+        });
+        const sessionContext = yield* readSessionFiles(cwd, project?.sessionFiles ?? []).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+        );
         return ProviderAdapterV2RuntimePolicy.make({
           runtimeMode: input.thread.runtimeMode,
           interactionMode: input.thread.interactionMode,
           cwd,
+          ...(sessionContext === undefined ? {} : { sessionContext }),
         });
       }),
     });

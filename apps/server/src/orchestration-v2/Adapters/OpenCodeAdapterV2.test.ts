@@ -494,6 +494,7 @@ describe("OpenCodeAdapterV2", () => {
       const scope = yield* Scope.make();
       const nativeEvents = asyncEventStream();
       const calls: string[] = [];
+      const reading = promiseGate<void>();
       yield* makeOpenCodeRuntimeHarness("release", "root", {
         event: {
           subscribe: async (_input: unknown, options: { signal: AbortSignal }) => {
@@ -501,7 +502,26 @@ describe("OpenCodeAdapterV2", () => {
               calls.push("stream.close");
               nativeEvents.close();
             });
-            return { stream: nativeEvents.stream };
+            return {
+              stream: {
+                [Symbol.asyncIterator]() {
+                  const iterator = nativeEvents.stream[Symbol.asyncIterator]();
+                  return {
+                    next: () => {
+                      reading.resolve();
+                      return iterator.next();
+                    },
+                    return: async () => {
+                      // The SDK uses an async generator. Its return waits for an
+                      // in-flight network read, which only the abort can release.
+                      calls.push("iterator.return");
+                      assert.isTrue(options.signal.aborted);
+                      return { done: true as const, value: undefined };
+                    },
+                  };
+                },
+              },
+            };
           },
         },
         session: {
@@ -516,6 +536,7 @@ describe("OpenCodeAdapterV2", () => {
           },
         },
       }).pipe(Effect.provideService(Scope.Scope, scope));
+      yield* Effect.promise(() => reading.promise);
       yield* Scope.close(scope, Exit.void);
       assert.deepEqual(calls, [
         "abort:root",
@@ -523,6 +544,7 @@ describe("OpenCodeAdapterV2", () => {
         "abort:child",
         "children:child",
         "stream.close",
+        "iterator.return",
       ]);
     }).pipe(Effect.provide(idAllocatorLayer), Effect.scoped),
   );
@@ -2003,15 +2025,21 @@ describe("OpenCodeAdapterV2", () => {
       const unused = (operation: string) => () => Effect.die(`${operation} is not used`);
       const runtime: OpenCodeRuntimeShape = {
         startOpenCodeServerProcess: unused("startOpenCodeServerProcess"),
-        connectToOpenCodeServer: () =>
-          Effect.succeed({
+        connectToOpenCodeServer: (input) => {
+          assert.equal(input.serverPassword, "synthetic-server-password");
+          return Effect.succeed({
+            serverPassword: "synthetic-server-password",
             url: "test://opencode",
             version: "test",
             exitCode: null,
             external: true,
-          }),
+          });
+        },
         runOpenCodeCommand: unused("runOpenCodeCommand"),
-        createOpenCodeSdkClient: () => fakeClient,
+        createOpenCodeSdkClient: (input) => {
+          assert.equal(input.serverPassword, "synthetic-server-password");
+          return fakeClient;
+        },
         loadOpenCodeInventory: unused("loadOpenCodeInventory"),
         loadInventoryFromCli: unused("loadInventoryFromCli"),
         loadOpenCodeSkills: unused("loadOpenCodeSkills"),
@@ -2022,7 +2050,7 @@ describe("OpenCodeAdapterV2", () => {
       const modelSelection = { instanceId, model: "default" };
       const adapter = makeOpenCodeAdapterV2({
         instanceId,
-        settings: OPENCODE_TEST_SETTINGS,
+        settings: { ...OPENCODE_TEST_SETTINGS, serverPassword: "synthetic-server-password" },
         environment: {},
         runtime,
         idAllocator,

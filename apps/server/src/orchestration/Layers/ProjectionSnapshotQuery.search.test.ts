@@ -100,3 +100,22 @@ it.effect("search uses v2 visibility while legacy transcripts are still lazy", (
     );
   }).pipe(Effect.provide(TestLayer)),
 );
+
+
+it.effect("project shell reads retain configured session files and explicit clears", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const query = yield* ProjectionSnapshotQuery;
+    const now = "2026-09-15T00:00:00.000Z";
+    yield* sql`
+      INSERT INTO projection_projects (
+        project_id, title, workspace_root, default_model_selection_json,
+        scripts_json, session_files_json, created_at, updated_at, deleted_at
+      ) VALUES ('project:instructions', 'Instructions', '/tmp/instructions', NULL,
+        '[]', '["NOTES.md"]', ${now}, ${now}, NULL)
+    `;
+    assert.deepEqual((yield* query.getProjectShellsWithoutEnrichment())[0]?.sessionFiles, ["NOTES.md"]);
+    yield* sql`UPDATE projection_projects SET session_files_json = '[]' WHERE project_id = 'project:instructions'`;
+    assert.deepEqual((yield* query.getProjectShellsWithoutEnrichment())[0]?.sessionFiles, []);
+  }).pipe(Effect.provide(TestLayer)),
+);

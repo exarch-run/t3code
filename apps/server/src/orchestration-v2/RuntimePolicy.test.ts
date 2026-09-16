@@ -1,3 +1,4 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   type ModelSelection,
@@ -56,6 +57,7 @@ function makeThread(input: {
 }
 
 const TestLayer = layerFromProjectRepository.pipe(
+  Layer.provide(NodeServices.layer),
   Layer.provide(
     Layer.mock(ProjectionProjects.ProjectionProjectRepository)({
       getById: () =>

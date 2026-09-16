@@ -1,3 +1,4 @@
+import { formatQuestionResponseForProvider } from "../orchestration/questionResponseInput.ts";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
   CommandId,
@@ -185,7 +186,9 @@ export const layer: Layer.Layer<
               providerAuth.tryHandlePromptCommand({
                 instanceId: authInstanceId,
                 text: projectComposerContextForProvider({
-                  text: message.text,
+                  text: message.questionResponse
+                    ? formatQuestionResponseForProvider(message.questionResponse)
+                    : message.text,
                   records: message.context?.records ?? [],
                 }),
                 hasAttachments: false,
@@ -354,30 +357,95 @@ export const layer: Layer.Layer<
           Effect.catchCause(() => Effect.succeed(false)),
         );
 
-      const resolvedRuntimePolicy = yield* runtimePolicy.resolve({
-        thread: projection.thread,
-        modelSelection: run.modelSelection,
-      });
+      // Provider startup happens before RunExecutionService owns finalization.
+      // Persist a terminal result here, guarded against Stop or a newer attempt.
+      const failStartup = (cause: unknown) =>
+        Effect.gen(function* () {
+          const now = yield* DateTime.now;
+          const item: OrchestrationV2TurnItem = {
+            id: idAllocator.derive.runSignalTurnItem({ runId, signal: "provider-start-failed" }),
+            threadId: projection.thread.id,
+            runId,
+            nodeId: rootNode.id,
+            providerThreadId: providerThread.id,
+            providerTurnId: null,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal:
+              Math.max(
+                0,
+                ...projection.turnItems
+                  .filter((item) => item.runId === runId)
+                  .map((item) => item.ordinal),
+              ) + 1,
+            type: "error",
+            title: "Could not start the provider",
+            failure: makeProviderFailure({ cause }),
+            status: "failed",
+            startedAt: now,
+            completedAt: now,
+            updatedAt: now,
+          };
+          const payloads = [
+            { type: "turn-item.updated", payload: item },
+            { type: "run.updated", payload: { ...run, status: "failed", completedAt: now } },
+            {
+              type: "run-attempt.updated",
+              payload: { ...attempt, status: "failed", completedAt: now },
+            },
+            { type: "node.updated", payload: { ...rootNode, status: "failed", completedAt: now } },
+          ] as const;
+          const events = yield* Effect.forEach(payloads, (event) =>
+            Effect.gen(function* () {
+              return {
+                ...event,
+                id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
+                threadId: projection.thread.id,
+                runId,
+                nodeId: rootNode.id,
+                providerInstanceId: run.providerInstanceId,
+                occurredAt: now,
+              } satisfies OrchestrationV2DomainEvent;
+            }),
+          );
+          yield* eventSink.writeIfRunCurrent({
+            threadId: projection.thread.id,
+            runId,
+            activeAttemptId: attempt.id,
+            expectedStatus: "starting",
+            events,
+          });
+        });
+
+      const resolvedRuntimePolicy = yield* runtimePolicy
+        .resolve({
+          thread: projection.thread,
+          modelSelection: run.modelSelection,
+        })
+        .pipe(Effect.tapError(failStartup));
       const existingSessionProjection = projection.providerSessions.find(
         (candidate) => candidate.id === providerSessionId,
       );
-      const session = yield* providerSessions.open({
-        threadId: projection.thread.id,
-        providerSessionId,
-        modelSelection: run.modelSelection,
-        runtimePolicy: resolvedRuntimePolicy,
-        ...(existingSessionProjection === undefined
-          ? {}
-          : { resumeFromSession: existingSessionProjection }),
-        ...(providerThread.nativeThreadRef?.nativeId == null
-          ? {}
-          : { initialNativeThreadId: providerThread.nativeThreadRef.nativeId }),
-        ...(providerThread.nativeMetadata?.itemIdentityVersion === undefined
-          ? {}
-          : {
-              initialProviderItemIdentityVersion: providerThread.nativeMetadata.itemIdentityVersion,
-            }),
-      });
+      const session = yield* providerSessions
+        .open({
+          threadId: projection.thread.id,
+          providerSessionId,
+          modelSelection: run.modelSelection,
+          runtimePolicy: resolvedRuntimePolicy,
+          ...(existingSessionProjection === undefined
+            ? {}
+            : { resumeFromSession: existingSessionProjection }),
+          ...(providerThread.nativeThreadRef?.nativeId == null
+            ? {}
+            : { initialNativeThreadId: providerThread.nativeThreadRef.nativeId }),
+          ...(providerThread.nativeMetadata?.itemIdentityVersion === undefined
+            ? {}
+            : {
+                initialProviderItemIdentityVersion:
+                  providerThread.nativeMetadata.itemIdentityVersion,
+              }),
+        })
+        .pipe(Effect.tapError(failStartup));
       let effectiveHandoffs = handoffs;
       const loadedProviderThread = yield* Effect.gen(function* () {
         if (nativeForkTransfer !== undefined) {
@@ -511,7 +579,7 @@ export const layer: Layer.Layer<
           ],
         });
         return replacement;
-      });
+      }).pipe(Effect.tapError(failStartup));
       if (!(yield* isCurrentAttemptInStatus("starting"))) {
         return;
       }
@@ -702,13 +770,17 @@ export const layer: Layer.Layer<
           text:
             effectiveHandoffs.length === 0
               ? projectComposerContextForProvider({
-                  text: message.text,
+                  text: message.questionResponse
+                    ? formatQuestionResponseForProvider(message.questionResponse)
+                    : message.text,
                   records: message.context?.records ?? [],
                 })
               : providerMessageWithContextHandoffs({
                   handoffs: effectiveHandoffs,
                   userText: projectComposerContextForProvider({
-                    text: message.text,
+                    text: message.questionResponse
+                      ? formatQuestionResponseForProvider(message.questionResponse)
+                      : message.text,
                     records: message.context?.records ?? [],
                   }),
                 }),

@@ -155,7 +155,8 @@ it.effect("claims question uploads and passes readable paths through the V2 requ
     });
     expect(path).not.toBeNull();
     expect(NodeFS.readFileSync(path!)).toEqual(Buffer.from([1, 2, 3]));
-    expect(command.answers?.q).toEqual([
+    expect(command.answers?.q).toEqual(["Selected option"]);
+    expect(command.answersForProvider?.q).toEqual([
       "Selected option",
       `Attached image "screen.png": "${path}"`,
     ]);

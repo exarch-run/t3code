@@ -1,3 +1,4 @@
+import { ProjectSessionFiles } from "./projectSessionFiles.ts";
 import * as Schema from "effect/Schema";
 
 import { IsoDateTime, ProjectId, TrimmedNonEmptyString } from "./baseSchemas.ts";
@@ -22,6 +23,7 @@ export const OrchestrationProjectShell = Schema.Struct({
   faviconPath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   projectIcon: Schema.optional(Schema.NullOr(ProjectIconOverride)),
   scripts: Schema.Array(ProjectScript),
+  sessionFiles: Schema.optional(ProjectSessionFiles),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });

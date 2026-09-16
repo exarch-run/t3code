@@ -58,3 +58,9 @@ export * from "./worktreeMcp.ts";
 export * from "./resourceTelemetry.ts";
 export * from "./rpc.ts";
 export * from "./worktreeSetup.ts";
+
+export * from "./taskProgress.ts";
+export * from "./previewDevice.ts";
+export * from "./projectSessionFiles.ts";
+
+export * from "./questionResponse.ts";

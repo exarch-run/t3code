@@ -1,3 +1,4 @@
+import { ProjectSessionFiles } from "./projectSessionFiles.ts";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import { RepositoryIdentity, ThreadEnvMode } from "./environment.ts";
@@ -139,6 +140,7 @@ export const Project = Schema.Struct({
   // Opt-in because background sync performs network I/O and may move the checkout.
   autoPull: Schema.optional(Schema.Boolean),
   scripts: Schema.Array(ProjectScript),
+  sessionFiles: Schema.optional(ProjectSessionFiles),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   deletedAt: Schema.NullOr(IsoDateTime),
@@ -167,6 +169,7 @@ export const ProjectCreatePayload = Schema.Struct({
   createWorkspaceRootIfMissing: Schema.optional(Schema.Boolean),
   defaultModelSelection: Schema.optional(Schema.NullOr(ModelSelection)),
   scripts: Schema.optional(Schema.Array(ProjectScript)),
+  sessionFiles: Schema.optional(ProjectSessionFiles),
 });
 export type ProjectCreatePayload = typeof ProjectCreatePayload.Type;
 
@@ -179,6 +182,7 @@ export const ProjectUpdatePayload = Schema.Struct({
   faviconPath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   defaultThreadEnvMode: Schema.optional(Schema.NullOr(ThreadEnvMode)),
   scripts: Schema.optional(Schema.Array(ProjectScript)),
+  sessionFiles: Schema.optional(ProjectSessionFiles),
 });
 export type ProjectUpdatePayload = typeof ProjectUpdatePayload.Type;
 

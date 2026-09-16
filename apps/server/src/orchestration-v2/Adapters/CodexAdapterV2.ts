@@ -1,3 +1,4 @@
+import { CODEX_TASK_PROGRESS_TOOLS, CODEX_SUBAGENT_WRITE_REFUSED, registerCodexRoute } from "../../strata/TaskProgressCodexRoute.ts";
 import {
   mcpToolPresentation,
   type McpToolPresentation,
@@ -668,12 +669,13 @@ export function buildCodexTurnStartParams(input: {
     const serviceTier = getCodexServiceTierOptionValue(input.modelSelection);
     const developerInstructions =
       input.hasT3Mcp !== true
-        ? undefined
+        ? input.runtimePolicy.sessionContext
         : buildCodexDeveloperInstructions(
             input.runtimePolicy.interactionMode,
             {
               model: input.modelSelection.model,
               reasoningEffort: effort ?? "medium",
+              sessionContext: input.runtimePolicy.sessionContext,
             },
             {
               browser: input.browserToolsAvailable ?? true,
@@ -1587,6 +1589,22 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           settings: adapterOptions.settings,
           environment: adapterOptions.environment,
         });
+        const progressRoutes = new Map<string, ReturnType<typeof registerCodexRoute>>();
+        const registerProgressThread = (threadId: ThreadId, nativeId: string) => {
+          progressRoutes.get(nativeId)?.close();
+          progressRoutes.set(nativeId, registerCodexRoute({ threadId, root: Effect.succeed(nativeId) }));
+        };
+        yield* Effect.addFinalizer(() => Effect.sync(() => {
+          for (const route of progressRoutes.values()) route.close();
+          progressRoutes.clear();
+        }));
+        yield* client.handleServerRequest("item/tool/call", payload => {
+          const route = progressRoutes.get(payload.threadId);
+          return route ? route.handle(payload) : Effect.succeed({
+            success: false,
+            contentItems: [{ type: "inputText" as const, text: CODEX_SUBAGENT_WRITE_REFUSED }],
+          });
+        });
         const initialized = yield* Ref.make(false);
         const ensureInitialized = Effect.gen(function* () {
           const alreadyInitialized = yield* Ref.get(initialized);
@@ -2362,6 +2380,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           readonly prompt: string;
           readonly title: string | null;
           readonly model: string | null;
+          readonly effort?: string;
           readonly ordinal: number;
           readonly emitInitialPrompt: boolean;
         }) =>
@@ -2427,6 +2446,8 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               prompt: input.prompt,
               title: input.title,
               model: input.model,
+              toolUseId: input.nativeToolCallId,
+              ...(input.effort === undefined ? {} : { effort: input.effort }),
               status: "running",
               result: null,
               startedAt: now,
@@ -2598,6 +2619,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 prompt: input.item.prompt ?? "",
                 title: null,
                 model,
+                ...(input.item.reasoningEffort == null ? {} : { effort: input.item.reasoningEffort }),
                 ordinal: index + 1,
                 emitInitialPrompt: true,
               });
@@ -5014,14 +5036,17 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           ensureThread: (threadInput) =>
             ensureInitialized.pipe(
               Effect.andThen(
-                client.request(
-                  "thread/start",
-                  codexThreadRuntimeParams({
+                client.raw.request("thread/start", {
+                  ...codexThreadRuntimeParams({
                     threadId: threadInput.threadId,
                     modelSelection: threadInput.modelSelection,
                     runtimePolicy: threadInput.runtimePolicy,
                   }),
-                ),
+                  dynamicTools: CODEX_TASK_PROGRESS_TOOLS,
+                }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({
+                  thread: Schema.Struct({ id: Schema.String, createdAt: Schema.Number,
+                    updatedAt: Schema.Number, forkedFromId: Schema.optionalKey(Schema.NullOr(Schema.String)) }),
+                })))),
               ),
               Effect.map((response): OrchestrationV2ProviderThread =>
                 providerThreadFromCodexThread({
@@ -5033,6 +5058,10 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                   thread: response.thread,
                 }),
               ),
+              Effect.tap(thread => Effect.sync(() => {
+                if (thread.appThreadId !== null && thread.nativeThreadRef?.nativeId)
+                  registerProgressThread(thread.appThreadId, thread.nativeThreadRef.nativeId);
+              })),
               Effect.mapError(
                 (cause) =>
                   new ProviderAdapterEnsureThreadError({
@@ -5065,6 +5094,8 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 ),
                 Effect.flatMap(decodeCodexResumeMetadata),
               );
+              const appThreadId = threadInput.threadId ?? threadInput.providerThread.appThreadId;
+              if (appThreadId !== null) registerProgressThread(appThreadId, response.thread.id);
               return {
                 ...threadInput.providerThread,
                 providerSessionId: input.providerSessionId,

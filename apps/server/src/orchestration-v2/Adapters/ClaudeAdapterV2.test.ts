@@ -4156,6 +4156,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           status: "completed",
           output_file: "/tmp/task-wake-subagent.output",
           summary: SUBAGENT_SUMMARY,
+          usage: { total_tokens: 1234, tool_uses: 5, duration_ms: 2500 },
           uuid: "00000000-0000-4000-8000-000000000202",
           session_id: WAKE_NATIVE_SESSION,
         });
@@ -4200,6 +4201,26 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             attemptId: RunAttemptId.make("attempt-claude-wake-6a"),
             text: "Spawn a background subagent and stop.",
             attachments: [],
+          }),
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "assistant",
+            uuid: "launch-metadata",
+            session_id: WAKE_NATIVE_SESSION,
+            parent_tool_use_id: null,
+            message: {
+              role: "assistant",
+              content: [
+                {
+                  type: "tool_use",
+                  id: SUBAGENT_TOOL_USE_ID,
+                  name: "Agent",
+                  input: { model: "haiku", effort: "high" },
+                },
+              ],
+            },
           }),
         );
         yield* Queue.offer(harness.sdkMessages, subagentTaskStarted);
@@ -4255,6 +4276,15 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         const finalSubagent = subagentEvents().at(-1)?.subagent;
         assert.equal(finalSubagent?.status, "completed");
         assert.equal(finalSubagent?.result, SUBAGENT_SUMMARY);
+        assert.deepEqual(finalSubagent?.usage, {
+          total_tokens: 1234,
+          tool_uses: 5,
+          duration_ms: 2500,
+        });
+        assert.equal(finalSubagent?.toolUseId, SUBAGENT_TOOL_USE_ID);
+        assert.equal(finalSubagent?.role, "general-purpose");
+        assert.equal(finalSubagent?.model, "haiku");
+        assert.equal(finalSubagent?.effort, "high");
         assert.equal(finalSubagent?.runId, subagentEvents()[0]?.subagent.runId);
         const subagentNodeEvents = harness.events.filter(
           (event): event is Extract<ProviderAdapterV2Event, { type: "node.updated" }> =>
@@ -5851,6 +5881,13 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           const finalSubagent = subagentEvents().at(-1)?.subagent;
           assert.equal(finalSubagent?.status, "completed");
           assert.equal(finalSubagent?.result, SUBAGENT_SUMMARY);
+          assert.deepEqual(finalSubagent?.usage, {
+            total_tokens: 1234,
+            tool_uses: 5,
+            duration_ms: 2500,
+          });
+          assert.equal(finalSubagent?.toolUseId, SUBAGENT_TOOL_USE_ID);
+          assert.equal(finalSubagent?.role, "general-purpose");
           assert.equal(finalSubagent?.runId, subagentEvents()[0]?.subagent.runId);
           const subagentNodeEvents = events.filter(
             (event): event is Extract<ProviderAdapterV2Event, { type: "node.updated" }> =>

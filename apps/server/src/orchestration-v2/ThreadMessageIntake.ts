@@ -85,7 +85,7 @@ export const dispatchCommand = Effect.fn("ThreadMessageIntake.dispatchCommand")(
     return yield* threads
       .dispatch({
         ...command,
-        answers: prepared.answers,
+        answersForProvider: prepared.answers,
         attachmentsByQuestionId: prepared.attachmentsByQuestionId,
       })
       .pipe(

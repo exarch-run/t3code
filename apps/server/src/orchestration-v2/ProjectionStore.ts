@@ -715,6 +715,8 @@ type ShellThreadRow = {
   readonly activity_run_started_at: string | null;
   readonly last_error: string | null;
   readonly pending_request_payload_json: string | null;
+  readonly has_pending_approvals: number;
+  readonly has_pending_user_input: number;
   readonly latest_user_message_at: string | null;
   readonly has_actionable_proposed_plan: number;
   readonly item_count: number;
@@ -1140,6 +1142,7 @@ export function threadShellFromProjection(
     id: projection.thread.id,
     projectId: projection.thread.projectId,
     title: projection.thread.title,
+    ...(projection.thread.taskProgressV2 === undefined ? {} : { taskProgressV2: projection.thread.taskProgressV2 }),
     providerInstanceId: projection.thread.providerInstanceId,
     modelSelection: projection.thread.modelSelection,
     runtimeMode: projection.thread.runtimeMode,
@@ -1171,6 +1174,8 @@ export function threadShellFromProjection(
     activityRunStartedAt: activityRun?.startedAt ?? activityRun?.requestedAt ?? null,
     status: latestRun?.status ?? "idle",
     lastError: providerSession?.lastError ?? null,
+    hasPendingApprovals: projection.runtimeRequests.some(request => request.status === "pending" && request.kind !== "user_input"),
+    hasPendingUserInput: projection.runtimeRequests.some(request => request.status === "pending" && request.kind === "user_input"),
     pendingRuntimeRequest:
       pendingRuntimeRequest === null
         ? null
@@ -1260,6 +1265,8 @@ type ShellThreadState = {
   readonly activityRunStatus: ShellActivityRunStatus | null;
   readonly activityRunStartedAt: DateTime.Utc | null;
   readonly lastError: string | null;
+  readonly hasPendingApprovals: boolean;
+  readonly hasPendingUserInput: boolean;
   readonly pendingRuntimeRequest: OrchestrationV2ThreadProjection["runtimeRequests"][number] | null;
   readonly latestUserMessageAt: DateTime.Utc | null;
   readonly hasActionableProposedPlan: boolean;
@@ -1368,6 +1375,9 @@ function shellFromState(input: {
     modelSelection: input.state.thread.modelSelection,
     runtimeMode: input.state.thread.runtimeMode,
     interactionMode: input.state.thread.interactionMode,
+    ...(input.state.thread.taskProgressV2 === undefined
+      ? {}
+      : { taskProgressV2: input.state.thread.taskProgressV2 }),
     branch: input.state.thread.branch,
     worktreePath: input.state.thread.worktreePath,
     pullRequests: threadPullRequestsOf(input.state.thread),
@@ -1395,6 +1405,8 @@ function shellFromState(input: {
     activityRunStartedAt: input.state.activityRunStartedAt,
     status: input.state.latestRunStatus,
     lastError: input.state.lastError,
+    hasPendingApprovals: input.state.hasPendingApprovals,
+    hasPendingUserInput: input.state.hasPendingUserInput,
     pendingRuntimeRequest:
       input.state.pendingRuntimeRequest === null
         ? null
@@ -3986,6 +3998,16 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 ORDER BY request.created_at DESC, request.runtime_request_id DESC
                 LIMIT 1
               ) AS pending_request_payload_json,
+              EXISTS (
+                SELECT 1 FROM orchestration_v2_projection_runtime_requests request
+                WHERE request.thread_id = t.thread_id AND request.status = 'pending'
+                  AND json_extract(request.payload_json, '$.kind') <> 'user_input'
+              ) AS has_pending_approvals,
+              EXISTS (
+                SELECT 1 FROM orchestration_v2_projection_runtime_requests request
+                WHERE request.thread_id = t.thread_id AND request.status = 'pending'
+                  AND json_extract(request.payload_json, '$.kind') = 'user_input'
+              ) AS has_pending_user_input,
               (
                 SELECT message.updated_at
                 FROM orchestration_v2_projection_messages message
@@ -4321,6 +4343,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               : null,
           lastError: row.last_error,
           pendingRuntimeRequest,
+          hasPendingApprovals: row.has_pending_approvals === 1,
+          hasPendingUserInput: row.has_pending_user_input === 1,
           latestUserMessageAt:
             row.latest_user_message_at === null
               ? null

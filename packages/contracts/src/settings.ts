@@ -1125,6 +1125,7 @@ export const ServerSettings = Schema.Struct({
       Effect.succeed(Schema.decodeUnknownSync(StorageCleanupSettings)({})),
     ),
   ),
+  enableTaskProgress: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   responseStreamingMode: ResponseStreamingMode.pipe(
     Schema.withDecodingDefault(Effect.succeed("paragraph" as const)),
   ),
@@ -1495,6 +1496,7 @@ export const ServerSettingsPatch = Schema.Struct({
       logsAfterDays: Schema.optionalKey(StorageRetentionDays),
     }),
   ),
+  enableTaskProgress: Schema.optionalKey(Schema.Boolean),
   // Server settings
   responseStreamingMode: Schema.optionalKey(ResponseStreamingMode),
   enableProviderUpdateChecks: Schema.optionalKey(Schema.Boolean),

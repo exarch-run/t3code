@@ -144,6 +144,8 @@ function makeLocalCommandHarness(input: {
   readonly previousNativeSession?: boolean;
   readonly previousMessages?: ReadonlyArray<string>;
   readonly logoutFailure?: string;
+  readonly startupFailure?: boolean;
+  readonly stopDuringStartup?: boolean;
 }) {
   const now = DateTime.makeUnsafe("2026-09-04T12:00:00Z");
   const threadId = ThreadId.make("thread-native-account-command");
@@ -316,7 +318,21 @@ function makeLocalCommandHarness(input: {
     updatedAt: now,
   };
   const events: Array<OrchestrationV2DomainEvent> = [];
-  const open = vi.fn(() => Effect.die("A local command must not open a native session."));
+  const open = vi.fn(() => {
+    if (!input.startupFailure) return Effect.die("A local command must not open a native session.");
+    if (input.stopDuringStartup)
+      projection = {
+        ...projection,
+        runs: projection.runs.map((run) => ({ ...run, status: "interrupted" })),
+      };
+    return Effect.fail(
+      new ProviderSessionManager.ProviderSessionOpenError({
+        instanceId: newInstanceId,
+        providerSessionId,
+        cause: "Synthetic provider unavailable",
+      }),
+    );
+  });
   const startRootRun = vi.fn(() => Effect.die("A local command must not start a native turn."));
   const tryHandlePromptCommand = vi.fn(() =>
     input.logoutFailure === undefined
@@ -359,7 +375,7 @@ function makeLocalCommandHarness(input: {
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({ open }),
         Layer.mock(ProviderAuthService)({ tryHandlePromptCommand }),
         Layer.mock(RunExecutionService.RunExecutionServiceV2)({ startRootRun }),
-        Layer.mock(RuntimePolicy.RuntimePolicyV2)({}),
+        Layer.mock(RuntimePolicy.RuntimePolicyV2)({ resolve: () => Effect.succeed({} as never) }),
       ),
     ),
   );
@@ -457,6 +473,41 @@ for (const previousMessages of [[], ["/compact", " /COMPACT "]]) {
             },
           },
         ]);
+      }),
+  );
+}
+
+for (const stopDuringStartup of [false, true]) {
+  effectIt.effect(
+    `provider startup failure terminalizes only the current starting run (stopped=${stopDuringStartup})`,
+    () =>
+      Effect.gen(function* () {
+        const harness = makeLocalCommandHarness({
+          text: "Start work",
+          startupFailure: true,
+          stopDuringStartup,
+        });
+        const result = yield* harness.start.pipe(Effect.result);
+        expect(result._tag).toBe("Failure");
+        expect(harness.startRootRun).not.toHaveBeenCalled();
+        const projection = harness.projection();
+        if (stopDuringStartup) {
+          expect(projection.runs.at(-1)?.status).toBe("interrupted");
+          expect(harness.events).toEqual([]);
+        } else {
+          expect(projection.runs.at(-1)?.status).toBe("failed");
+          expect(projection.attempts[0]?.status).toBe("failed");
+          expect(projection.nodes[0]?.status).toBe("failed");
+          expect(projection.turnItems).toMatchObject([
+            {
+              type: "error",
+              status: "failed",
+              failure: { message: expect.stringContaining("Failed to open provider instance") },
+            },
+          ]);
+          yield* harness.start;
+          expect(harness.open).toHaveBeenCalledTimes(1);
+        }
       }),
   );
 }

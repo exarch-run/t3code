@@ -1206,6 +1206,7 @@ const makeWsRpcLayer = (
               otlpMetricsEnabled: config.otlpMetricsUrl !== undefined,
             },
             settings,
+            taskProgress: { version: 1 as const, supportedVersions: [2], providers: providers.map(provider => provider.driver), newChatsOnly: false, enabled: settings.enableTaskProgress },
             shellResumeCompletionMarker: true,
             ...(fileManagerRevealKind === undefined
               ? {}

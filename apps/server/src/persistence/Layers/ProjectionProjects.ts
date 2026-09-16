@@ -22,9 +22,18 @@ const ProjectionProjectDbRow = ProjectionProject.mapFields(
     autoPull: Schema.Number,
     projectIcon: Schema.NullOr(Schema.fromJsonString(ProjectIconOverride)),
     scripts: Schema.fromJsonString(Schema.Array(ProjectScript)),
+    sessionFiles: Schema.optional(
+      Schema.NullOr(Schema.fromJsonString(Schema.Array(Schema.String))),
+    ),
   }),
 );
 type ProjectionProjectDbRow = typeof ProjectionProjectDbRow.Type;
+
+/** A null column reads back as an absent field, so rows from before the column decode as projects without session files. */
+function fromDbRow(row: ProjectionProjectDbRow): ProjectionProject {
+  const { sessionFiles, ...rest } = row;
+  return { ...rest, autoPull: row.autoPull === 1, ...(sessionFiles ? { sessionFiles } : {}) };
+}
 
 const makeProjectionProjectRepository = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -43,6 +52,7 @@ const makeProjectionProjectRepository = Effect.gen(function* () {
           favicon_path,
           project_icon_json,
           scripts_json,
+          session_files_json,
           created_at,
           updated_at,
           deleted_at
@@ -57,6 +67,7 @@ const makeProjectionProjectRepository = Effect.gen(function* () {
           ${row.faviconPath ?? null},
           ${row.projectIcon ? JSON.stringify(row.projectIcon) : null},
           ${JSON.stringify(row.scripts)},
+          ${row.sessionFiles ? JSON.stringify(row.sessionFiles) : null},
           ${row.createdAt},
           ${row.updatedAt},
           ${row.deletedAt}
@@ -71,6 +82,7 @@ const makeProjectionProjectRepository = Effect.gen(function* () {
           favicon_path = excluded.favicon_path,
           project_icon_json = excluded.project_icon_json,
           scripts_json = excluded.scripts_json,
+          session_files_json = excluded.session_files_json,
           created_at = excluded.created_at,
           updated_at = excluded.updated_at,
           deleted_at = excluded.deleted_at
@@ -92,6 +104,7 @@ const makeProjectionProjectRepository = Effect.gen(function* () {
           favicon_path AS "faviconPath",
           project_icon_json AS "projectIcon",
           scripts_json AS "scripts",
+          session_files_json AS "sessionFiles",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
           deleted_at AS "deletedAt"
@@ -115,6 +128,7 @@ const makeProjectionProjectRepository = Effect.gen(function* () {
           favicon_path AS "faviconPath",
           project_icon_json AS "projectIcon",
           scripts_json AS "scripts",
+          session_files_json AS "sessionFiles",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
           deleted_at AS "deletedAt"
@@ -139,13 +153,13 @@ const makeProjectionProjectRepository = Effect.gen(function* () {
 
   const getById: ProjectionProjectRepositoryShape["getById"] = (input) =>
     getProjectionProjectRow(input).pipe(
-      Effect.map(Option.map((row) => ({ ...row, autoPull: row.autoPull === 1 }))),
+      Effect.map(Option.map((row) => fromDbRow(row))),
       Effect.mapError(toPersistenceSqlError("ProjectionProjectRepository.getById:query")),
     );
 
   const listAll: ProjectionProjectRepositoryShape["listAll"] = () =>
     listProjectionProjectRows().pipe(
-      Effect.map((rows) => rows.map((row) => ({ ...row, autoPull: row.autoPull === 1 }))),
+      Effect.map((rows) => rows.map((row) => fromDbRow(row))),
       Effect.mapError(toPersistenceSqlError("ProjectionProjectRepository.listAll:query")),
     );
 

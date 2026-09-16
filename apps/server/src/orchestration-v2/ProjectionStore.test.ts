@@ -692,6 +692,19 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
             resolvedAt: null,
           },
         });
+        yield* projectionStore.apply({
+          id: EventId.make("event:bounded-node-history:question"), type: "runtime-request.updated", threadId, runId,
+          nodeId: requestNodeId, driver, occurredAt: now,
+          payload: { id: RuntimeRequestId.make("request:bounded-node-history:question"), nodeId: requestNodeId,
+            providerTurnId: null, nativeRequestRef: null, kind: "user_input", status: "pending",
+            responseCapability: { type: "message" }, createdAt: now, resolvedAt: null },
+        });
+        const shell = yield* projectionStore.getThreadShell(threadId);
+        assert.isTrue(shell?.hasPendingApprovals);
+        assert.isTrue(shell?.hasPendingUserInput);
+        const listed = (yield* projectionStore.getShellSnapshot()).threads.find(row => row.id === threadId);
+        assert.isTrue(listed?.hasPendingApprovals);
+        assert.isTrue(listed?.hasPendingUserInput);
         const snapshot = yield* projectionStore.getThreadSnapshotWindow(threadId, { rowLimit: 75 });
         assert.lengthOf(snapshot.projection.visibleTurnItems, 75);
         assert.lengthOf(snapshot.projection.nodes, 79);
@@ -700,7 +713,7 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
         assert.isTrue(retained.has(parentNodeId));
         assert.isTrue(retained.has(liveNodeId));
         assert.isTrue(retained.has(requestNodeId));
-        assert.lengthOf(snapshot.projection.runtimeRequests, 1);
+        assert.lengthOf(snapshot.projection.runtimeRequests, 2);
         assert.isFalse(retained.has(NodeId.make("node:bounded-node-history:1")));
         for (const row of snapshot.projection.visibleTurnItems)
           assert.isTrue(retained.has(row.item.nodeId!));

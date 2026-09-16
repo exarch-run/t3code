@@ -1,3 +1,4 @@
+import { CODEX_TASK_PROGRESS_TOOLS } from "../../strata/TaskProgressCodexRoute.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CommandId,
@@ -478,6 +479,21 @@ describe("CodexAdapterV2 runtime policy", () => {
       });
 
       assert.isUndefined(params.collaborationMode);
+    }),
+  );
+
+  it.effect("delivers project instructions with the T3 MCP server disabled", () =>
+    Effect.gen(function* () {
+      const params = yield* buildCodexTurnStartParams({
+        nativeThreadId: "native-project-context",
+        codexInput: [{ type: "text", text: "Continue" }],
+        runtimePolicy: { runtimeMode: "full-access", interactionMode: "default", cwd: null,
+          sessionContext: "<session_files>Project standing instructions.</session_files>" },
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+        hasT3Mcp: false,
+      });
+      assert.equal(params.collaborationMode?.settings.developer_instructions,
+        "<session_files>Project standing instructions.</session_files>");
     }),
   );
 
@@ -1325,7 +1341,7 @@ function codexReplayPreamble(input: {
     {
       type: "expect_outbound",
       label: "thread/start",
-      frame: { id: 2, method: "thread/start", params: {} },
+      frame: { id: 2, method: "thread/start", params: { dynamicTools: CODEX_TASK_PROGRESS_TOOLS } },
     },
     {
       type: "emit_inbound",
@@ -4951,7 +4967,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     },
   });
 
-  const resumeSubagentTranscript = makeCodexReplayTranscript({
+  const resumeSubagentTranscript = (collaborationCall: boolean) => makeCodexReplayTranscript({
     scenario: RESUME_SCENARIO,
     entries: [
       ...codexReplayPreamble({
@@ -4965,7 +4981,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         frame: {
           method: "item/completed",
           params: {
-            item: {
+            item: collaborationCall ? {
+              type: "collabAgentToolCall", id: "call-codex-resume-spawn", tool: "spawnAgent", status: "completed",
+              senderThreadId: RESUME_NATIVE_THREAD, receiverThreadIds: [RESUME_CHILD_THREAD],
+              prompt: "Review changes", model: "gpt-5.6", reasoningEffort: "high", agentsStates: {},
+            } : {
               type: "subAgentActivity",
               id: "call-codex-resume-spawn",
               kind: "started",
@@ -5041,10 +5061,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     ],
   });
 
-  it.effect("preserves a subagent result across a trailing empty final and resume", () =>
+  for (const collaborationCall of [false, true]) it.effect(`preserves a subagent result across a trailing empty final and resume, collaboration call ${collaborationCall}`, () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const harness = yield* makeCodexReplayHarness(resumeSubagentTranscript);
+        const harness = yield* makeCodexReplayHarness(resumeSubagentTranscript(collaborationCall));
         const now = yield* DateTime.now;
 
         yield* harness.runtime.startTurn(
@@ -5072,6 +5092,8 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         const firstCompletion = settledUpdates[settledUpdates.length - 1];
         assert.equal(firstCompletion?.subagent.status, "completed");
         assert.equal(firstCompletion?.subagent.result, "CODEX_FIRST_DONE");
+        assert.equal(firstCompletion?.subagent.toolUseId, "call-codex-resume-spawn");
+        if (collaborationCall) assert.equal(firstCompletion?.subagent.effort, "high");
         assert.isFalse(yield* harness.hasPendingBackgroundWork);
         const settledUpdateCount = settledUpdates.length;
 

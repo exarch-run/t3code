@@ -1001,14 +1001,15 @@ export function makeOpenCodeAdapterV2(options: OpenCodeAdapterV2Options): Provid
           binaryPath: options.settings.binaryPath,
           directory: cwd,
           serverUrl: options.settings.serverUrl,
+          ...(options.settings.serverPassword
+            ? { serverPassword: options.settings.serverPassword }
+            : {}),
           environment: options.environment,
         });
         const client = runtime.createOpenCodeSdkClient({
           baseUrl: connection.url,
           directory: cwd,
-          ...(connection.external && options.settings.serverPassword
-            ? { serverPassword: options.settings.serverPassword }
-            : {}),
+          ...(connection.serverPassword ? { serverPassword: connection.serverPassword } : {}),
         });
 
         const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
@@ -2785,10 +2786,6 @@ export function makeOpenCodeAdapterV2(options: OpenCodeAdapterV2Options): Provid
         const subscription = yield* sdkCall("event.subscribe", {}, () =>
           client.event.subscribe(undefined, { signal: abortController.signal }),
         );
-        yield* Scope.addFinalizer(
-          scope,
-          Effect.sync(() => abortController.abort()),
-        );
         yield* Stream.fromAsyncIterable(
           subscription.stream,
           (cause) =>
@@ -2822,6 +2819,14 @@ export function makeOpenCodeAdapterV2(options: OpenCodeAdapterV2Options): Provid
             }),
           ),
           Effect.forkIn(scope),
+        );
+
+        // Scope finalizers run in reverse order. Abort the network read before
+        // interrupting the consumer: the SDK generator's return waits for that
+        // read and otherwise prevents the abort finalizer from ever running.
+        yield* Scope.addFinalizer(
+          scope,
+          Effect.sync(() => abortController.abort()),
         );
 
         if (!connection.external && connection.exitCode !== null) {
@@ -3324,6 +3329,7 @@ export function makeOpenCodeAdapterV2(options: OpenCodeAdapterV2Options): Provid
                 buildRuntimeInstructions({
                   harness: "OpenCode",
                   model: turnInput.modelSelection.model,
+                  sessionContext: turnInput.runtimePolicy.sessionContext,
                 }),
               ]
                 .filter(Boolean)

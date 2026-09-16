@@ -6327,6 +6327,7 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
             text: buildRuntimeInstructions({
               harness: flavor.runtimeHarness ?? driver,
               model: turnInput.modelSelection.model,
+              sessionContext: turnInput.runtimePolicy.sessionContext,
             }),
           });
           return { prompt, instructionState: text === messageText ? undefined : instructionState };

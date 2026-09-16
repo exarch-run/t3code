@@ -8,6 +8,7 @@
  * schema is always up to date before the application starts.
  */
 
+import { runStrataMigrations } from "./StrataMigrations.ts";
 import * as Migrator from "effect/unstable/sql/Migrator";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -197,5 +198,6 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
       "Database migration history diverges from this build; recorded migration ids are skipped, not reconciled by name.",
     ).pipe(Effect.annotateLogs({ divergent }));
   }
+  if (toMigrationInclusive === undefined) yield* runStrataMigrations;
   return executedMigrations;
 });

@@ -121,6 +121,24 @@ it("requires matching saved native state for an unfinished root run", () => {
     assert.isUndefined(restartContinuationRun(invalid as OrchestrationV2ThreadProjection));
 });
 
+it("uses the live turn to identify work on a ready shared session", () => {
+  const projection = makeProjection();
+  const ready = {
+    ...projection,
+    providerSessions: [{ ...projection.providerSessions[0]!, status: "ready" as const }],
+  };
+  assert.equal(restartContinuationRun(ready)?.id, runId);
+  assert.isUndefined(restartContinuationRun({ ...ready, providerTurns: [] }));
+  for (const status of ["stopped", "error", "starting"] as const) {
+    assert.isUndefined(
+      restartContinuationRun({
+        ...ready,
+        providerSessions: [{ ...ready.providerSessions[0]!, status }],
+      }),
+    );
+  }
+});
+
 it("recovers an admitted continuation after another crash before provider start", () => {
   const projection = makeProjection();
   const starting = {

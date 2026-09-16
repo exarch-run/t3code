@@ -1,3 +1,4 @@
+import { ProjectSessionFiles } from "./projectSessionFiles.ts";
 import * as Schema from "effect/Schema";
 
 import {
@@ -53,6 +54,7 @@ export const ApplicationProjectCreatedPayload = Schema.Struct({
   faviconPath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   projectIcon: Schema.optional(Schema.NullOr(ProjectIconOverride)),
   scripts: Schema.Array(ProjectScript),
+  sessionFiles: Schema.optional(ProjectSessionFiles),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -70,6 +72,7 @@ export const ApplicationProjectMetaUpdatedPayload = Schema.Struct({
   faviconPath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   projectIcon: Schema.optional(Schema.NullOr(ProjectIconOverride)),
   scripts: Schema.optional(Schema.Array(ProjectScript)),
+  sessionFiles: Schema.optional(ProjectSessionFiles),
   updatedAt: IsoDateTime,
 });
 export type ApplicationProjectMetaUpdatedPayload = typeof ApplicationProjectMetaUpdatedPayload.Type;
