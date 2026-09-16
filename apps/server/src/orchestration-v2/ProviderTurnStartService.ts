@@ -479,10 +479,21 @@ export const layer: Layer.Layer<
       });
       const { isCurrentAttemptInStatus } = runControls;
 
-      // Provider startup happens before RunExecutionService owns finalization.
+      // Session and execution setup can fail before the turn loop owns finalization.
       // Persist a terminal result here, guarded against Stop or a newer attempt.
-      const failStartup = (cause: unknown) =>
+      const failStartup = (cause: unknown, expectedStatus: "starting" | "running" = "starting") =>
         Effect.gen(function* () {
+          const current = yield* projectionStore.getThreadProjection(projection.thread.id);
+          const currentRun = current.runs.find((candidate) => candidate.id === runId);
+          const currentAttempt = current.attempts.find((candidate) => candidate.id === attempt.id);
+          const currentNode = current.nodes.find((candidate) => candidate.id === rootNode.id);
+          if (
+            currentRun?.activeAttemptId !== attempt.id ||
+            currentRun.status !== expectedStatus ||
+            currentAttempt === undefined ||
+            currentNode === undefined
+          )
+            return;
           const now = yield* DateTime.now;
           const item: OrchestrationV2TurnItem = {
             id: idAllocator.derive.runSignalTurnItem({ runId, signal: "provider-start-failed" }),
@@ -496,12 +507,12 @@ export const layer: Layer.Layer<
             ordinal:
               Math.max(
                 0,
-                ...projection.turnItems
+                ...current.turnItems
                   .filter((item) => item.runId === runId)
                   .map((item) => item.ordinal),
               ) + 1,
             type: "error",
-            title: "Could not start the provider",
+            title: "Could not start the turn",
             failure: makeProviderFailure({ cause }),
             status: "failed",
             startedAt: now,
@@ -510,12 +521,15 @@ export const layer: Layer.Layer<
           };
           const payloads = [
             { type: "turn-item.updated", payload: item },
-            { type: "run.updated", payload: { ...run, status: "failed", completedAt: now } },
+            { type: "run.updated", payload: { ...currentRun, status: "failed", completedAt: now } },
             {
               type: "run-attempt.updated",
-              payload: { ...attempt, status: "failed", completedAt: now },
+              payload: { ...currentAttempt, status: "failed", completedAt: now },
             },
-            { type: "node.updated", payload: { ...rootNode, status: "failed", completedAt: now } },
+            {
+              type: "node.updated",
+              payload: { ...currentNode, status: "failed", completedAt: now },
+            },
           ] as const;
           const events = yield* Effect.forEach(payloads, (event) =>
             Effect.gen(function* () {
@@ -534,7 +548,7 @@ export const layer: Layer.Layer<
             threadId: projection.thread.id,
             runId,
             activeAttemptId: attempt.id,
-            expectedStatus: "starting",
+            expectedStatus,
             events,
           });
         });
@@ -1120,7 +1134,7 @@ export const layer: Layer.Layer<
         effectiveHandoffs.length === 0 && missedItems.length === 0
           ? session
           : makeDeliverySession(session, startWithHandoffs);
-      yield* runExecution.startRootRun({
+      const startExecution = runExecution.startRootRun({
         commandId: CommandId.make(`command:effect:provider-turn.start:${run.id}`),
         appThread: projection.thread,
         providerSessionId,
@@ -1161,6 +1175,7 @@ export const layer: Layer.Layer<
         modelSelection: run.modelSelection,
         runtimePolicy: resolvedRuntimePolicy,
       });
+      yield* startExecution.pipe(Effect.tapError((cause) => failStartup(cause, "running")));
     });
 
     return ProviderTurnStartServiceV2.of({
