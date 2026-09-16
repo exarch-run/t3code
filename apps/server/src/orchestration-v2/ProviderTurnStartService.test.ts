@@ -1,6 +1,7 @@
 import { expect, it, vi } from "vite-plus/test";
 import { it as effectIt } from "@effect/vitest";
 import {
+  CommandId,
   CheckpointScopeId,
   MessageId,
   NodeId,
@@ -34,6 +35,7 @@ import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
+import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 
 const isDomainEvent = Schema.is(OrchestrationV2DomainEvent);
 
@@ -146,6 +148,7 @@ function makeLocalCommandHarness(input: {
   readonly logoutFailure?: string;
   readonly startupFailure?: boolean;
   readonly stopDuringStartup?: boolean;
+  readonly executionFailure?: "current" | "stopped" | "replaced";
 }) {
   const now = DateTime.makeUnsafe("2026-09-04T12:00:00Z");
   const threadId = ThreadId.make("thread-native-account-command");
@@ -319,6 +322,23 @@ function makeLocalCommandHarness(input: {
   };
   const events: Array<OrchestrationV2DomainEvent> = [];
   const open = vi.fn(() => {
+    if (input.executionFailure)
+      return Effect.succeed({
+        driver: providerThread.driver,
+        providerSession: {
+          id: providerSessionId,
+          driver: providerThread.driver,
+          providerInstanceId: newInstanceId,
+          status: "ready",
+          cwd: "/tmp/native-account-command",
+          model: run.modelSelection.model,
+          capabilities: CodexProviderCapabilitiesV2,
+          createdAt: now,
+          updatedAt: now,
+          lastError: null,
+        },
+        ensureThread: () => Effect.succeed(providerThread),
+      } as never);
     if (!input.startupFailure) return Effect.die("A local command must not open a native session.");
     if (input.stopDuringStartup)
       projection = {
@@ -333,7 +353,26 @@ function makeLocalCommandHarness(input: {
       }),
     );
   });
-  const startRootRun = vi.fn(() => Effect.die("A local command must not start a native turn."));
+  const startRootRun = vi.fn(() => {
+    if (!input.executionFailure) return Effect.die("A local command must not start a native turn.");
+    if (input.executionFailure !== "current")
+      projection = {
+        ...projection,
+        runs: projection.runs.map((run) => ({
+          ...run,
+          ...(input.executionFailure === "stopped"
+            ? { status: "interrupted" as const }
+            : { activeAttemptId: RunAttemptId.make("replacement-attempt") }),
+        })),
+      };
+    return Effect.fail(
+      new RunExecutionService.RunExecutionStartError({
+        commandId: CommandId.make("checkpoint-start-failure"),
+        runId,
+        cause: "Synthetic checkpoint baseline failure",
+      }),
+    );
+  });
   const tryHandlePromptCommand = vi.fn(() =>
     input.logoutFailure === undefined
       ? Effect.succeed(true)
@@ -507,6 +546,34 @@ for (const stopDuringStartup of [false, true]) {
           ]);
           yield* harness.start;
           expect(harness.open).toHaveBeenCalledTimes(1);
+        }
+      }),
+  );
+}
+
+for (const executionFailure of ["current", "stopped", "replaced"] as const) {
+  effectIt.effect(
+    `execution setup failure finishes only its current run (${executionFailure})`,
+    () =>
+      Effect.gen(function* () {
+        const harness = makeLocalCommandHarness({ text: "Start work", executionFailure });
+        expect((yield* harness.start.pipe(Effect.result))._tag).toBe("Failure");
+        expect(harness.startRootRun).toHaveBeenCalledTimes(1);
+        const projection = harness.projection();
+        if (executionFailure === "current") {
+          expect(projection.runs.at(-1)?.status).toBe("failed");
+          expect(projection.runs.at(-1)?.startedAt).not.toBeNull();
+          expect(projection.attempts[0]?.status).toBe("failed");
+          expect(projection.attempts[0]?.startedAt).not.toBeNull();
+          expect(projection.nodes[0]?.status).toBe("failed");
+          expect(projection.turnItems).toMatchObject([{ type: "error", status: "failed" }]);
+          yield* harness.start;
+          expect(harness.startRootRun).toHaveBeenCalledTimes(1);
+        } else {
+          expect(projection.runs.at(-1)?.status).toBe(
+            executionFailure === "stopped" ? "interrupted" : "running",
+          );
+          expect(projection.turnItems).toEqual([]);
         }
       }),
   );
