@@ -190,6 +190,8 @@ ${T3_CODE_ORCHESTRATION_INSTRUCTIONS}
 export interface CodexRuntimeInfo {
   readonly model: string;
   readonly reasoningEffort: string;
+  /** Strata's rendered session files for the project; appended after the runtime block. */
+  readonly sessionContext?: string | undefined;
 }
 
 export function buildCodexDeveloperInstructions(

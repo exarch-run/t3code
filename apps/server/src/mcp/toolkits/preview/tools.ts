@@ -1,6 +1,8 @@
 import {
   ToolActivityIcon,
   PreviewAutomationClickInput,
+  PreviewAutomationEmulateInput,
+  PreviewAutomationGestureInput,
   PreviewAutomationError,
   PreviewAutomationEvaluateInput,
   PreviewAutomationNavigateInput,
@@ -241,11 +243,34 @@ const PreviewRecordingStopTool = safeBrowserTool(
   }).annotate(Tool.Title, "Stop browser recording"),
 );
 
+const PreviewEmulateTool = browserTool(
+  Tool.make("preview_emulate", {
+    description:
+      "Configure a Chromium device and testing conditions on a supporting host. Open a blank tab, configure it, then navigate for first-request identity. Loaded pages return pending until reload=true explicitly applies identity changes. Fit clears all overrides; resetTests preserves the device. Generic tests do not simulate Safari or an operating-system keyboard.",
+    parameters: PreviewAutomationEmulateInput,
+    success: PreviewAutomationStatus,
+    failure: PreviewAutomationError,
+    dependencies,
+  }),
+);
+const PreviewGestureTool = browserTool(
+  Tool.make("preview_gesture", {
+    description:
+      "Send a native touch gesture to a touch-enabled browser tab. Coordinates are viewport CSS pixels. Use preview_click for located taps. Swipe requires end; pinch requires scale (0.25–4). Gestures stop on takeover or navigation.",
+    parameters: PreviewAutomationGestureInput,
+    success: PreviewActionResult,
+    failure: PreviewAutomationError,
+    dependencies,
+  }),
+);
+
 export const PreviewToolkit = Toolkit.make(
   PreviewStatusTool,
   PreviewOpenTool,
   PreviewNavigateTool,
   PreviewResizeTool,
+  PreviewEmulateTool,
+  PreviewGestureTool,
   PreviewSetAppearanceTool,
   PreviewSnapshotTool,
   PreviewClickTool,
@@ -263,6 +288,8 @@ export const PreviewStandardToolkit = Toolkit.make(
   PreviewOpenTool,
   PreviewNavigateTool,
   PreviewResizeTool,
+  PreviewEmulateTool,
+  PreviewGestureTool,
   PreviewSetAppearanceTool,
   PreviewClickTool,
   PreviewTypeTool,

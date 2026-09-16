@@ -192,6 +192,10 @@ const handlers = {
     invokeTargeted<PreviewAutomationStatus>("open", normalizePreviewOpenInput(input)),
   preview_navigate: (input) =>
     invokeTargeted<PreviewAutomationStatus>("navigate", input, input.timeoutMs),
+  preview_emulate: (input) =>
+    invokeTargeted<PreviewAutomationStatus>("emulate", input, input.timeoutMs),
+  preview_gesture: (input) =>
+    invokeTargeted<Record<string, unknown>>("gesture", input, input.timeoutMs).pipe(Effect.as({})),
   preview_resize: (input) =>
     invokeTargeted<PreviewAutomationResizeResult>("resize", input, input.timeoutMs),
   preview_set_appearance: (input) =>

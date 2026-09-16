@@ -1,3 +1,4 @@
+import { ProjectSessionFiles } from "./projectSessionFiles.ts";
 import { OrchestrationMessageContext } from "./composerContext.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -92,6 +93,7 @@ export const OrchestrationProject = Schema.Struct({
   faviconPath: Schema.optional(Schema.NullOr(ProjectFaviconPath)),
   projectIcon: Schema.optional(Schema.NullOr(ProjectIconOverride)),
   scripts: Schema.Array(ProjectScript),
+  sessionFiles: Schema.optional(ProjectSessionFiles),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   deletedAt: Schema.NullOr(IsoDateTime),
@@ -567,6 +569,7 @@ export const ProjectCreateCommand = Schema.Struct({
   // server ignores it; explicit project defaults use project.meta.update.
   defaultModelSelection: Schema.optional(Schema.NullOr(ModelSelection)),
   scripts: Schema.optional(Schema.Array(ProjectScript)),
+  sessionFiles: Schema.optional(ProjectSessionFiles),
   createdAt: IsoDateTime,
 });
 
@@ -583,6 +586,7 @@ export const ProjectMetaUpdateCommand = Schema.Struct({
   faviconPath: Schema.optional(Schema.NullOr(ProjectFaviconPath)),
   projectIcon: Schema.optional(Schema.NullOr(ProjectIconOverride)),
   scripts: Schema.optional(Schema.Array(ProjectScript)),
+  sessionFiles: Schema.optional(ProjectSessionFiles),
 });
 
 export const ProjectDeleteCommand = Schema.Struct({

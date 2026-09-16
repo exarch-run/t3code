@@ -1,3 +1,4 @@
+import { PreviewDeviceResultFields, PreviewDeviceEvidenceFields } from "./previewDevice.ts";
 import { Schema } from "effect";
 
 import { EnvironmentId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
@@ -43,6 +44,8 @@ export const PREVIEW_AUTOMATION_OPERATIONS = [
   ...PREVIEW_AUTOMATION_V1_OPERATIONS,
   "resize",
   "setColorScheme",
+  "emulate",
+  "gesture",
 ] as const;
 
 export const PreviewAutomationOperation = Schema.Literals(PREVIEW_AUTOMATION_OPERATIONS);
@@ -64,6 +67,7 @@ export const PreviewAutomationTabTargetInput = Schema.Struct(PreviewAutomationTa
 export type PreviewAutomationTabTargetInput = typeof PreviewAutomationTabTargetInput.Type;
 
 export const PreviewAutomationStatus = Schema.Struct({
+  ...PreviewDeviceResultFields,
   available: Schema.Boolean,
   visible: Schema.Boolean,
   tabId: Schema.NullOr(PreviewTabId),
@@ -251,6 +255,7 @@ export const PreviewAutomationResizeInput = Schema.Struct({
 export type PreviewAutomationResizeInput = typeof PreviewAutomationResizeInput.Type;
 
 export const PreviewAutomationResizeResult = Schema.Struct({
+  ...PreviewDeviceResultFields,
   tabId: PreviewTabId,
   setting: PreviewViewportSetting,
   viewport: PreviewRenderedViewportSize,
@@ -528,6 +533,7 @@ export const PreviewAutomationActionEvent = Schema.Struct({
 export type PreviewAutomationActionEvent = typeof PreviewAutomationActionEvent.Type;
 
 export const PreviewAutomationSnapshot = Schema.Struct({
+  ...PreviewDeviceEvidenceFields,
   url: Schema.String,
   title: Schema.String,
   loading: Schema.Boolean,
@@ -556,6 +562,7 @@ export type PreviewAutomationRecordingStatus = typeof PreviewAutomationRecording
 export const PREVIEW_RECORDING_STOP_TIMEOUT_MS = 120_000;
 
 export const PreviewAutomationRecordingArtifact = Schema.Struct({
+  ...PreviewDeviceEvidenceFields,
   id: Schema.String,
   tabId: PreviewTabId,
   path: Schema.String,

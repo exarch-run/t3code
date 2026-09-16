@@ -104,6 +104,7 @@ import {
 import type { ServerProviderShape } from "../../provider/Services/ServerProvider.ts";
 import { mergeProviderInstanceEnvironment } from "../../provider/ProviderInstanceEnvironment.ts";
 import { T3_CODE_ORCHESTRATION_INSTRUCTIONS } from "../../provider/T3OrchestrationInstructions.ts";
+import { claudeTaskProgressOwnershipHooks } from "../../strata/TaskProgressOwnership.ts";
 import { buildRuntimeInstructions } from "../../provider/RuntimeInstructions.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { IdAllocatorV2, type IdAllocatorV2Shape } from "../IdAllocator.ts";
@@ -712,6 +713,7 @@ export const claudeAgentSdkQueryRunnerLiveLayer: Layer.Layer<
 );
 
 export function makeClaudeQueryOptions(input: {
+  readonly sessionContext?: string | undefined;
   readonly modelSelection: ModelSelection;
   readonly nativeThreadId: string;
   readonly resume: boolean;
@@ -815,11 +817,12 @@ export function makeClaudeQueryOptions(input: {
       : {}),
     ...(input.environment === undefined ? {} : { env: input.environment }),
     ...(input.mcpServers === undefined ? {} : { mcpServers: input.mcpServers }),
+    hooks: claudeTaskProgressOwnershipHooks(),
     systemPrompt: {
       type: "preset" as const,
       preset: "claude_code" as const,
       append:
-        buildRuntimeInstructions({ harness: "Claude Code" }) +
+        buildRuntimeInstructions({ harness: "Claude Code", sessionContext: input.sessionContext }) +
         (input.mcpServers === undefined ? "" : T3_CODE_ORCHESTRATION_INSTRUCTIONS),
     },
     ...(Object.keys(extraArgs).length === 0 ? {} : { extraArgs }),
@@ -2347,6 +2350,10 @@ interface ActiveClaudeTurnContext {
   readonly subagentsByToolUseId: Map<string, ActiveClaudeSubagent>;
   readonly subagentNodesByTaskId: Map<string, OrchestrationV2ExecutionNode["id"]>;
   readonly pendingSubagentModelsByToolUseId: Map<string, string>;
+  readonly subagentLaunchesByToolUseId: Map<
+    string,
+    { readonly model?: string; readonly effort?: string }
+  >;
 }
 
 interface ActiveClaudeProviderRetry {
@@ -3265,6 +3272,10 @@ export function makeClaudeAdapterV2(
           readonly context: ActiveClaudeTurnContext;
           readonly taskId: string;
           readonly toolUseId?: string;
+          readonly role?: string;
+          readonly effort?: string;
+          readonly lastToolName?: string;
+          readonly usage?: OrchestrationV2Subagent["usage"];
           readonly prompt?: string;
           readonly title?: string;
           readonly model?: string;
@@ -3371,6 +3382,7 @@ export function makeClaudeAdapterV2(
               prompt: input.prompt ?? "",
               title: input.title ?? null,
               model: input.model ?? input.context.input.modelSelection.model,
+              effort: compileClaudeModelSelection(input.context.input.modelSelection).effort,
               result: null,
               startedAt: now,
             }),
@@ -3390,6 +3402,11 @@ export function makeClaudeAdapterV2(
             ...(input.prompt === undefined ? {} : { prompt: input.prompt }),
             ...(input.title === undefined ? {} : { title: input.title }),
             ...(input.model === undefined ? {} : { model: input.model }),
+            ...(input.toolUseId === undefined ? {} : { toolUseId: input.toolUseId }),
+            ...(input.role === undefined ? {} : { role: input.role }),
+            ...(input.effort === undefined ? {} : { effort: input.effort }),
+            ...(input.lastToolName === undefined ? {} : { lastToolName: input.lastToolName }),
+            ...(input.usage === undefined ? {} : { usage: input.usage }),
             ...(input.progress === undefined ? {} : { progress: input.progress }),
             ...(input.result === undefined ? {} : { result: input.result }),
             completedAt: input.status === "running" ? null : now,
@@ -4965,12 +4982,18 @@ export function makeClaudeAdapterV2(
                 activeContext: context,
               });
             } else {
+              const launch =
+                message.tool_use_id === undefined
+                  ? undefined
+                  : context.subagentLaunchesByToolUseId.get(message.tool_use_id);
               const model =
                 message.tool_use_id === undefined
                   ? undefined
-                  : context.pendingSubagentModelsByToolUseId.get(message.tool_use_id);
+                  : (context.pendingSubagentModelsByToolUseId.get(message.tool_use_id) ??
+                    launch?.model);
               if (message.tool_use_id !== undefined) {
                 context.pendingSubagentModelsByToolUseId.delete(message.tool_use_id);
+                context.subagentLaunchesByToolUseId.delete(message.tool_use_id);
               }
               yield* updateClaudeSubagentNode({
                 context,
@@ -4978,7 +5001,9 @@ export function makeClaudeAdapterV2(
                 ...(message.tool_use_id === undefined ? {} : { toolUseId: message.tool_use_id }),
                 ...(message.prompt === undefined ? {} : { prompt: message.prompt }),
                 ...(model === undefined ? {} : { model }),
+                ...(launch?.effort === undefined ? {} : { effort: launch.effort }),
                 title: message.description,
+                ...(message.subagent_type === undefined ? {} : { role: message.subagent_type }),
                 status: "running",
                 reopen: true,
               });
@@ -5001,6 +5026,11 @@ export function makeClaudeAdapterV2(
                 taskId: message.task_id,
                 ...(message.tool_use_id === undefined ? {} : { toolUseId: message.tool_use_id }),
                 progress,
+                usage: message.usage,
+                ...(message.subagent_type === undefined ? {} : { role: message.subagent_type }),
+                ...(message.last_tool_name === undefined
+                  ? {}
+                  : { lastToolName: message.last_tool_name }),
                 status: "running",
               });
             }
@@ -5026,6 +5056,7 @@ export function makeClaudeAdapterV2(
                 taskId: message.task_id,
                 ...(message.tool_use_id === undefined ? {} : { toolUseId: message.tool_use_id }),
                 result: message.summary,
+                ...(message.usage === undefined ? {} : { usage: message.usage }),
                 status:
                   message.status === "completed"
                     ? "completed"
@@ -5048,6 +5079,21 @@ export function makeClaudeAdapterV2(
             const nativeToolInput = claudeNativeToolInputFromUnknown(toolUse.input);
             if (toolUse.name === "Agent") {
               rememberClaudeSubagentRequestedModel(context, toolUse.id, nativeToolInput);
+              const launch =
+                typeof toolUse.input === "object" && toolUse.input !== null
+                  ? (toolUse.input as Record<string, unknown>)
+                  : {};
+              const model = typeof launch.model === "string" ? launch.model.trim() : undefined;
+              const effort =
+                typeof launch.effort === "string"
+                  ? launch.effort.trim()
+                  : typeof launch.effort === "number" && Number.isFinite(launch.effort)
+                    ? String(launch.effort)
+                    : undefined;
+              context.subagentLaunchesByToolUseId.set(toolUse.id, {
+                ...(model ? { model } : {}),
+                ...(effort ? { effort } : {}),
+              });
               continue;
             }
             if (toolUse.name === "TodoWrite" && parentToolUseIdFromSdkMessage(message) === null) {
@@ -5560,6 +5606,7 @@ export function makeClaudeAdapterV2(
               threadId: turnInput.threadId,
               providerSessionId: input.providerSessionId,
               options: makeClaudeQueryOptions({
+                sessionContext: turnInput.runtimePolicy.sessionContext,
                 modelSelection: turnInput.modelSelection,
                 nativeThreadId,
                 resume: shouldResume,
@@ -5704,6 +5751,7 @@ export function makeClaudeAdapterV2(
               subagentsByToolUseId: new Map(),
               subagentNodesByTaskId: new Map(),
               pendingSubagentModelsByToolUseId: new Map(),
+              subagentLaunchesByToolUseId: new Map(),
             };
             // Continuation turns attach to the wake output the CLI already
             // produced instead of prompting it again: drain the buffered wake

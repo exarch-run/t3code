@@ -89,6 +89,7 @@ it.layer(TestLayer)("ProjectService", (it) => {
         projectId,
         title: "Project",
         workspaceRoot: "/work/project/",
+        sessionFiles: ["NOTES.md"],
         defaultModelSelection: modelSelection,
         scripts: [
           {
@@ -101,6 +102,7 @@ it.layer(TestLayer)("ProjectService", (it) => {
         ],
       });
       assert.equal(created.workspaceRoot, "/work/project");
+      assert.deepEqual(created.sessionFiles, ["NOTES.md"]);
       assert.isNull(created.repositoryIdentity);
       assert.isNull(created.faviconPath);
 
@@ -116,11 +118,14 @@ it.layer(TestLayer)("ProjectService", (it) => {
         commandId: CommandId.make("command:project:update"),
         projectId,
         title: "Renamed",
+        sessionFiles: [],
         autoPull: true,
         projectIcon: { kind: "emoji", emoji: "🦊" },
         faviconPath: "/work/project/custom.svg",
         defaultThreadEnvMode: "worktree",
       });
+      assert.deepEqual(updated.sessionFiles, []);
+      assert.deepEqual((yield* service.snapshot).projects.find(row => row.id === projectId)?.sessionFiles, []);
       assert.equal(updated.title, "Renamed");
       assert.equal(updated.createdAt, created.createdAt);
       assert.isTrue(updated.autoPull);

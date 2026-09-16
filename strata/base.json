@@ -1,0 +1,9 @@
+{
+  "upstreamRepository": "https://github.com/pingdotgg/t3code",
+  "upstreamTag": "v0.0.41-nightly.20260911.1520",
+  "upstreamCommit": "c52b8d96e4b34201f19b5e5bb12c6b2a77bfaa9a",
+  "npmPackage": "t3",
+  "npmVersion": "0.0.41-nightly.20260911.1520",
+  "npmIntegrity": "sha512-fxso5YdnAGMmZIEsS65lNCdoYpLtuOkgGLUuM+mMiJ+ZWkrOEfWe85DGR4IQgKzmjKHh/7g4q0LCm7qZzlhHAA==",
+  "helperBinaries": "dist/resource-monitor"
+}

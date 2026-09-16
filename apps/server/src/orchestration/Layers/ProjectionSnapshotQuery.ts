@@ -103,6 +103,7 @@ const ProjectionProjectDbRowSchema = ProjectionProject.mapFields(
     autoPull: Schema.Number,
     projectIcon: Schema.NullOr(Schema.fromJsonString(ProjectIconOverride)),
     scripts: Schema.fromJsonString(Schema.Array(ProjectScript)),
+    sessionFiles: Schema.NullOr(Schema.fromJsonString(Schema.Array(Schema.String))),
   }),
 );
 const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
@@ -390,6 +391,7 @@ function mapProjectShellRow(
     faviconPath: row.faviconPath ?? null,
     projectIcon: row.projectIcon ?? null,
     scripts: row.scripts,
+    ...(row.sessionFiles === null ? {} : { sessionFiles: row.sessionFiles }),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -475,6 +477,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           favicon_path AS "faviconPath",
           project_icon_json AS "projectIcon",
           scripts_json AS "scripts",
+          session_files_json AS "sessionFiles",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
           deleted_at AS "deletedAt"
@@ -1034,6 +1037,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           favicon_path AS "faviconPath",
           project_icon_json AS "projectIcon",
           scripts_json AS "scripts",
+          session_files_json AS "sessionFiles",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
           deleted_at AS "deletedAt"
@@ -1060,6 +1064,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           favicon_path AS "faviconPath",
           project_icon_json AS "projectIcon",
           scripts_json AS "scripts",
+          session_files_json AS "sessionFiles",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
           deleted_at AS "deletedAt"
@@ -2100,6 +2105,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 faviconPath: row.faviconPath ?? null,
                 projectIcon: row.projectIcon ?? null,
                 scripts: row.scripts,
+    ...(row.sessionFiles === null ? {} : { sessionFiles: row.sessionFiles }),
                 createdAt: row.createdAt,
                 updatedAt: row.updatedAt,
                 deletedAt: row.deletedAt,
@@ -2241,6 +2247,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   faviconPath: row.faviconPath ?? null,
                   projectIcon: row.projectIcon ?? null,
                   scripts: row.scripts,
+    ...(row.sessionFiles === null ? {} : { sessionFiles: row.sessionFiles }),
                   createdAt: row.createdAt,
                   updatedAt: row.updatedAt,
                   deletedAt: row.deletedAt,

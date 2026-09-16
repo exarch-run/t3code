@@ -1,3 +1,4 @@
+import { formatQuestionResponseForProvider } from "../orchestration/questionResponseInput.ts";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
   MessageId,
@@ -302,7 +303,7 @@ export const layer: Layer.Layer<
               message: {
                 messageId: message.id,
                 text: projectComposerContextForProvider({
-                  text: message.text,
+                  text: message.questionResponse ? formatQuestionResponseForProvider(message.questionResponse) : message.text,
                   records: message.context?.records ?? [],
                 }),
                 attachments: message.attachments,

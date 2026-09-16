@@ -51,7 +51,7 @@ export function restartContinuationRun(
     !session ||
     session.providerInstanceId !== run.providerInstanceId ||
     session.driver !== providerThread.driver ||
-    (!preparedContinuation && session.status !== "running")
+    (!preparedContinuation && session.status !== "running" && session.status !== "ready")
   )
     return;
   if (

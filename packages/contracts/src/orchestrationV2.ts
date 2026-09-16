@@ -1,3 +1,5 @@
+import { QuestionResponse } from "./questionResponse.ts";
+import { TaskProgressRecordV2, TaskProgressStep } from "./taskProgress.ts";
 import { OrchestrationMessageContext } from "./composerContext.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -327,6 +329,7 @@ export const OrchestrationV2ProviderCapabilities = Schema.Struct({
 export type OrchestrationV2ProviderCapabilities = typeof OrchestrationV2ProviderCapabilities.Type;
 
 export const OrchestrationV2AppThread = Schema.Struct({
+  taskProgressV2: Schema.optional(TaskProgressRecordV2),
   ...OrchestrationV2CreationFields,
   id: ThreadId,
   projectId: ProjectId,
@@ -553,6 +556,15 @@ export const OrchestrationV2Subagent = Schema.Struct({
   prompt: Schema.String,
   title: Schema.NullOr(Schema.String),
   model: Schema.NullOr(Schema.String),
+  toolUseId: Schema.optional(Schema.String),
+  role: Schema.optional(Schema.String),
+  effort: Schema.optional(Schema.String),
+  lastToolName: Schema.optional(Schema.String),
+  usage: Schema.optional(Schema.Struct({
+    total_tokens: Schema.Number,
+    tool_uses: Schema.Number,
+    duration_ms: Schema.Number,
+  })),
   // Parent-wake policy for app-owned tasks: "always" offers a continuation on
   // every terminal (async delegations; queue_after_active sequences it behind
   // a live parent run), "settled_only" offers only when the parent has no
@@ -821,6 +833,7 @@ export const OrchestrationV2ConversationMessage = Schema.Struct({
   role: Schema.Literals(["user", "assistant", "system"]),
   text: Schema.String,
   context: Schema.optional(OrchestrationMessageContext),
+    questionResponse: Schema.optional(QuestionResponse),
   attachments: Schema.Array(ChatAttachment),
   streaming: Schema.Boolean,
   createdAt: Schema.DateTimeUtc,
@@ -1056,6 +1069,7 @@ export const OrchestrationV2TurnItem = Schema.Union([
     inputIntent: OrchestrationV2UserMessageInputIntent,
     text: Schema.String,
     context: Schema.optional(OrchestrationMessageContext),
+    questionResponse: Schema.optional(QuestionResponse),
     attachments: Schema.Array(ChatAttachment),
   }),
   Schema.Struct({
@@ -1455,6 +1469,7 @@ export type OrchestrationV2LatestVisibleMessageSummary =
   typeof OrchestrationV2LatestVisibleMessageSummary.Type;
 
 export const OrchestrationV2ThreadShell = Schema.Struct({
+  taskProgressV2: Schema.optional(TaskProgressRecordV2),
   ...OrchestrationV2CreationFields,
   id: ThreadId,
   projectId: ProjectId,
@@ -1486,6 +1501,8 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   ),
   status: OrchestrationV2ShellThreadStatus,
   lastError: Schema.optional(Schema.NullOr(Schema.String)),
+  hasPendingApprovals: Schema.optional(Schema.Boolean),
+  hasPendingUserInput: Schema.optional(Schema.Boolean),
   pendingRuntimeRequest: Schema.NullOr(OrchestrationV2PendingRuntimeRequestSummary),
   latestVisibleMessage: Schema.NullOr(OrchestrationV2LatestVisibleMessageSummary),
   latestUserMessageAt: Schema.NullOr(Schema.DateTimeUtc),
@@ -1767,6 +1784,7 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
     inputIntent: OrchestrationV2UserMessageInputIntent,
     text: Schema.String,
     context: Schema.optional(OrchestrationMessageContext),
+    questionResponse: Schema.optional(QuestionResponse),
     attachments: Schema.Array(ChatAttachment),
   }),
   Schema.Struct({
@@ -2192,6 +2210,13 @@ export type OrchestrationV2StoredEventJson = typeof OrchestrationV2StoredEventJs
 
 export const OrchestrationV2Command = Schema.Union([
   Schema.Struct({
+    type: Schema.Literal("thread.task-progress.write"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    markdown: Schema.optional(Schema.String),
+    plan: Schema.optional(Schema.Array(TaskProgressStep)),
+  }),
+  Schema.Struct({
     type: Schema.Literal("thread.create"),
     ...OrchestrationV2CreationFields,
     commandId: CommandId,
@@ -2407,6 +2432,7 @@ export const OrchestrationV2Command = Schema.Union([
     messageId: MessageId,
     text: Schema.String,
     context: Schema.optional(OrchestrationMessageContext),
+    questionResponse: Schema.optional(QuestionResponse),
     attachments: Schema.Array(ChatAttachment),
     /** Seed the temporary title and generate a durable replacement for the first message. */
     titleSeed: Schema.optional(TrimmedNonEmptyString),
@@ -2492,6 +2518,7 @@ export const OrchestrationV2Command = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("queued-run.edit"),
     context: Schema.optional(OrchestrationMessageContext),
+    questionResponse: Schema.optional(QuestionResponse),
     commandId: CommandId,
     threadId: ThreadId,
     runId: RunId,
@@ -2507,6 +2534,8 @@ export const OrchestrationV2Command = Schema.Union([
     requestId: RuntimeRequestId,
     decision: Schema.optional(ProviderApprovalDecision),
     answers: Schema.optional(ProviderUserInputAnswers),
+    /** Validated attachment paths for delivery; the stored answer remains verbatim. */
+    answersForProvider: Schema.optional(ProviderUserInputAnswers),
     attachmentsByQuestionId: Schema.optional(UserInputAttachments),
   }),
   Schema.Struct({
@@ -2675,6 +2704,7 @@ export const OrchestrationV2ThreadLaunchInput = Schema.Struct({
       messageId: Schema.optional(MessageId),
       text: Schema.String,
       context: Schema.optional(OrchestrationMessageContext),
+    questionResponse: Schema.optional(QuestionResponse),
       attachments: Schema.Array(ChatAttachment),
     }),
   ),

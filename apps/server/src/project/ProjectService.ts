@@ -152,6 +152,7 @@ export const make = Effect.gen(function* () {
     autoPull: row.autoPull,
     projectIcon: row.projectIcon,
     scripts: row.scripts,
+    ...(row.sessionFiles === undefined ? {} : { sessionFiles: row.sessionFiles }),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     deletedAt: row.deletedAt,
@@ -300,6 +301,7 @@ export const make = Effect.gen(function* () {
           workspaceRoot,
           defaultModelSelection: input.defaultModelSelection ?? null,
           scripts: [...(input.scripts ?? [])],
+          ...(input.sessionFiles === undefined ? {} : { sessionFiles: [...input.sessionFiles] }),
           createdAt: now,
         },
         invalidateEnrichment(workspaceRoot).pipe(Effect.andThen(readCommitted(input.projectId))),
@@ -355,6 +357,7 @@ export const make = Effect.gen(function* () {
             ? {}
             : { defaultThreadEnvMode: input.defaultThreadEnvMode }),
           ...(input.scripts === undefined ? {} : { scripts: [...input.scripts] }),
+          ...(input.sessionFiles === undefined ? {} : { sessionFiles: [...input.sessionFiles] }),
         },
         (workspaceRoot === existing.value.workspaceRoot
           ? Effect.void
