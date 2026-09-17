@@ -225,6 +225,7 @@ export type OrchestratorFixtureInputStep =
       readonly type: "rollback";
       readonly checkpointScopeSuffix: string;
       readonly checkpointSuffix: string;
+      readonly restoreFiles?: boolean;
     }
   | {
       /**
@@ -760,7 +761,7 @@ export function materializeFixtureInput(input: {
             });
             pushDispatch({
               type: "checkpoint.rollback",
-              restoreFiles: false,
+              restoreFiles: step.restoreFiles ?? false,
               commandId: yield* idAllocator.allocate.command({
                 fixtureName: input.scenario,
                 commandName: `rollback-${step.checkpointSuffix}`,
