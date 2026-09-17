@@ -5,6 +5,7 @@ import { assert, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
 import {
   type ApplicationStoredEvent,
+  TaskProgressRecordV2,
   CheckpointId,
   CheckpointRef,
   CommandId,
@@ -30,6 +31,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -77,6 +79,10 @@ import {
   ThreadCommandExecutor,
   layer as threadCommandExecutorLayer,
 } from "./ThreadCommandExecutor.ts";
+
+const decodeStoredTaskProgress = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Struct({ taskProgressV2: TaskProgressRecordV2 })),
+);
 
 const PlatformTestLayer = Layer.merge(
   NodeServices.layer,
@@ -880,7 +886,8 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
       assert.equal(answered.messages.length, 1);
       assert.equal(answered.messages[0]?.text, "  Blue  ");
       assert.deepEqual(answered.messages[0]?.questionResponse, {
-        requestId, answers: [{ questionId: "color", question: "Which color?", answer: "  Blue  " }],
+        requestId,
+        answers: [{ questionId: "color", question: "Which color?", answer: "  Blue  " }],
       });
       assert.equal(answered.messages[0]?.role, "user");
       assert.equal(answered.runs.length, 1);
@@ -2815,52 +2822,97 @@ it.layer(SharedApplicationDataPlaneTestLayer)("shared application data plane", (
   );
 });
 
-
-it.layer(Layer.merge(TestLayer, SqlitePersistenceMemory))("Strata v2 task cards", it => {
-  it.effect("commits concurrent cards, replays receipts, clears, and retains the card in the shell", () =>
-    Effect.gen(function* () {
-      const orchestrator = yield* OrchestratorV2;
-      const threadId = ThreadId.make("strata-v2-progress");
-      yield* orchestrator.dispatch({ type: "thread.create", commandId: CommandId.make("strata-v2-create"),
-        threadId, projectId: ProjectId.make("strata-v2-project"), title: "Progress",
-        createdBy: "user", creationSource: "web", modelSelection,
-        runtimeMode: "full-access", interactionMode: "default", branch: null, worktreePath: null });
-      const acknowledgements = yield* Effect.all([
-        publishProgress(threadId, { markdown: "First", plan: [{ step: "Port", status: "in_progress" }] }),
-        publishProgress(threadId, { markdown: "Second" }),
-      ], { concurrency: 2 });
-      assert.deepEqual(acknowledgements.map(ack => ack.revision).sort(), [1, 2]);
-      const card = yield* readProgressCard(threadId);
-      assert.equal(card?.revision, 2);
-      assert.deepEqual((yield* orchestrator.getThreadShell(threadId))?.taskProgressV2?.card, card);
-      const command = { type: "thread.task-progress.write" as const,
-        commandId: CommandId.make("strata-v2-progress-retry"), threadId, markdown: "Final" };
-      const first = yield* orchestrator.dispatch(command);
-      const retry = yield* orchestrator.dispatch(command);
-      assert.equal(first.sequence, retry.sequence);
-      assert.equal((yield* readProgressCard(threadId))?.revision, 3);
-      const cleared = yield* publishProgress(threadId, {});
-      assert.equal(cleared.message, "Progress card cleared");
-      assert.isNull(yield* readProgressCard(threadId));
-      const projection = yield* orchestrator.getThreadProjection(threadId);
-      assert.equal(projection.thread.taskProgressV2?.revision, 4);
-      const sql = yield* SqlClient.SqlClient;
-      const rows = yield* sql<{ payload_json: string }>`SELECT payload_json FROM orchestration_v2_projection_threads WHERE thread_id = ${threadId}`;
-      assert.deepEqual(JSON.parse(rows[0]!.payload_json).taskProgressV2, projection.thread.taskProgressV2);
-    }),
+it.layer(Layer.merge(TestLayer, SqlitePersistenceMemory))("Strata v2 task cards", (it) => {
+  it.effect(
+    "commits concurrent cards, replays receipts, clears, and retains the card in the shell",
+    () =>
+      Effect.gen(function* () {
+        const orchestrator = yield* OrchestratorV2;
+        const threadId = ThreadId.make("strata-v2-progress");
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("strata-v2-create"),
+          threadId,
+          projectId: ProjectId.make("strata-v2-project"),
+          title: "Progress",
+          createdBy: "user",
+          creationSource: "web",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+        });
+        const acknowledgements = yield* Effect.all(
+          [
+            publishProgress(threadId, {
+              markdown: "First",
+              plan: [{ step: "Port", status: "in_progress" }],
+            }),
+            publishProgress(threadId, { markdown: "Second" }),
+          ],
+          { concurrency: 2 },
+        );
+        assert.deepEqual(acknowledgements.map((ack) => ack.revision).sort(), [1, 2]);
+        const card = yield* readProgressCard(threadId);
+        assert.equal(card?.revision, 2);
+        assert.deepEqual(
+          (yield* orchestrator.getThreadShell(threadId))?.taskProgressV2?.card,
+          card,
+        );
+        const command = {
+          type: "thread.task-progress.write" as const,
+          commandId: CommandId.make("strata-v2-progress-retry"),
+          threadId,
+          markdown: "Final",
+        };
+        const first = yield* orchestrator.dispatch(command);
+        const retry = yield* orchestrator.dispatch(command);
+        assert.equal(first.sequence, retry.sequence);
+        assert.equal((yield* readProgressCard(threadId))?.revision, 3);
+        const cleared = yield* publishProgress(threadId, {});
+        assert.equal(cleared.message, "Progress card cleared");
+        assert.isNull(yield* readProgressCard(threadId));
+        const projection = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(projection.thread.taskProgressV2?.revision, 4);
+        const sql = yield* SqlClient.SqlClient;
+        const rows = yield* sql<{
+          payload_json: string;
+        }>`SELECT payload_json FROM orchestration_v2_projection_threads WHERE thread_id = ${threadId}`;
+        const stored = yield* decodeStoredTaskProgress(rows[0]!.payload_json);
+        assert.deepEqual(stored.taskProgressV2, projection.thread.taskProgressV2);
+      }),
   );
   it.effect("rejects invalid cards without advancing the last good card", () =>
     Effect.gen(function* () {
       const orchestrator = yield* OrchestratorV2;
       const threadId = ThreadId.make("strata-v2-progress-invalid");
-      yield* orchestrator.dispatch({ type: "thread.create", commandId: CommandId.make("strata-v2-invalid-create"),
-        threadId, projectId: ProjectId.make("strata-v2-project"), title: "Progress",
-        createdBy: "user", creationSource: "web", modelSelection,
-        runtimeMode: "full-access", interactionMode: "default", branch: null, worktreePath: null });
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("strata-v2-invalid-create"),
+        threadId,
+        projectId: ProjectId.make("strata-v2-project"),
+        title: "Progress",
+        createdBy: "user",
+        creationSource: "web",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+      });
       yield* publishProgress(threadId, { markdown: "Retain me" });
-      const result = yield* orchestrator.dispatch({ type: "thread.task-progress.write",
-        commandId: CommandId.make("strata-v2-invalid-card"), threadId,
-        plan: [{ step: "One", status: "in_progress" }, { step: "Two", status: "in_progress" }] }).pipe(Effect.result);
+      const result = yield* orchestrator
+        .dispatch({
+          type: "thread.task-progress.write",
+          commandId: CommandId.make("strata-v2-invalid-card"),
+          threadId,
+          plan: [
+            { step: "One", status: "in_progress" },
+            { step: "Two", status: "in_progress" },
+          ],
+        })
+        .pipe(Effect.result);
       assert.equal(result._tag, "Failure");
       assert.equal((yield* readProgressCard(threadId))?.markdown, "Retain me");
       assert.equal((yield* readProgressCard(threadId))?.revision, 1);

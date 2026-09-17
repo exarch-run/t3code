@@ -1,4 +1,8 @@
-import { nextTaskProgressRecord, registerProgressBridge, taskProgressEnabled } from "../strata/TaskProgressV2.ts";
+import {
+  nextTaskProgressRecord,
+  registerProgressBridge,
+  taskProgressEnabled,
+} from "../strata/TaskProgressV2.ts";
 import { threadPullRequestsOf } from "@t3tools/shared/threadPullRequests";
 import {
   normalizeThreadPullRequestKey,
@@ -266,7 +270,7 @@ function isNativeMaintenanceCommand(message: {
   readonly text: string;
   readonly attachments: ReadonlyArray<ChatAttachment>;
   readonly context?: import("@t3tools/contracts").OrchestrationMessageContext | undefined;
-    readonly questionResponse?: QuestionResponse | undefined;
+  readonly questionResponse?: QuestionResponse | undefined;
 }): boolean {
   return (
     message.attachments.length === 0 &&
@@ -1012,7 +1016,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           text: queuedMessage.text,
           attachments: queuedMessage.attachments,
           ...(queuedMessage.context ? { context: queuedMessage.context } : {}),
-          ...(queuedMessage.questionResponse ? { questionResponse: queuedMessage.questionResponse } : {}),
+          ...(queuedMessage.questionResponse
+            ? { questionResponse: queuedMessage.questionResponse }
+            : {}),
           createdBy: queuedMessage.createdBy,
           creationSource: queuedMessage.creationSource,
           ...(queuedMessage.scheduledTaskId === undefined
@@ -1802,22 +1808,35 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
       markUnreadVisitedAt = DateTime.subtract(latestRunCompletedAt, { milliseconds: 1 });
     }
-    const taskProgressV2 = command.type === "thread.task-progress.write"
-      ? yield* Effect.gen(function* () {
-          if (!(yield* taskProgressEnabled.pipe(mapDispatchError(command)))) return yield* new OrchestratorDispatchError({
-            commandId: command.commandId, commandType: command.type,
-            cause: "Task progress is disabled in Agents and models.",
-          });
-          return yield* Effect.try({
-            try: () => nextTaskProgressRecord({ previous: thread.taskProgressV2,
-              commandId: command.commandId, now,
-              content: { ...(command.markdown === undefined ? {} : { markdown: command.markdown }),
-                ...(command.plan === undefined ? {} : { plan: command.plan }) } }),
-            catch: cause => new OrchestratorDispatchError({ commandId: command.commandId,
-              commandType: command.type, cause }),
-          });
-        })
-      : undefined;
+    const taskProgressV2 =
+      command.type === "thread.task-progress.write"
+        ? yield* Effect.gen(function* () {
+            if (!(yield* taskProgressEnabled.pipe(mapDispatchError(command))))
+              return yield* new OrchestratorDispatchError({
+                commandId: command.commandId,
+                commandType: command.type,
+                cause: "Task progress is disabled in Agents and models.",
+              });
+            return yield* Effect.try({
+              try: () =>
+                nextTaskProgressRecord({
+                  previous: thread.taskProgressV2,
+                  commandId: command.commandId,
+                  now,
+                  content: {
+                    ...(command.markdown === undefined ? {} : { markdown: command.markdown }),
+                    ...(command.plan === undefined ? {} : { plan: command.plan }),
+                  },
+                }),
+              catch: (cause) =>
+                new OrchestratorDispatchError({
+                  commandId: command.commandId,
+                  commandType: command.type,
+                  cause,
+                }),
+            });
+          })
+        : undefined;
     const updatedThread: OrchestrationV2AppThread = (() => {
       switch (command.type) {
         case "thread.archive":
@@ -2140,7 +2159,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         case "thread.mark-unread":
           return "thread.marked-unread" as const;
         case "thread.task-progress.write":
-    case "thread.metadata.update":
+        case "thread.metadata.update":
         case "thread.title.regeneration.complete":
           return "thread.metadata-updated" as const;
         case "thread.pull-request.link":
@@ -2778,7 +2797,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             text: input.text,
             attachments: input.attachments,
             ...(input.context ? { context: input.context } : {}),
-          ...(input.questionResponse ? { questionResponse: input.questionResponse } : {}),
+            ...(input.questionResponse ? { questionResponse: input.questionResponse } : {}),
             streaming: false,
             createdAt: now,
             updatedAt: now,
@@ -2812,7 +2831,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             text: input.text,
             attachments: input.attachments,
             ...(input.context ? { context: input.context } : {}),
-          ...(input.questionResponse ? { questionResponse: input.questionResponse } : {}),
+            ...(input.questionResponse ? { questionResponse: input.questionResponse } : {}),
           };
           yield* emitEvent({
             type: "message.updated",
@@ -4711,7 +4730,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         role: "user",
         text: dispatchText,
         ...(command.context ? { context: command.context } : {}),
-          ...(command.questionResponse ? { questionResponse: command.questionResponse } : {}),
+        ...(command.questionResponse ? { questionResponse: command.questionResponse } : {}),
         attachments: command.attachments,
         streaming: false,
         createdAt: now,
@@ -4744,7 +4763,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         inputIntent: "turn_start",
         text: dispatchText,
         ...(command.context ? { context: command.context } : {}),
-          ...(command.questionResponse ? { questionResponse: command.questionResponse } : {}),
+        ...(command.questionResponse ? { questionResponse: command.questionResponse } : {}),
         attachments: command.attachments,
       };
       const activeHandoff = portableForkHandoff ?? mergeBackHandoff ?? providerSwitchHandoff;
@@ -5747,35 +5766,62 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         }
         const answers: QuestionResponseAnswer[] = [];
         for (const questionId of Object.keys(command.attachmentsByQuestionId ?? {})) {
-          const question = approvalTurnItem.questions.find(question => question.id === questionId);
+          const question = approvalTurnItem.questions.find(
+            (question) => question.id === questionId,
+          );
           if (!question || question.allowCustomAnswer === false) {
-            return yield* new OrchestratorDispatchError({ commandId: command.commandId,
-              commandType: command.type, cause: "This question does not accept file references." });
+            return yield* new OrchestratorDispatchError({
+              commandId: command.commandId,
+              commandType: command.type,
+              cause: "This question does not accept file references.",
+            });
           }
         }
         for (const question of approvalTurnItem.questions) {
           const raw = command.answers?.[question.id];
-          const answer = typeof raw === "string" ? raw
-            : Array.isArray(raw) && raw.every((value): value is string => typeof value === "string")
-              ? raw : undefined;
+          const answer =
+            typeof raw === "string"
+              ? raw
+              : Array.isArray(raw) &&
+                  raw.every((value): value is string => typeof value === "string")
+                ? raw
+                : undefined;
           const attachments = command.attachmentsByQuestionId?.[question.id] ?? [];
-          const answered = typeof answer === "string" ? answer.trim().length > 0
-            : Array.isArray(answer) && answer.some(value => value.trim().length > 0);
+          const answered =
+            typeof answer === "string"
+              ? answer.trim().length > 0
+              : Array.isArray(answer) && answer.some((value) => value.trim().length > 0);
           if (!answered && attachments.length === 0) {
             if (question.required === false) continue;
-            return yield* new OrchestratorDispatchError({ commandId: command.commandId,
-              commandType: command.type, cause: "Answer each question before sending." });
+            return yield* new OrchestratorDispatchError({
+              commandId: command.commandId,
+              commandType: command.type,
+              cause: "Answer each question before sending.",
+            });
           }
           const value = answer ?? "";
-          const labelFor = (value: string) => question.options.find(option => (option.value ?? option.label) === value)?.label ?? value;
+          const labelFor = (value: string) =>
+            question.options.find((option) => (option.value ?? option.label) === value)?.label ??
+            value;
           const label = typeof value === "string" ? labelFor(value) : value.map(labelFor);
-          answers.push({ questionId: question.id, question: question.question, answer: value,
-            ...(JSON.stringify(label) === JSON.stringify(value) ? {} : { label }),
-            ...(attachments.length ? { attachments } : {}) });
+          const sameLabel =
+            typeof value === "string"
+              ? label === value
+              : Array.isArray(label) && value.every((entry, index) => entry === label[index]);
+          answers.push({
+            questionId: question.id,
+            question: question.question,
+            answer: value,
+            ...(sameLabel ? {} : { label }),
+            ...(attachments.length ? { attachments } : {}),
+          });
         }
         if (answers.length === 0) {
-          return yield* new OrchestratorDispatchError({ commandId: command.commandId,
-            commandType: command.type, cause: "Enter an answer before sending." });
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: "Enter an answer before sending.",
+          });
         }
         const questionResponse: QuestionResponse = { requestId: command.requestId, answers };
         let dispatchMode: Extract<
@@ -5820,7 +5866,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             messageId: MessageId.make(`async-answer:${command.requestId}`),
             text: questionResponseText(questionResponse),
             questionResponse,
-            attachments: answers.flatMap(answer => answer.attachments ?? []),
+            attachments: answers.flatMap((answer) => answer.attachments ?? []),
             createdBy: "user",
             creationSource: "server",
             dispatchMode,
@@ -5841,7 +5887,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             providerSessionId,
             requestId: command.requestId,
             ...(command.decision === undefined ? {} : { decision: command.decision }),
-            ...(command.answers === undefined ? {} : { answers: command.answersForProvider ?? command.answers }),
+            ...(command.answers === undefined
+              ? {}
+              : { answers: command.answersForProvider ?? command.answers }),
           },
         } satisfies PendingOrchestrationEffectV2,
       ]);
@@ -5998,7 +6046,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         text: queuedMessage.text,
         attachments: queuedMessage.attachments,
         ...(queuedMessage.context ? { context: queuedMessage.context } : {}),
-          ...(queuedMessage.questionResponse ? { questionResponse: queuedMessage.questionResponse } : {}),
+        ...(queuedMessage.questionResponse
+          ? { questionResponse: queuedMessage.questionResponse }
+          : {}),
         createdBy: queuedMessage.createdBy,
         creationSource: queuedMessage.creationSource,
         ...(queuedMessage.scheduledTaskId === undefined
@@ -6272,7 +6322,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             text: command.text,
             ...editedAttachments,
             ...(command.context ? { context: command.context } : {}),
-          ...(command.questionResponse ? { questionResponse: command.questionResponse } : {}),
+            ...(command.questionResponse ? { questionResponse: command.questionResponse } : {}),
             updatedAt: now,
           },
         });
@@ -7784,7 +7834,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "thread.active.reorder":
       case "thread.mark-unread":
       case "thread.task-progress.write":
-    case "thread.metadata.update":
+      case "thread.metadata.update":
       case "thread.pull-request.link":
       case "thread.pull-request.unlink":
       case "thread.pull-request-link.sync":
@@ -8170,8 +8220,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     ),
   );
 
-  yield* registerProgressBridge(dispatchWithReceipt, threadId =>
-    projectionStore.getThread(threadId).pipe(Effect.map(thread => thread.taskProgressV2 ?? null)));
+  yield* registerProgressBridge(dispatchWithReceipt, (threadId) =>
+    projectionStore.getThread(threadId).pipe(Effect.map((thread) => thread.taskProgressV2 ?? null)),
+  );
   return OrchestratorV2.of({
     resumeQueuedRuns,
     dispatch: dispatchWithReceipt,

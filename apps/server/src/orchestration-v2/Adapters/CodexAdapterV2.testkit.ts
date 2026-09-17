@@ -10,6 +10,7 @@ import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 
 import { ServerConfig } from "../../config.ts";
+import { CODEX_TASK_PROGRESS_TOOLS } from "../../strata/TaskProgressCodexRoute.ts";
 import { layer as idAllocatorLayer } from "../IdAllocator.ts";
 import { ProviderAdapterOpenSessionError } from "../ProviderAdapter.ts";
 import { ProviderAdapterDriverCreateError } from "../ProviderAdapterDriver.ts";
@@ -204,6 +205,32 @@ export const CodexOrchestratorReplayHarness: OrchestratorV2ProviderReplayHarness
   driver: CODEX_DRIVER_KIND,
   decodeTranscript: (transcript) =>
     decodeCodexAppServerReplayTranscript(transcript).pipe(
+      // Upstream recordings predate Strata's dynamic task-card tools. Preserve
+      // exact matching of every request, including this added declaration.
+      Effect.map((decoded) => ({
+        ...decoded,
+        entries: decoded.entries.map((entry) => {
+          const frame = "frame" in entry ? entry.frame : null;
+          if (
+            entry.type !== "expect_outbound" ||
+            typeof frame !== "object" ||
+            frame === null ||
+            !("method" in frame) ||
+            frame.method !== "thread/start" ||
+            !("params" in frame) ||
+            typeof frame.params !== "object" ||
+            frame.params === null
+          )
+            return entry;
+          return {
+            ...entry,
+            frame: {
+              ...frame,
+              params: { ...frame.params, dynamicTools: CODEX_TASK_PROGRESS_TOOLS },
+            },
+          };
+        }),
+      })),
       Effect.mapError(
         (cause) =>
           new CodexReplayTranscriptDecodeError({

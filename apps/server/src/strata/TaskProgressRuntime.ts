@@ -6,6 +6,8 @@ import type {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import type { OrchestratorV2Error } from "../orchestration-v2/Orchestrator.ts";
+import type { ProjectionStoreV2Error } from "../orchestration-v2/ProjectionStore.ts";
 import {
   normalizeTaskProgressInput,
   TaskProgressInputError,
@@ -28,10 +30,8 @@ export interface ProgressWrite {
 }
 export interface Bridge {
   enabled: Effect.Effect<boolean>;
-  write: (
-    input: ProgressWrite,
-  ) => Effect.Effect<TaskProgressRecordV2 | null, unknown>;
-  read: (threadId: ThreadId) => Effect.Effect<TaskProgressRecordV2 | null, unknown>;
+  write: (input: ProgressWrite) => Effect.Effect<TaskProgressRecordV2 | null, OrchestratorV2Error>;
+  read: (threadId: ThreadId) => Effect.Effect<TaskProgressRecordV2 | null, ProjectionStoreV2Error>;
 }
 let bridge: Bridge | undefined;
 let instructionsEnabled = true;

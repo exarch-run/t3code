@@ -5682,6 +5682,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             status: "completed",
             output_file: "/tmp/task-buffer-replace-subagent.output",
             summary: SUBAGENT_SUMMARY,
+            usage: { total_tokens: 1234, tool_uses: 5, duration_ms: 2500 },
             uuid: "00000000-0000-4000-8000-000000000802",
             session_id: WAKE_NATIVE_SESSION,
           });

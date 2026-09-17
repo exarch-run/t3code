@@ -1,8 +1,7 @@
-import { describe, expect, it } from "vite-plus/test";
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 
 import {
@@ -11,11 +10,6 @@ import {
   renderSessionFilesBlock,
   SESSION_FILE_MAX_CHARS,
 } from "./SessionFiles.ts";
-
-const run = <A>(effect: Effect.Effect<A, unknown, NodeServices.NodeServices>) =>
-  Effect.runPromise(
-    effect.pipe(Effect.provide(NodeServices.layer)) as Effect.Effect<A, unknown, never>,
-  );
 
 describe("session files", () => {
   it("renders one block with a heading per file, and nothing for no files", () => {
@@ -48,36 +42,37 @@ describe("session files", () => {
     expect(block).toContain("1 more file not shown");
   });
 
-  it("reads listed files from the project folder, skips missing ones, and refuses paths that leave it", async () => {
-    const root = await mkdtemp(join(tmpdir(), "session-files-"));
-    const outside = await mkdtemp(join(tmpdir(), "session-files-outside-"));
-    try {
-      await mkdir(join(root, "syntheses"), { recursive: true });
-      await writeFile(join(root, "SOUL.md"), "# Soul\n");
-      await writeFile(join(root, "syntheses", "INDEX.md"), "# Syntheses\n");
-      await writeFile(join(outside, "secret.md"), "nope\n");
-      await symlink(join(outside, "secret.md"), join(root, "LINK.md"));
-      const block = await run(
-        readSessionFiles(root, [
-          "SOUL.md",
-          "MISSING.md",
-          "syntheses/INDEX.md",
-          "../secret.md",
-          "/etc/hostname",
-          "LINK.md",
-          "",
-        ]),
-      );
-      expect(block).toContain("## SOUL.md");
-      expect(block).toContain("## syntheses/INDEX.md");
-      expect(block).not.toContain("MISSING");
-      expect(block).not.toContain("nope");
-      expect(block).not.toContain("hostname");
-      expect(await run(readSessionFiles(root, ["MISSING.md"]))).toBeUndefined();
-      expect(await run(readSessionFiles(root, []))).toBeUndefined();
-    } finally {
-      await rm(root, { recursive: true, force: true });
-      await rm(outside, { recursive: true, force: true });
-    }
-  });
+  it.effect(
+    "reads listed files from the project folder, skips missing ones, and refuses paths that leave it",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const root = yield* fs.makeTempDirectoryScoped({ prefix: "session-files-" });
+          const outside = yield* fs.makeTempDirectoryScoped({ prefix: "session-files-outside-" });
+          yield* fs.makeDirectory(path.join(root, "syntheses"), { recursive: true });
+          yield* fs.writeFileString(path.join(root, "SOUL.md"), "# Soul\n");
+          yield* fs.writeFileString(path.join(root, "syntheses", "INDEX.md"), "# Syntheses\n");
+          yield* fs.writeFileString(path.join(outside, "secret.md"), "nope\n");
+          yield* fs.symlink(path.join(outside, "secret.md"), path.join(root, "LINK.md"));
+          const block = yield* readSessionFiles(root, [
+            "SOUL.md",
+            "MISSING.md",
+            "syntheses/INDEX.md",
+            "../secret.md",
+            "/etc/hostname",
+            "LINK.md",
+            "",
+          ]);
+          expect(block).toContain("## SOUL.md");
+          expect(block).toContain("## syntheses/INDEX.md");
+          expect(block).not.toContain("MISSING");
+          expect(block).not.toContain("nope");
+          expect(block).not.toContain("hostname");
+          expect(yield* readSessionFiles(root, ["MISSING.md"])).toBeUndefined();
+          expect(yield* readSessionFiles(root, [])).toBeUndefined();
+        }),
+      ).pipe(Effect.provide(NodeServices.layer)),
+  );
 });

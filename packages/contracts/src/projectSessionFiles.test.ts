@@ -1,14 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
-import {
-  isProjectSessionFilePath,
-  OrchestrationProject,
-  ProjectCreateCommand,
-  ProjectSessionFiles,
-} from "./orchestration.ts";
+import { OrchestrationProject, ProjectCreateCommand } from "./orchestration.ts";
+import { isProjectSessionFilePath, ProjectSessionFiles } from "./projectSessionFiles.ts";
 
 const decodeFiles = Schema.decodeUnknownSync(ProjectSessionFiles);
+const decodeProject = Schema.decodeUnknownSync(OrchestrationProject);
+const decodeCreate = Schema.decodeUnknownSync(ProjectCreateCommand);
 
 describe("project session files", () => {
   it("accepts relative paths inside the project and refuses the rest", () => {
@@ -42,14 +40,14 @@ describe("project session files", () => {
       updatedAt: "2026-09-11T00:00:00.000Z",
       deletedAt: null,
     };
-    const decoded = Schema.decodeUnknownSync(OrchestrationProject)(base);
+    const decoded = decodeProject(base);
     expect("sessionFiles" in decoded).toBe(false);
-    const withFiles = Schema.decodeUnknownSync(OrchestrationProject)({
+    const withFiles = decodeProject({
       ...base,
       sessionFiles: ["SOUL.md"],
     });
     expect(withFiles.sessionFiles).toEqual(["SOUL.md"]);
-    const command = Schema.decodeUnknownSync(ProjectCreateCommand)({
+    const command = decodeCreate({
       type: "project.create",
       commandId: "c1",
       projectId: "p1",
