@@ -1,5 +1,6 @@
 import { expect, it } from "@effect/vitest";
 import { Tool } from "effect/unstable/ai";
+import * as Context from "effect/Context";
 
 import { StrataToolkit } from "./tools.ts";
 
@@ -11,6 +12,17 @@ const schemaHasDescription = (schema: unknown): boolean => {
     .filter(Array.isArray)
     .some((members) => members.some(schemaHasDescription));
 };
+
+it("keeps only the card tools out of Claude tool search", () => {
+  for (const tool of Object.values(StrataToolkit.tools)) {
+    const meta = Context.getOrUndefined(tool.annotations, Tool.Meta);
+    expect(meta?.["anthropic/alwaysLoad"]).toBe(
+      tool.name === "strata_progress_card" || tool.name === "strata_progress_card_read"
+        ? true
+        : undefined,
+    );
+  }
+});
 
 it("lists the eleven Strata tools with described object parameters", () => {
   expect(Object.keys(StrataToolkit.tools).sort()).toEqual([
