@@ -45,6 +45,18 @@ describe("buildRuntimeInstructions", () => {
     expect(buildRuntimeInstructions({ harness: "Claude Code" })).toContain("<task_progress>");
   });
 
+  it("gives Claude explicit card creation and upkeep points", () => {
+    const instructions = buildRuntimeInstructions({ harness: "Claude Code" });
+    expect(instructions).toContain("before your first work tool call");
+    expect(instructions).toContain("before reasoning about or starting that next phase");
+    expect(instructions).toContain("the owner changes direction");
+    expect(instructions).toContain("reconciling the card before replying");
+    expect(instructions).toContain("Before your final answer");
+    expect(buildRuntimeInstructions({ harness: "Codex" })).not.toContain(
+      "before your first work tool call",
+    );
+  });
+
   it("keeps known model and effort metadata on one line", () => {
     expect(
       buildRuntimeInstructions({

@@ -1,4 +1,7 @@
-import { TASK_PROGRESS_INSTRUCTIONS } from "../strata/TaskProgressInstructions.ts";
+import {
+  TASK_PROGRESS_INSTRUCTIONS,
+  CLAUDE_TASK_PROGRESS_INSTRUCTIONS,
+} from "../strata/TaskProgressInstructions.ts";
 import { progressInstructionsEnabled } from "../strata/TaskProgressRuntime.ts";
 
 const PULL_REQUEST_LINKING_INSTRUCTIONS = `<pull_request_linking>
@@ -20,7 +23,11 @@ export function buildRuntimeInstructions(runtime: {
   const effort = toSingleLine(runtime.reasoningEffort ?? "");
   const modelInfo = model && model !== "auto" && model !== "default" ? `, as ${model}` : "";
   const effortInfo = effort ? ` with ${effort} reasoning effort` : "";
-  const base = `<runtime_info>In case you're asked: you are running in T3 Code through the ${harness} harness${modelInfo}${effortInfo}. No need to mention this otherwise. You can embed images and videos in your response using Markdown with absolute file paths.</runtime_info>\n\n${PULL_REQUEST_LINKING_INSTRUCTIONS}${(runtime.taskProgress ?? progressInstructionsEnabled()) ? `\n\n${TASK_PROGRESS_INSTRUCTIONS}` : ""}`;
+  const progress =
+    (runtime.taskProgress ?? progressInstructionsEnabled())
+      ? `\n\n${TASK_PROGRESS_INSTRUCTIONS}${harness === "Claude Code" ? `\n${CLAUDE_TASK_PROGRESS_INSTRUCTIONS}` : ""}`
+      : "";
+  const base = `<runtime_info>In case you're asked: you are running in T3 Code through the ${harness} harness${modelInfo}${effortInfo}. No need to mention this otherwise. You can embed images and videos in your response using Markdown with absolute file paths.</runtime_info>\n\n${PULL_REQUEST_LINKING_INSTRUCTIONS}${progress}`;
   const sessionContext = runtime.sessionContext?.trim();
   return sessionContext ? `${base}\n\n${sessionContext}` : base;
 }

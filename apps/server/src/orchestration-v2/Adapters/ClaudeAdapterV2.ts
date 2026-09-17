@@ -102,6 +102,7 @@ import {
 import type { ServerProviderShape } from "../../provider/Services/ServerProvider.ts";
 import { mergeProviderInstanceEnvironment } from "../../provider/ProviderInstanceEnvironment.ts";
 import { T3_CODE_ORCHESTRATION_INSTRUCTIONS } from "../../provider/T3OrchestrationInstructions.ts";
+import { claudeTaskProgressHooks } from "../../strata/TaskProgressClaude.ts";
 import { claudeTaskProgressOwnershipHooks } from "../../strata/TaskProgressOwnership.ts";
 import { buildRuntimeInstructions } from "../../provider/RuntimeInstructions.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
@@ -714,6 +715,8 @@ export function makeClaudeQueryOptions(input: {
   readonly sessionContext?: string | undefined;
   readonly modelSelection: ModelSelection;
   readonly nativeThreadId: string;
+  /** The Strata thread whose saved task card is restored into Claude's context. */
+  readonly threadId?: ThreadId;
   readonly resume: boolean;
   readonly resumeSessionAt?: string;
   readonly cwd: string | null;
@@ -796,7 +799,10 @@ export function makeClaudeQueryOptions(input: {
       : {}),
     ...(input.environment === undefined ? {} : { env: input.environment }),
     ...(input.mcpServers === undefined ? {} : { mcpServers: input.mcpServers }),
-    hooks: claudeTaskProgressOwnershipHooks(),
+    hooks:
+      input.threadId === undefined
+        ? claudeTaskProgressOwnershipHooks()
+        : claudeTaskProgressHooks(input.threadId),
     systemPrompt: {
       type: "preset" as const,
       preset: "claude_code" as const,
@@ -5427,6 +5433,7 @@ export function makeClaudeAdapterV2(
                 sessionContext: turnInput.runtimePolicy.sessionContext,
                 modelSelection: turnInput.modelSelection,
                 nativeThreadId,
+                threadId: turnInput.threadId,
                 resume: shouldResume,
                 ...(resumeSessionAt === undefined ? {} : { resumeSessionAt }),
                 cwd: turnInput.runtimePolicy.cwd,

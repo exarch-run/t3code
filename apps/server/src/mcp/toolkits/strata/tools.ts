@@ -223,6 +223,7 @@ const StrataProgressCardTool = strataTool(
     failure: TaskProgressRefusedError,
   })
     .annotate(Tool.Title, "Update the Strata task card")
+    .annotate(Tool.Meta, { "anthropic/alwaysLoad": true })
     .annotate(Tool.Readonly, false)
     .annotate(Tool.Destructive, false)
     .annotate(Tool.Idempotent, true),
@@ -237,6 +238,7 @@ const StrataProgressCardReadTool = strataTool(
     dependencies: [McpInvocationContext.McpInvocationContext],
   })
     .annotate(Tool.Title, "Read the Strata task card")
+    .annotate(Tool.Meta, { "anthropic/alwaysLoad": true })
     .annotate(Tool.Readonly, true)
     .annotate(Tool.Destructive, false)
     .annotate(Tool.Idempotent, true),
