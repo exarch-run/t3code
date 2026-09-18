@@ -1,4 +1,8 @@
-import { CODEX_TASK_PROGRESS_TOOLS, CODEX_SUBAGENT_WRITE_REFUSED, registerCodexRoute } from "../../strata/TaskProgressCodexRoute.ts";
+import {
+  CODEX_TASK_PROGRESS_TOOLS,
+  CODEX_SUBAGENT_WRITE_REFUSED,
+  registerCodexRoute,
+} from "../../strata/TaskProgressCodexRoute.ts";
 import {
   mcpToolPresentation,
   type McpToolPresentation,
@@ -12,7 +16,13 @@ import {
 } from "../../provider/CodexTurnTokenUsage.ts";
 import type { ServerProviderShape } from "../../provider/Services/ServerProvider.ts";
 import { codexRateLimitsToUpdate } from "../../provider/Layers/codexUsageLimits.ts";
-import { CodexSettings, defaultInstanceIdForDriver, ProviderDriverKind } from "@t3tools/contracts";
+import {
+  ChatAttachmentId,
+  CodexSettings,
+  defaultInstanceIdForDriver,
+  PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
+  ProviderDriverKind,
+} from "@t3tools/contracts";
 import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
@@ -51,19 +61,22 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Encoding from "effect/Encoding";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
-import { resolveAttachmentPath } from "../../attachmentStore.ts";
+import { createDeterministicAttachmentId, resolveAttachmentPath } from "../../attachmentStore.ts";
+import { inferImageExtension, parseBase64DataUrl } from "../../imageMime.ts";
 import { getCodexServiceTierOptionValue } from "../../codexModelOptions.ts";
 import {
   describeMcpElicitation,
@@ -457,6 +470,74 @@ function codexNativeItemRef(nativeItemId: string) {
     nativeId: nativeItemId,
     strength: "strong" as const,
   };
+}
+
+const IMAGE_SIGNATURES: ReadonlyArray<{
+  readonly mimeType: string;
+  readonly matches: (bytes: Uint8Array) => boolean;
+}> = [
+  {
+    mimeType: "image/png",
+    matches: (bytes) =>
+      bytes.length >= 4 &&
+      bytes[0] === 0x89 &&
+      bytes[1] === 0x50 &&
+      bytes[2] === 0x4e &&
+      bytes[3] === 0x47,
+  },
+  {
+    mimeType: "image/jpeg",
+    matches: (bytes) =>
+      bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff,
+  },
+  {
+    mimeType: "image/gif",
+    matches: (bytes) =>
+      bytes.length >= 4 &&
+      bytes[0] === 0x47 &&
+      bytes[1] === 0x49 &&
+      bytes[2] === 0x46 &&
+      bytes[3] === 0x38,
+  },
+  {
+    mimeType: "image/webp",
+    matches: (bytes) =>
+      bytes.length >= 12 &&
+      bytes[0] === 0x52 &&
+      bytes[1] === 0x49 &&
+      bytes[2] === 0x46 &&
+      bytes[3] === 0x46 &&
+      bytes[8] === 0x57 &&
+      bytes[9] === 0x45 &&
+      bytes[10] === 0x42 &&
+      bytes[11] === 0x50,
+  },
+];
+
+/**
+ * The picture inside a Codex `imageGeneration` item. Codex sends the image as
+ * base64, with or without a data-URL prefix, and its saved path lies inside
+ * the provider home, which a client may not be able to read. The bytes decide
+ * the type; an empty or undecodable result is nothing to show.
+ */
+export function decodeCodexGeneratedImage(
+  result: string,
+): { readonly bytes: Uint8Array; readonly mimeType: string } | null {
+  const trimmed = result.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+  const dataUrl = parseBase64DataUrl(trimmed);
+  const decoded = Encoding.decodeBase64(dataUrl?.base64 ?? trimmed);
+  if (Result.isFailure(decoded) || decoded.success.byteLength === 0) {
+    return null;
+  }
+  const bytes = decoded.success;
+  const sniffed = IMAGE_SIGNATURES.find((signature) => signature.matches(bytes))?.mimeType;
+  const declared = dataUrl?.mimeType.toLowerCase();
+  const mimeType =
+    sniffed ?? (declared !== undefined && declared.startsWith("image/") ? declared : "image/png");
+  return { bytes, mimeType };
 }
 
 function trimText(value: string | null | undefined): string | undefined {
@@ -1592,18 +1673,25 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
         const progressRoutes = new Map<string, ReturnType<typeof registerCodexRoute>>();
         const registerProgressThread = (threadId: ThreadId, nativeId: string) => {
           progressRoutes.get(nativeId)?.close();
-          progressRoutes.set(nativeId, registerCodexRoute({ threadId, root: Effect.succeed(nativeId) }));
+          progressRoutes.set(
+            nativeId,
+            registerCodexRoute({ threadId, root: Effect.succeed(nativeId) }),
+          );
         };
-        yield* Effect.addFinalizer(() => Effect.sync(() => {
-          for (const route of progressRoutes.values()) route.close();
-          progressRoutes.clear();
-        }));
-        yield* client.handleServerRequest("item/tool/call", payload => {
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            for (const route of progressRoutes.values()) route.close();
+            progressRoutes.clear();
+          }),
+        );
+        yield* client.handleServerRequest("item/tool/call", (payload) => {
           const route = progressRoutes.get(payload.threadId);
-          return route ? route.handle(payload) : Effect.succeed({
-            success: false,
-            contentItems: [{ type: "inputText" as const, text: CODEX_SUBAGENT_WRITE_REFUSED }],
-          });
+          return route
+            ? route.handle(payload)
+            : Effect.succeed({
+                success: false,
+                contentItems: [{ type: "inputText" as const, text: CODEX_SUBAGENT_WRITE_REFUSED }],
+              });
         });
         const initialized = yield* Ref.make(false);
         const ensureInitialized = Effect.gen(function* () {
@@ -2619,7 +2707,9 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 prompt: input.item.prompt ?? "",
                 title: null,
                 model,
-                ...(input.item.reasoningEffort == null ? {} : { effort: input.item.reasoningEffort }),
+                ...(input.item.reasoningEffort == null
+                  ? {}
+                  : { effort: input.item.reasoningEffort }),
                 ordinal: index + 1,
                 emitInitialPrompt: true,
               });
@@ -2829,6 +2919,135 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               messageId,
               text: item.text,
               streaming: !completed,
+            };
+            return { node, message, turnItem };
+          });
+
+        /**
+         * A generated image becomes its own completed assistant message with
+         * the picture attached, so every client shows it the way it shows a
+         * sent picture, outside the folded work history. The bytes live in the
+         * attachments store under an id derived from the native item, so a
+         * replayed completion rewrites the same file and message instead of
+         * adding a second one. Nothing is emitted for an empty, oversized, or
+         * unstorable result; the turn continues either way.
+         */
+        const buildGeneratedImageArtifacts = (
+          context: ActiveCodexTurnContext,
+          item: { readonly id: string; readonly result: string },
+        ) =>
+          Effect.gen(function* () {
+            const image = decodeCodexGeneratedImage(item.result);
+            if (image === null) {
+              return undefined;
+            }
+            if (image.bytes.byteLength > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES) {
+              yield* Effect.logWarning("orchestration-v2.codex-generated-image-too-large", {
+                nativeItemId: item.id,
+                sizeBytes: image.bytes.byteLength,
+                limitBytes: PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
+              });
+              return undefined;
+            }
+            const rawAttachmentId = createDeterministicAttachmentId(
+              context.projectionThreadId,
+              `image-generation:${item.id}`,
+            );
+            if (rawAttachmentId === null) {
+              return undefined;
+            }
+            const attachment: ChatAttachment = {
+              type: "image",
+              id: ChatAttachmentId.make(rawAttachmentId),
+              name: `generated-image${inferImageExtension({ mimeType: image.mimeType })}`,
+              mimeType: image.mimeType,
+              sizeBytes: image.bytes.byteLength,
+            };
+            const attachmentPath = resolveAttachmentPath({
+              attachmentsDir: serverConfig.attachmentsDir,
+              attachment,
+            });
+            if (attachmentPath === null) {
+              return undefined;
+            }
+            const stored = yield* fileSystem.writeFile(attachmentPath, image.bytes).pipe(
+              Effect.as(true),
+              Effect.catch((cause) =>
+                Effect.logWarning("orchestration-v2.codex-generated-image-store-failed", {
+                  nativeItemId: item.id,
+                  attachmentPath,
+                  cause,
+                }).pipe(Effect.as(false)),
+              ),
+            );
+            if (!stored) {
+              return undefined;
+            }
+            const updatedAt = yield* DateTime.now;
+            const nodeId = idAllocator.derive.nodeFromProviderItem({
+              driver: CODEX_PROVIDER,
+              nativeItemId: item.id,
+            });
+            const ordinal = yield* resolveItemOrdinal(context, item.id);
+            const messageId = idAllocator.derive.messageFromProviderItem({
+              driver: CODEX_PROVIDER,
+              nativeItemId: item.id,
+            });
+            const turnItemId = idAllocator.derive.turnItemFromProviderItem({
+              driver: CODEX_PROVIDER,
+              nativeItemId: item.id,
+            });
+            const node: OrchestrationV2ExecutionNode = {
+              id: nodeId,
+              threadId: context.projectionThreadId,
+              runId: context.projectionRunId,
+              parentNodeId: context.itemParentNodeId,
+              rootNodeId: context.rootNodeId,
+              kind: "assistant_message",
+              status: "completed",
+              countsForRun: false,
+              providerThreadId: context.providerThread.id,
+              providerTurnId: context.providerTurnId,
+              nativeItemRef: codexNativeItemRef(item.id),
+              runtimeRequestId: null,
+              checkpointScopeId: null,
+              startedAt: context.startedAt,
+              completedAt: updatedAt,
+            };
+            const message: OrchestrationV2ConversationMessage = {
+              createdBy: "agent",
+              creationSource: "provider",
+              id: messageId,
+              threadId: context.projectionThreadId,
+              runId: context.projectionRunId,
+              nodeId,
+              role: "assistant",
+              text: "",
+              attachments: [attachment],
+              streaming: false,
+              createdAt: context.startedAt,
+              updatedAt,
+            };
+            const turnItem: OrchestrationV2TurnItem = {
+              id: turnItemId,
+              threadId: context.projectionThreadId,
+              runId: context.projectionRunId,
+              nodeId,
+              providerThreadId: context.providerThread.id,
+              providerTurnId: context.providerTurnId,
+              nativeItemRef: codexNativeItemRef(item.id),
+              parentItemId: null,
+              ordinal,
+              status: "completed",
+              title: null,
+              startedAt: context.startedAt,
+              completedAt: updatedAt,
+              updatedAt,
+              type: "assistant_message",
+              messageId,
+              text: "",
+              attachments: [attachment],
+              streaming: false,
             };
             return { node, message, turnItem };
           });
@@ -3913,6 +4132,29 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               if (yield* emitSubagentUserMessage(context, payload.item)) {
                 return;
               }
+            }
+
+            if (payload.item.type === "imageGeneration") {
+              const artifacts = yield* buildGeneratedImageArtifacts(context, payload.item);
+              if (artifacts === undefined) {
+                return;
+              }
+              yield* emitProviderEvent({
+                type: "node.updated",
+                driver: CODEX_PROVIDER,
+                node: artifacts.node,
+              });
+              yield* emitProviderEvent({
+                type: "message.updated",
+                driver: CODEX_PROVIDER,
+                message: artifacts.message,
+              });
+              yield* emitProviderEvent({
+                type: "turn_item.updated",
+                driver: CODEX_PROVIDER,
+                turnItem: artifacts.turnItem,
+              });
+              return;
             }
 
             if (payload.item.type === "commandExecution") {
@@ -5036,17 +5278,29 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           ensureThread: (threadInput) =>
             ensureInitialized.pipe(
               Effect.andThen(
-                client.raw.request("thread/start", {
-                  ...codexThreadRuntimeParams({
-                    threadId: threadInput.threadId,
-                    modelSelection: threadInput.modelSelection,
-                    runtimePolicy: threadInput.runtimePolicy,
-                  }),
-                  dynamicTools: CODEX_TASK_PROGRESS_TOOLS,
-                }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({
-                  thread: Schema.Struct({ id: Schema.String, createdAt: Schema.Number,
-                    updatedAt: Schema.Number, forkedFromId: Schema.optionalKey(Schema.NullOr(Schema.String)) }),
-                })))),
+                client.raw
+                  .request("thread/start", {
+                    ...codexThreadRuntimeParams({
+                      threadId: threadInput.threadId,
+                      modelSelection: threadInput.modelSelection,
+                      runtimePolicy: threadInput.runtimePolicy,
+                    }),
+                    dynamicTools: CODEX_TASK_PROGRESS_TOOLS,
+                  })
+                  .pipe(
+                    Effect.flatMap(
+                      Schema.decodeUnknownEffect(
+                        Schema.Struct({
+                          thread: Schema.Struct({
+                            id: Schema.String,
+                            createdAt: Schema.Number,
+                            updatedAt: Schema.Number,
+                            forkedFromId: Schema.optionalKey(Schema.NullOr(Schema.String)),
+                          }),
+                        }),
+                      ),
+                    ),
+                  ),
               ),
               Effect.map((response): OrchestrationV2ProviderThread =>
                 providerThreadFromCodexThread({
@@ -5058,10 +5312,12 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                   thread: response.thread,
                 }),
               ),
-              Effect.tap(thread => Effect.sync(() => {
-                if (thread.appThreadId !== null && thread.nativeThreadRef?.nativeId)
-                  registerProgressThread(thread.appThreadId, thread.nativeThreadRef.nativeId);
-              })),
+              Effect.tap((thread) =>
+                Effect.sync(() => {
+                  if (thread.appThreadId !== null && thread.nativeThreadRef?.nativeId)
+                    registerProgressThread(thread.appThreadId, thread.nativeThreadRef.nativeId);
+                }),
+              ),
               Effect.mapError(
                 (cause) =>
                   new ProviderAdapterEnsureThreadError({

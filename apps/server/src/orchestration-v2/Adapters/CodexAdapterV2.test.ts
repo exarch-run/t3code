@@ -25,6 +25,7 @@ import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hos
 import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 import * as CodexClient from "effect-codex-app-server/client";
 import * as CodexReplay from "effect-codex-app-server/replay";
+import * as CodexSchema from "effect-codex-app-server/schema";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -37,6 +38,7 @@ import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
+import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import type { EventNdjsonLogger } from "../../provider/Layers/EventNdjsonLogger.ts";
 import { layer as idAllocatorLayer, IdAllocatorV2 } from "../IdAllocator.ts";
@@ -487,13 +489,19 @@ describe("CodexAdapterV2 runtime policy", () => {
       const params = yield* buildCodexTurnStartParams({
         nativeThreadId: "native-project-context",
         codexInput: [{ type: "text", text: "Continue" }],
-        runtimePolicy: { runtimeMode: "full-access", interactionMode: "default", cwd: null,
-          sessionContext: "<session_files>Project standing instructions.</session_files>" },
+        runtimePolicy: {
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: null,
+          sessionContext: "<session_files>Project standing instructions.</session_files>",
+        },
         modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
         hasT3Mcp: false,
       });
-      assert.equal(params.collaborationMode?.settings.developer_instructions,
-        "<session_files>Project standing instructions.</session_files>");
+      assert.equal(
+        params.collaborationMode?.settings.developer_instructions,
+        "<session_files>Project standing instructions.</session_files>",
+      );
     }),
   );
 
@@ -1549,6 +1557,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         terminalEvents,
         subagentUpdates,
         hasPendingBackgroundWork,
+        serverConfig,
         firstTerminal: Deferred.await(firstTerminal),
       };
     });
@@ -1914,6 +1923,215 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           });
         }
         assert.isEmpty(assistantMessages(harness.events));
+      }).pipe(Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
+    ),
+  );
+
+  // A one-pixel PNG, the shape Codex's imageGeneration item carries as base64.
+  const GENERATED_PNG = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+    "base64",
+  );
+
+  const generatedImageTranscript = (input: {
+    readonly scenario: string;
+    readonly nativeThreadId: string;
+    readonly nativeTurnId: string;
+    readonly items: ReadonlyArray<{
+      readonly label: string;
+      readonly item: CodexSchema.V2ItemCompletedNotification__ThreadItem;
+    }>;
+  }) =>
+    makeCodexReplayTranscript({
+      scenario: input.scenario,
+      entries: [
+        ...codexReplayPreamble({
+          nativeThreadId: input.nativeThreadId,
+          nativeTurnId: input.nativeTurnId,
+          prompt: "Draw the mockup.",
+        }),
+        ...input.items.map(({ label, item }) => ({
+          type: "emit_inbound" as const,
+          label,
+          frame: {
+            method: "item/completed",
+            params: { threadId: input.nativeThreadId, turnId: input.nativeTurnId, item },
+          },
+        })),
+        {
+          type: "emit_inbound",
+          label: "complete",
+          frame: {
+            method: "turn/completed",
+            params: {
+              threadId: input.nativeThreadId,
+              turn: makeCodexReplayTurn({ id: input.nativeTurnId, status: "completed" }),
+            },
+          },
+        },
+      ],
+    });
+
+  it.effect("delivers a generated image as an assistant message with the picture attached", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const imageItem = {
+          type: "imageGeneration" as const,
+          id: "image-item",
+          result: GENERATED_PNG.toString("base64"),
+          revisedPrompt: "A one-pixel mockup",
+          savedPath: "/tmp/codex-home/images/mockup.png",
+          status: "completed",
+        };
+        const transcript = generatedImageTranscript({
+          scenario: "generated-image",
+          nativeThreadId: "generated-image-thread",
+          nativeTurnId: "generated-image-turn",
+          items: [
+            { label: "image", item: imageItem },
+            // Codex resends a completed item on resume; the same item must not
+            // become a second picture.
+            { label: "image-replay", item: imageItem },
+            {
+              label: "answer",
+              item: {
+                type: "agentMessage",
+                id: "answer-item",
+                text: "Here is the mockup.",
+                phase: "final_answer",
+              },
+            },
+          ],
+        });
+        const harness = yield* makeCodexReplayHarness(transcript);
+        yield* harness.runtime.startTurn(
+          makeCodexTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("generated-image-attempt"),
+            text: "Draw the mockup.",
+          }),
+        );
+        yield* harness.firstTerminal;
+
+        const messages = assistantMessages(harness.events);
+        const pictures = messages.filter((event) => event.message.attachments.length > 0);
+        assert.lengthOf(pictures, 2);
+        assert.lengthOf(new Set(pictures.map((event) => event.message.id)), 1);
+        const picture = pictures[0]!.message;
+        assert.equal(picture.text, "");
+        assert.equal(picture.streaming, false);
+        assert.equal(picture.createdBy, "agent");
+        const attachment = picture.attachments[0]!;
+        assert.equal(attachment.type, "image");
+        if (attachment.type !== "image") return;
+        assert.equal(attachment.mimeType, "image/png");
+        assert.equal(attachment.name, "generated-image.png");
+        assert.equal(attachment.sizeBytes, GENERATED_PNG.byteLength);
+        assert.equal(pictures[1]!.message.attachments[0]!.id, attachment.id);
+
+        const attachmentPath = resolveAttachmentPath({
+          attachmentsDir: harness.serverConfig.attachmentsDir,
+          attachment,
+        });
+        assert.isNotNull(attachmentPath);
+        const stored = yield* fileSystem.readFile(attachmentPath!);
+        assert.deepEqual(Buffer.from(stored), GENERATED_PNG);
+
+        const pictureItem = harness.events.find(
+          (event) =>
+            event.type === "turn_item.updated" &&
+            event.turnItem.type === "assistant_message" &&
+            (event.turnItem.attachments?.length ?? 0) > 0,
+        );
+        assert.equal(pictureItem?.type, "turn_item.updated");
+        if (
+          pictureItem?.type !== "turn_item.updated" ||
+          pictureItem.turnItem.type !== "assistant_message"
+        ) {
+          return;
+        }
+        assert.equal(pictureItem.turnItem.messageId, picture.id);
+        assert.equal(pictureItem.turnItem.status, "completed");
+        assert.equal(pictureItem.turnItem.text, "");
+        const pictureNode = harness.events.find(
+          (event) => event.type === "node.updated" && event.node.id === pictureItem.turnItem.nodeId,
+        );
+        assert.equal(
+          pictureNode?.type === "node.updated" && pictureNode.node.kind,
+          "assistant_message",
+        );
+        assert.equal(pictureNode?.type === "node.updated" && pictureNode.node.status, "completed");
+
+        // The answer that follows keeps its own text and no picture of its own.
+        const answer = messages.find((event) => event.message.text === "Here is the mockup.");
+        assert.isDefined(answer);
+        assert.lengthOf(answer!.message.attachments, 0);
+        const answerItem = harness.events.find(
+          (event) =>
+            event.type === "turn_item.updated" &&
+            event.turnItem.type === "assistant_message" &&
+            event.turnItem.messageId === answer!.message.id,
+        );
+        assert.isTrue(
+          answerItem?.type === "turn_item.updated" &&
+            answerItem.turnItem.ordinal > pictureItem.turnItem.ordinal,
+        );
+      }).pipe(Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
+    ),
+  );
+
+  it.effect("shows nothing for an image generation that returned no picture", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const transcript = generatedImageTranscript({
+          scenario: "generated-image-empty",
+          nativeThreadId: "generated-image-empty-thread",
+          nativeTurnId: "generated-image-empty-turn",
+          items: [
+            {
+              label: "image",
+              item: {
+                type: "imageGeneration",
+                id: "image-item",
+                result: "",
+                savedPath: null,
+                status: "failed",
+              },
+            },
+            {
+              label: "answer",
+              item: {
+                type: "agentMessage",
+                id: "answer-item",
+                text: "The image could not be generated.",
+                phase: "final_answer",
+              },
+            },
+          ],
+        });
+        const harness = yield* makeCodexReplayHarness(transcript);
+        yield* harness.runtime.startTurn(
+          makeCodexTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("generated-image-empty-attempt"),
+            text: "Draw the mockup.",
+          }),
+        );
+        yield* harness.firstTerminal;
+        const messages = assistantMessages(harness.events);
+        assert.isTrue(messages.every((event) => event.message.attachments.length === 0));
+        assert.isDefined(
+          messages.find((event) => event.message.text === "The image could not be generated."),
+        );
+        const attachments = yield* fileSystem.readDirectory(harness.serverConfig.attachmentsDir);
+        assert.isEmpty(attachments);
+        assert.equal(harness.terminalEvents()[0]?.status, "completed");
       }).pipe(Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
     ),
   );
@@ -4967,161 +5185,180 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     },
   });
 
-  const resumeSubagentTranscript = (collaborationCall: boolean) => makeCodexReplayTranscript({
-    scenario: RESUME_SCENARIO,
-    entries: [
-      ...codexReplayPreamble({
-        nativeThreadId: RESUME_NATIVE_THREAD,
-        nativeTurnId: RESUME_NATIVE_TURN,
-        prompt: RESUME_PROMPT,
-      }),
-      {
-        type: "emit_inbound",
-        label: "item/completed/subAgentActivity-started",
-        frame: {
-          method: "item/completed",
-          params: {
-            item: collaborationCall ? {
-              type: "collabAgentToolCall", id: "call-codex-resume-spawn", tool: "spawnAgent", status: "completed",
-              senderThreadId: RESUME_NATIVE_THREAD, receiverThreadIds: [RESUME_CHILD_THREAD],
-              prompt: "Review changes", model: "gpt-5.6", reasoningEffort: "high", agentsStates: {},
-            } : {
-              type: "subAgentActivity",
-              id: "call-codex-resume-spawn",
-              kind: "started",
-              agentThreadId: RESUME_CHILD_THREAD,
-              agentPath: "/root/resume_agent",
+  const resumeSubagentTranscript = (collaborationCall: boolean) =>
+    makeCodexReplayTranscript({
+      scenario: RESUME_SCENARIO,
+      entries: [
+        ...codexReplayPreamble({
+          nativeThreadId: RESUME_NATIVE_THREAD,
+          nativeTurnId: RESUME_NATIVE_TURN,
+          prompt: RESUME_PROMPT,
+        }),
+        {
+          type: "emit_inbound",
+          label: "item/completed/subAgentActivity-started",
+          frame: {
+            method: "item/completed",
+            params: {
+              item: collaborationCall
+                ? {
+                    type: "collabAgentToolCall",
+                    id: "call-codex-resume-spawn",
+                    tool: "spawnAgent",
+                    status: "completed",
+                    senderThreadId: RESUME_NATIVE_THREAD,
+                    receiverThreadIds: [RESUME_CHILD_THREAD],
+                    prompt: "Review changes",
+                    model: "gpt-5.6",
+                    reasoningEffort: "high",
+                    agentsStates: {},
+                  }
+                : {
+                    type: "subAgentActivity",
+                    id: "call-codex-resume-spawn",
+                    kind: "started",
+                    agentThreadId: RESUME_CHILD_THREAD,
+                    agentPath: "/root/resume_agent",
+                  },
+              threadId: RESUME_NATIVE_THREAD,
+              turnId: RESUME_NATIVE_TURN,
+              completedAtMs: 1782622441000,
             },
-            threadId: RESUME_NATIVE_THREAD,
-            turnId: RESUME_NATIVE_TURN,
-            completedAtMs: 1782622441000,
           },
         },
-      },
-      childTurnStarted(RESUME_CHILD_TURN_1),
-      childAgentMessage({
-        id: "child-first-answer",
-        text: "CODEX_FIRST_DONE",
-        turnId: RESUME_CHILD_TURN_1,
-        completedAtMs: 1782622442000,
-      }),
-      childAgentMessage({
-        id: "child-first-answer-empty",
-        text: "",
-        turnId: RESUME_CHILD_TURN_1,
-        completedAtMs: 1782622442001,
-        omitPhase: true,
-      }),
-      childAgentMessage({
-        id: "child-first-answer-duplicate",
-        text: "CODEX_FIRST_DONE",
-        turnId: RESUME_CHILD_TURN_1,
-        completedAtMs: 1782622442002,
-      }),
-      childTurnCompleted(RESUME_CHILD_TURN_1, 100),
-      {
-        type: "emit_inbound",
-        label: "item/completed/root-answer",
-        frame: {
-          method: "item/completed",
-          params: {
-            item: {
-              type: "agentMessage",
-              id: "root-answer-resume",
-              text: "NUDGED",
-              phase: "final_answer",
-              memoryCitation: null,
+        childTurnStarted(RESUME_CHILD_TURN_1),
+        childAgentMessage({
+          id: "child-first-answer",
+          text: "CODEX_FIRST_DONE",
+          turnId: RESUME_CHILD_TURN_1,
+          completedAtMs: 1782622442000,
+        }),
+        childAgentMessage({
+          id: "child-first-answer-empty",
+          text: "",
+          turnId: RESUME_CHILD_TURN_1,
+          completedAtMs: 1782622442001,
+          omitPhase: true,
+        }),
+        childAgentMessage({
+          id: "child-first-answer-duplicate",
+          text: "CODEX_FIRST_DONE",
+          turnId: RESUME_CHILD_TURN_1,
+          completedAtMs: 1782622442002,
+        }),
+        childTurnCompleted(RESUME_CHILD_TURN_1, 100),
+        {
+          type: "emit_inbound",
+          label: "item/completed/root-answer",
+          frame: {
+            method: "item/completed",
+            params: {
+              item: {
+                type: "agentMessage",
+                id: "root-answer-resume",
+                text: "NUDGED",
+                phase: "final_answer",
+                memoryCitation: null,
+              },
+              threadId: RESUME_NATIVE_THREAD,
+              turnId: RESUME_NATIVE_TURN,
+              completedAtMs: 1782622443000,
             },
-            threadId: RESUME_NATIVE_THREAD,
-            turnId: RESUME_NATIVE_TURN,
-            completedAtMs: 1782622443000,
           },
         },
-      },
-      {
-        type: "emit_inbound",
-        label: "turn/completed/root",
-        frame: {
-          method: "turn/completed",
-          params: {
-            threadId: RESUME_NATIVE_THREAD,
-            turn: makeCodexReplayTurn({ id: RESUME_NATIVE_TURN, status: "completed" }),
+        {
+          type: "emit_inbound",
+          label: "turn/completed/root",
+          frame: {
+            method: "turn/completed",
+            params: {
+              threadId: RESUME_NATIVE_THREAD,
+              turn: makeCodexReplayTurn({ id: RESUME_NATIVE_TURN, status: "completed" }),
+            },
           },
         },
-      },
-      childTurnStarted(RESUME_CHILD_TURN_2, 30_000),
-      childAgentMessage({
-        id: "child-resume-answer",
-        text: "CODEX_RESUME_DONE",
-        turnId: RESUME_CHILD_TURN_2,
-        completedAtMs: 1782622480000,
-        afterMs: 30_000,
-      }),
-      childTurnCompleted(RESUME_CHILD_TURN_2),
-    ],
-  });
+        childTurnStarted(RESUME_CHILD_TURN_2, 30_000),
+        childAgentMessage({
+          id: "child-resume-answer",
+          text: "CODEX_RESUME_DONE",
+          turnId: RESUME_CHILD_TURN_2,
+          completedAtMs: 1782622480000,
+          afterMs: 30_000,
+        }),
+        childTurnCompleted(RESUME_CHILD_TURN_2),
+      ],
+    });
 
-  for (const collaborationCall of [false, true]) it.effect(`preserves a subagent result across a trailing empty final and resume, collaboration call ${collaborationCall}`, () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const harness = yield* makeCodexReplayHarness(resumeSubagentTranscript(collaborationCall));
-        const now = yield* DateTime.now;
+  for (const collaborationCall of [false, true])
+    it.effect(
+      `preserves a subagent result across a trailing empty final and resume, collaboration call ${collaborationCall}`,
+      () =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const harness = yield* makeCodexReplayHarness(
+              resumeSubagentTranscript(collaborationCall),
+            );
+            const now = yield* DateTime.now;
 
-        yield* harness.runtime.startTurn(
-          makeCodexTestTurnInput({
-            threadId: harness.threadId,
-            providerThread: harness.providerThread,
-            now,
-            attemptId: RunAttemptId.make("attempt-codex-resume"),
-            text: RESUME_PROMPT,
-          }),
-        );
-        yield* awaitUntil(
-          () =>
-            harness.subagentUpdates().some((event) => event.subagent.result === "CODEX_FIRST_DONE"),
-          "first subagent result",
-        );
-        assert.lengthOf(
-          harness.subagentUpdates().filter((event) => event.subagent.result === "CODEX_FIRST_DONE"),
-          1,
-        );
-        yield* TestClock.adjust("100 millis");
-        yield* awaitUntil(() => harness.terminalEvents().length === 1, "root turn terminal");
-        assert.equal(harness.terminalEvents()[0]?.status, "completed");
-        const settledUpdates = harness.subagentUpdates();
-        const firstCompletion = settledUpdates[settledUpdates.length - 1];
-        assert.equal(firstCompletion?.subagent.status, "completed");
-        assert.equal(firstCompletion?.subagent.result, "CODEX_FIRST_DONE");
-        assert.equal(firstCompletion?.subagent.toolUseId, "call-codex-resume-spawn");
-        if (collaborationCall) assert.equal(firstCompletion?.subagent.effort, "high");
-        assert.isFalse(yield* harness.hasPendingBackgroundWork);
-        const settledUpdateCount = settledUpdates.length;
+            yield* harness.runtime.startTurn(
+              makeCodexTestTurnInput({
+                threadId: harness.threadId,
+                providerThread: harness.providerThread,
+                now,
+                attemptId: RunAttemptId.make("attempt-codex-resume"),
+                text: RESUME_PROMPT,
+              }),
+            );
+            yield* awaitUntil(
+              () =>
+                harness
+                  .subagentUpdates()
+                  .some((event) => event.subagent.result === "CODEX_FIRST_DONE"),
+              "first subagent result",
+            );
+            assert.lengthOf(
+              harness
+                .subagentUpdates()
+                .filter((event) => event.subagent.result === "CODEX_FIRST_DONE"),
+              1,
+            );
+            yield* TestClock.adjust("100 millis");
+            yield* awaitUntil(() => harness.terminalEvents().length === 1, "root turn terminal");
+            assert.equal(harness.terminalEvents()[0]?.status, "completed");
+            const settledUpdates = harness.subagentUpdates();
+            const firstCompletion = settledUpdates[settledUpdates.length - 1];
+            assert.equal(firstCompletion?.subagent.status, "completed");
+            assert.equal(firstCompletion?.subagent.result, "CODEX_FIRST_DONE");
+            assert.equal(firstCompletion?.subagent.toolUseId, "call-codex-resume-spawn");
+            if (collaborationCall) assert.equal(firstCompletion?.subagent.effort, "high");
+            assert.isFalse(yield* harness.hasPendingBackgroundWork);
+            const settledUpdateCount = settledUpdates.length;
 
-        yield* TestClock.adjust("30 seconds");
-        yield* awaitUntil(
-          () => harness.subagentUpdates().length > settledUpdateCount,
-          "subagent re-open",
-        );
-        const reopened = harness.subagentUpdates()[settledUpdateCount];
-        assert.equal(reopened?.subagent.status, "running");
-        assert.isTrue(yield* harness.hasPendingBackgroundWork);
+            yield* TestClock.adjust("30 seconds");
+            yield* awaitUntil(
+              () => harness.subagentUpdates().length > settledUpdateCount,
+              "subagent re-open",
+            );
+            const reopened = harness.subagentUpdates()[settledUpdateCount];
+            assert.equal(reopened?.subagent.status, "running");
+            assert.isTrue(yield* harness.hasPendingBackgroundWork);
 
-        yield* TestClock.adjust("30 seconds");
-        yield* awaitUntil(() => {
-          const updates = harness.subagentUpdates();
-          const latest = updates[updates.length - 1];
-          return (
-            latest !== undefined &&
-            latest.subagent.status === "completed" &&
-            latest.subagent.result === "CODEX_RESUME_DONE"
-          );
-        }, "resumed subagent completion");
-        assert.isFalse(yield* harness.hasPendingBackgroundWork);
-        assert.lengthOf(harness.terminalEvents(), 1);
-        assert.lengthOf(harness.continuationRequests, 0);
-      }).pipe(Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
-    ),
-  );
+            yield* TestClock.adjust("30 seconds");
+            yield* awaitUntil(() => {
+              const updates = harness.subagentUpdates();
+              const latest = updates[updates.length - 1];
+              return (
+                latest !== undefined &&
+                latest.subagent.status === "completed" &&
+                latest.subagent.result === "CODEX_RESUME_DONE"
+              );
+            }, "resumed subagent completion");
+            assert.isFalse(yield* harness.hasPendingBackgroundWork);
+            assert.lengthOf(harness.terminalEvents(), 1);
+            assert.lengthOf(harness.continuationRequests, 0);
+          }).pipe(Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
+        ),
+    );
 
   const codexReplayThreadResult = (input: {
     readonly nativeThreadId: string;
