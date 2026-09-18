@@ -2321,7 +2321,6 @@ interface ActiveClaudeTurnContext {
   readonly rejectedRateLimitTypes: Set<string>;
   latestAssistantRateLimited: boolean;
   readonly subagentsByTaskId: Map<string, ActiveClaudeSubagent>;
-  readonly subagentsByToolUseId: Map<string, ActiveClaudeSubagent>;
   readonly subagentNodesByTaskId: Map<string, OrchestrationV2ExecutionNode["id"]>;
   readonly pendingSubagentModelsByToolUseId: Map<string, string>;
   readonly subagentLaunchesByToolUseId: Map<
@@ -2347,6 +2346,13 @@ interface ActiveClaudeSubagent {
   progressItemOrdinal: number | null;
   progressStartedAt: DateTime.Utc | null;
   resultItemOrdinal: number | null;
+  // Deliberately separate from the parent turn's emittedNativeItemIds: that
+  // set gates the parent fallback-text emission, which subagent-attributed
+  // text must not suppress.
+  readonly emittedTextNativeItemIds: Set<string>;
+  lastStreamedText: string | null;
+  readonly toolUseIds: ReadonlySet<string>;
+  readonly launchToolUseId: string | null;
 }
 
 interface ClaudeLiveQueryContext {
@@ -3225,6 +3231,16 @@ export function makeClaudeAdapterV2(
           });
         });
 
+        // Turn-local maps start empty on continuation and user turns. Resolve
+        // text and tools against the session's current task, including launch
+        // and resume aliases, rather than a stale per-turn task snapshot.
+        const subagentForToolUseId = Effect.fnUntraced(function* (toolUseId: string) {
+          for (const subagent of (yield* Ref.get(sessionSubagentsByTaskId)).values()) {
+            if (subagent.toolUseIds.has(toolUseId)) return subagent;
+          }
+          return undefined;
+        });
+
         const updateClaudeSubagentNode = Effect.fnUntraced(function* (input: {
           readonly context: ActiveClaudeTurnContext;
           readonly taskId: string;
@@ -3247,11 +3263,10 @@ export function makeClaudeAdapterV2(
           // The session registry lets a wake-replay turn (fresh context maps)
           // hydrate a subagent that was created by an earlier, settled turn.
           const existingSubagent =
-            input.context.subagentsByTaskId.get(input.taskId) ??
+            (yield* Ref.get(sessionSubagentsByTaskId)).get(input.taskId) ??
             (input.toolUseId === undefined
               ? undefined
-              : input.context.subagentsByToolUseId.get(input.toolUseId)) ??
-            (yield* Ref.get(sessionSubagentsByTaskId)).get(input.taskId);
+              : yield* subagentForToolUseId(input.toolUseId));
           if (existingSubagent === undefined && input.status !== "running") {
             return;
           }
@@ -3384,11 +3399,20 @@ export function makeClaudeAdapterV2(
             progressItemOrdinal: existingSubagent?.progressItemOrdinal ?? null,
             progressStartedAt: existingSubagent?.progressStartedAt ?? null,
             resultItemOrdinal: existingSubagent?.resultItemOrdinal ?? null,
+            emittedTextNativeItemIds: existingSubagent?.emittedTextNativeItemIds ?? new Set(),
+            // A resumed run's result suppression starts fresh: text streamed
+            // before the resume no longer represents the new outcome.
+            lastStreamedText: isReopen ? null : (existingSubagent?.lastStreamedText ?? null),
+            launchToolUseId:
+              existingSubagent === undefined
+                ? (input.toolUseId ?? null)
+                : existingSubagent.launchToolUseId,
+            toolUseIds: new Set([
+              ...(existingSubagent?.toolUseIds ?? []),
+              ...(input.toolUseId === undefined ? [] : [input.toolUseId]),
+            ]),
           } satisfies ActiveClaudeSubagent;
           input.context.subagentsByTaskId.set(input.taskId, subagent);
-          if (input.toolUseId !== undefined) {
-            input.context.subagentsByToolUseId.set(input.toolUseId, subagent);
-          }
           // The same terminal protection, applied atomically: a concurrent
           // fiber (live stream vs continuation drain) may have terminalized
           // the registry entry after this update's lookup read it. A resume
@@ -3600,10 +3624,13 @@ export function makeClaudeAdapterV2(
             });
           }
 
+          // Narration is not proof that the final answer reached the child.
+          // Suppress only an exact copy of its last saved text in this execution.
           if (
             input.result !== undefined &&
             input.result.trim().length > 0 &&
-            input.status !== "running"
+            input.status !== "running" &&
+            subagent.lastStreamedText !== input.result
           ) {
             const resultNativeItemId = `${nativeItemId}:result`;
             const resultItemOrdinal = subagent.resultItemOrdinal ?? ++subagent.nextChildItemOrdinal;
@@ -3793,7 +3820,7 @@ export function makeClaudeAdapterV2(
           const subagent =
             input.parentToolUseId === null
               ? undefined
-              : input.context.subagentsByToolUseId.get(input.parentToolUseId);
+              : yield* subagentForToolUseId(input.parentToolUseId);
           const threadId = subagent?.childThreadId ?? input.context.input.threadId;
           const runId = subagent === undefined ? input.context.input.runId : null;
           const rootNodeId = subagent?.childRootNodeId ?? input.context.input.rootNodeId;
@@ -4085,8 +4112,7 @@ export function makeClaudeAdapterV2(
                   }),
                   turnTokenUsage: normalizeClaudeTurnTokenUsage(
                     input.result,
-                    input.context.subagentsByTaskId.size > 0 ||
-                      input.context.subagentsByToolUseId.size > 0,
+                    input.context.subagentsByTaskId.size > 0,
                     input.status,
                   ),
                 },
@@ -4197,6 +4223,53 @@ export function makeClaudeAdapterV2(
           );
         });
 
+        const emitSubagentAssistantTextArtifacts = Effect.fnUntraced(function* (input: {
+          readonly subagent: ActiveClaudeSubagent;
+          readonly nativeItemId: string;
+          readonly text: string;
+        }) {
+          if (input.subagent.emittedTextNativeItemIds.has(input.nativeItemId)) {
+            return;
+          }
+          input.subagent.emittedTextNativeItemIds.add(input.nativeItemId);
+          const now = yield* DateTime.now;
+          const ordinal = ++input.subagent.nextChildItemOrdinal;
+          input.subagent.lastStreamedText = input.text;
+          const artifacts = makeSubagentConversationArtifacts({
+            messageId: idAllocator.derive.messageFromProviderItem({
+              driver: CLAUDE_PROVIDER,
+              nativeItemId: input.nativeItemId,
+            }),
+            turnItemId: idAllocator.derive.turnItemFromProviderItem({
+              driver: CLAUDE_PROVIDER,
+              nativeItemId: input.nativeItemId,
+            }),
+            threadId: input.subagent.childThreadId,
+            rootNodeId: input.subagent.childRootNodeId,
+            providerThreadId: null,
+            providerTurnId: null,
+            nativeItemRef: {
+              driver: CLAUDE_PROVIDER,
+              nativeId: input.nativeItemId,
+              strength: "strong",
+            },
+            role: "assistant",
+            text: input.text,
+            ordinal,
+            now,
+          });
+          yield* emitProviderEvent({
+            type: "message.updated",
+            driver: CLAUDE_PROVIDER,
+            message: artifacts.message,
+          });
+          yield* emitProviderEvent({
+            type: "turn_item.updated",
+            driver: CLAUDE_PROVIDER,
+            turnItem: artifacts.turnItem,
+          });
+        });
+
         const finalizeActiveTurnAfterQueryExit = Effect.fnUntraced(function* (
           cause?: Cause.Cause<ClaudeAgentSdkQueryRunnerError>,
         ) {
@@ -4283,6 +4356,11 @@ export function makeClaudeAdapterV2(
               const { progress: _staleProgress, ...priorTask } = registered.task;
               return new Map(current).set(message.task_id, {
                 ...registered,
+                lastStreamedText: null,
+                toolUseIds: new Set([
+                  ...registered.toolUseIds,
+                  ...(message.tool_use_id === undefined ? [] : [message.tool_use_id]),
+                ]),
                 task: {
                   ...priorTask,
                   status: "running",
@@ -4772,7 +4850,7 @@ export function makeClaudeAdapterV2(
               typeof message.message.model === "string" ? message.message.model.trim() : "";
             const model = snapshotModel.length === 0 ? undefined : snapshotModel;
             if (parentToolUseId !== null && model !== undefined) {
-              const subagent = context.subagentsByToolUseId.get(parentToolUseId);
+              const subagent = yield* subagentForToolUseId(parentToolUseId);
               if (subagent === undefined) {
                 rememberPendingClaudeSubagentModel(
                   context.pendingSubagentModelsByToolUseId,
@@ -4940,13 +5018,11 @@ export function makeClaudeAdapterV2(
           }
 
           for (const { toolResult, output } of claudeToolResultEntriesFromMessage(message)) {
-            const subagent = context.subagentsByToolUseId.get(toolResult.tool_use_id);
-            // A resume task_started reuses the resuming tool call's
-            // tool_use_id (e.g. SendMessage), whose tool_result only
-            // acknowledges delivery. Only the Agent launch's tool_result may
-            // terminalize the subagent, and Agent tool_uses never enter
-            // toolCalls (they project as subagent rows instead).
-            if (subagent !== undefined && !context.toolCalls.has(toolResult.tool_use_id)) {
+            const subagent = yield* subagentForToolUseId(toolResult.tool_use_id);
+            // Resume aliases also identify this child, but their SendMessage
+            // receipts only acknowledge delivery. Only the launch tool result
+            // can complete it, even when a receipt arrives in a later turn.
+            if (subagent?.launchToolUseId === toolResult.tool_use_id) {
               // A background Agent launch resolves its tool_use immediately
               // with an async-launch ACK while the task keeps running; only
               // the eventual task_notification terminalizes the subagent.
@@ -4996,6 +5072,32 @@ export function makeClaudeAdapterV2(
 
           const assistantText = assistantTextFromSdkMessage(message);
           if (assistantText !== null && assistantText.text.length > 0) {
+            // The SDK forwards subagent assistant messages into the parent
+            // query stream tagged with parent_tool_use_id; they belong to the
+            // subagent's child thread, never to the parent transcript. Tool
+            // uses on the same messages already route via
+            // ensureToolCallStarted, so text must follow the same attribution.
+            const textParentToolUseId = parentToolUseIdFromSdkMessage(message);
+            if (textParentToolUseId !== null) {
+              const subagent = yield* subagentForToolUseId(textParentToolUseId);
+              if (subagent === undefined) {
+                // Dropped rather than surfaced in the parent thread: the
+                // child thread still receives the final answer via the
+                // task_notification result fallback.
+                yield* Effect.logWarning("orchestration-v2.claude-subagent-text-unrouted", {
+                  providerTurnId: context.providerTurnId,
+                  parentToolUseId: textParentToolUseId,
+                  nativeItemId: assistantText.nativeItemId,
+                });
+              } else {
+                yield* emitSubagentAssistantTextArtifacts({
+                  subagent,
+                  nativeItemId: assistantText.nativeItemId,
+                  text: assistantText.text,
+                });
+              }
+              return;
+            }
             yield* emitAssistantTextArtifacts({
               context,
               nativeItemId: assistantText.nativeItemId,
@@ -5565,7 +5667,6 @@ export function makeClaudeAdapterV2(
               rejectedRateLimitTypes: new Set(),
               latestAssistantRateLimited: false,
               subagentsByTaskId: new Map(),
-              subagentsByToolUseId: new Map(),
               subagentNodesByTaskId: new Map(),
               pendingSubagentModelsByToolUseId: new Map(),
               subagentLaunchesByToolUseId: new Map(),
