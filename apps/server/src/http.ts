@@ -1,3 +1,4 @@
+import { forwardExarchRequest } from "./exarch/http.ts";
 import Mime from "@effect/platform-node/Mime";
 import {
   AuthOrchestrationOperateScope,
@@ -289,7 +290,29 @@ const authenticateRawRouteWithScope = (
     if (!session.scopes.includes(scope)) {
       return yield* failEnvironmentScopeRequired(scope);
     }
+    return session;
   });
+
+const exarchRoute = (method: "GET" | "POST") =>
+  HttpRouter.add(
+    method,
+    "/api/exarch/*",
+    Effect.gen(function* () {
+      const session = yield* authenticateRawRouteWithScope(
+        method === "GET" ? AuthOrchestrationReadScope : AuthOrchestrationOperateScope,
+      );
+      return yield* forwardExarchRequest(session.sessionId).pipe(
+        Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 502 })),
+      );
+    }).pipe(
+      Effect.catchTags({
+        EnvironmentAuthInvalidError: HttpServerRespondable.toResponse,
+        EnvironmentInternalError: HttpServerRespondable.toResponse,
+        EnvironmentScopeRequiredError: HttpServerRespondable.toResponse,
+      }),
+    ),
+  );
+export const exarchRouteLayer = Layer.merge(exarchRoute("GET"), exarchRoute("POST"));
 
 export const serverEnvironmentHttpApiLayer = HttpApiBuilder.group(
   EnvironmentHttpApi,
