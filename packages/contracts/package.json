@@ -1,6 +1,6 @@
 {
   "name": "@t3tools/contracts",
-  "version": "0.0.42-exarch.2008",
+  "version": "0.0.42-exarch.2009",
   "private": true,
   "files": [
     "dist"
