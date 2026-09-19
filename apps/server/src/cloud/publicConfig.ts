@@ -12,6 +12,7 @@ import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
 
 declare const __T3CODE_BUILD_RELAY_URL__: string | undefined;
+declare const __T3CODE_BUILD_HOSTED_APP_URL__: string | undefined;
 declare const __T3CODE_BUILD_CLERK_PUBLISHABLE_KEY__: string | undefined;
 declare const __T3CODE_BUILD_CLERK_CLI_OAUTH_CLIENT_ID__: string | undefined;
 declare const __T3CODE_BUILD_RELAY_CLIENT_OTLP_TRACES_URL__: string | undefined;
@@ -53,6 +54,11 @@ const buildTimeRelayUrl =
   typeof __T3CODE_BUILD_RELAY_URL__ === "undefined"
     ? ""
     : (normalizeSecureRelayUrl(__T3CODE_BUILD_RELAY_URL__) ?? "");
+const buildTimeHostedAppUrl = readBuildTimeValue(
+  typeof __T3CODE_BUILD_HOSTED_APP_URL__ === "undefined"
+    ? undefined
+    : __T3CODE_BUILD_HOSTED_APP_URL__,
+);
 const buildTimeClerkPublishableKey = readBuildTimeValue(
   typeof __T3CODE_BUILD_CLERK_PUBLISHABLE_KEY__ === "undefined"
     ? undefined
@@ -107,11 +113,12 @@ export const relayUrlConfig = makeRelayUrlConfig();
 /**
  * Hosted app origin used for out-of-band OAuth on headless
  * machines. Overridable so staging/nightly builds can point their CLIs at a
- * matching hosted deployment.
+ * matching hosted deployment. A build may bake its own origin (Exarch does, so
+ * a runtime that strips T3CODE_ variables still never prints a T3 address).
  */
 export const hostedAppUrlConfig = makePublicValueConfig(
   "T3CODE_HOSTED_APP_URL",
-  DEFAULT_HOSTED_APP_URL,
+  buildTimeHostedAppUrl || DEFAULT_HOSTED_APP_URL,
 ).pipe(Config.mapEffect(validateHostedAppUrl));
 
 function validateHostedAppUrl(value: string) {
