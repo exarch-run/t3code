@@ -3,6 +3,7 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import * as Drizzle from "alchemy/Drizzle";
 import * as Planetscale from "alchemy/Planetscale";
 import * as Alchemy from "alchemy";
+import { adopt } from "alchemy/AdoptPolicy";
 import * as RemovalPolicy from "alchemy/RemovalPolicy";
 import type { EffectPgDatabase } from "drizzle-orm/effect-postgres";
 import * as Context from "effect/Context";
@@ -47,12 +48,15 @@ export const PlanetscaleDatabase = Effect.gen(function* () {
   const database =
     mode === "shared-database"
       ? yield* Planetscale.PostgresDatabase("RelayPostgresDatabase", {
-          name: "t3coderelay",
+          // Exarch's relay database, created by hand on 2026-09-18 as a
+          // PS-5 single node. Adopted rather than created so a deploy can
+          // never replace it or queue a resize.
+          name: "exarch-relay",
           region: { slug: "us-west" },
-          clusterSize: "PS_20",
+          clusterSize: "PS_5",
           migrations: { dir: schema.out, table: "relay_migrations" },
-          replicas: 2,
-        }).pipe(RemovalPolicy.retain())
+          replicas: 0,
+        }).pipe(adopt(true), RemovalPolicy.retain())
       : yield* Planetscale.PostgresDatabase.ref("RelayPostgresDatabase", {
           stage: "prod",
         });
