@@ -2,7 +2,7 @@ import { expect, it } from "@effect/vitest";
 import { Tool } from "effect/unstable/ai";
 import * as Context from "effect/Context";
 
-import { StrataToolkit } from "./tools.ts";
+import { ExarchToolkit } from "./tools.ts";
 
 const schemaHasDescription = (schema: unknown): boolean => {
   if (!schema || typeof schema !== "object") return false;
@@ -14,31 +14,31 @@ const schemaHasDescription = (schema: unknown): boolean => {
 };
 
 it("keeps only the card tools out of Claude tool search", () => {
-  for (const tool of Object.values(StrataToolkit.tools)) {
+  for (const tool of Object.values(ExarchToolkit.tools)) {
     const meta = Context.getOrUndefined(tool.annotations, Tool.Meta);
     expect(meta?.["anthropic/alwaysLoad"]).toBe(
-      tool.name === "strata_progress_card" || tool.name === "strata_progress_card_read"
+      tool.name === "exarch_progress_card" || tool.name === "exarch_progress_card_read"
         ? true
         : undefined,
     );
   }
 });
 
-it("lists the eleven Strata tools with described object parameters", () => {
-  expect(Object.keys(StrataToolkit.tools).sort()).toEqual([
-    "strata_act",
-    "strata_changes",
-    "strata_components",
-    "strata_document",
-    "strata_items",
-    "strata_library",
-    "strata_open_documents",
-    "strata_progress_card",
-    "strata_progress_card_read",
-    "strata_render_check",
-    "strata_resolve",
+it("lists the eleven Exarch tools with described object parameters", () => {
+  expect(Object.keys(ExarchToolkit.tools).sort()).toEqual([
+    "exarch_act",
+    "exarch_changes",
+    "exarch_components",
+    "exarch_document",
+    "exarch_items",
+    "exarch_library",
+    "exarch_open_documents",
+    "exarch_progress_card",
+    "exarch_progress_card_read",
+    "exarch_render_check",
+    "exarch_resolve",
   ]);
-  for (const tool of Object.values(StrataToolkit.tools)) {
+  for (const tool of Object.values(ExarchToolkit.tools)) {
     const schema = Tool.getJsonSchema(tool) as {
       readonly type?: unknown;
       readonly properties?: Readonly<Record<string, unknown>>;
@@ -63,21 +63,21 @@ it("lists the eleven Strata tools with described object parameters", () => {
 });
 
 it("tells the agent what it must know at session start", () => {
-  const act = StrataToolkit.tools.strata_act.description ?? "";
+  const act = ExarchToolkit.tools.exarch_act.description ?? "";
   expect(act).toContain("fresh actionId");
   expect(act).toContain("retry reuses it");
   expect(act).toContain("Accept, reject, and save need the Lead");
-  const document = StrataToolkit.tools.strata_document.description ?? "";
+  const document = ExarchToolkit.tools.exarch_document.description ?? "";
   expect(document).toContain("A delivery is the owner's round");
   expect(document).toContain("belong to that read");
   expect(document).toContain("focus, reading position, and unsent drafts are never available");
-  expect(StrataToolkit.tools.strata_open_documents.description).toContain(
+  expect(ExarchToolkit.tools.exarch_open_documents.description).toContain(
     "Nothing else about them is available",
   );
 });
 
 it("tells every model how the task card works", () => {
-  const card = StrataToolkit.tools.strata_progress_card.description ?? "";
+  const card = ExarchToolkit.tools.exarch_progress_card.description ?? "";
   expect(card).toContain("Create a card only for substantial work");
   expect(card).toContain("at least two meaningful sequential steps");
   expect(card).toContain("Existing cards may still be updated or cleared");
@@ -90,7 +90,7 @@ it("tells every model how the task card works", () => {
   expect(card).not.toContain("writeId");
   expect(card).not.toContain("running turn");
   expect(card).not.toContain("Only the parent");
-  const schema = Tool.getJsonSchema(StrataToolkit.tools.strata_progress_card) as {
+  const schema = Tool.getJsonSchema(ExarchToolkit.tools.exarch_progress_card) as {
     readonly additionalProperties?: unknown;
     readonly properties?: Record<string, unknown>;
     readonly required?: unknown;
@@ -98,7 +98,7 @@ it("tells every model how the task card works", () => {
   expect(schema.additionalProperties).toBe(false);
   expect(Object.keys(schema.properties ?? {})).toEqual(["markdown", "plan"]);
   expect(schema.required).toBeUndefined();
-  expect(StrataToolkit.tools.strata_progress_card_read.description).toContain(
+  expect(ExarchToolkit.tools.exarch_progress_card_read.description).toContain(
     "Reading is optional",
   );
 });

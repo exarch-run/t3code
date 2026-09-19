@@ -14,14 +14,14 @@ import * as NodeHttp from "node:http";
 import * as Fiber from "effect/Fiber";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
-import * as StrataHostClient from "../../StrataHostClient.ts";
-import { installBridge } from "../../../strata/TaskProgressRuntime.ts";
+import * as ExarchHostClient from "../../ExarchHostClient.ts";
+import { installBridge } from "../../../exarch/TaskProgressRuntime.ts";
 import {
   CODEX_MCP_WRITE_REFUSED,
   registerCodexRoute,
-} from "../../../strata/TaskProgressCodexRoute.ts";
-import { StrataToolkitHandlersLive } from "./handlers.ts";
-import { StrataToolkit } from "./tools.ts";
+} from "../../../exarch/TaskProgressCodexRoute.ts";
+import { ExarchToolkitHandlersLive } from "./handlers.ts";
+import { ExarchToolkit } from "./tools.ts";
 
 const THREAD_ID = ThreadId.make("thread-1");
 const ENVIRONMENT_ID = EnvironmentId.make("environment-1");
@@ -41,7 +41,7 @@ interface Received {
   readonly body: unknown;
 }
 
-/** A stand-in for Strata's listener: records every request and answers what the test scripted. */
+/** A stand-in for Exarch's listener: records every request and answers what the test scripted. */
 async function stubHost(
   answer: (received: Received) => { status: number; body: unknown },
 ): Promise<{
@@ -79,14 +79,14 @@ async function stubHost(
 
 const makeHarness = (
   env: NodeJS.ProcessEnv,
-  options: Omit<StrataHostClient.StrataHostClientOptions, "env"> = {},
+  options: Omit<ExarchHostClient.ExarchHostClientOptions, "env"> = {},
 ) =>
   Effect.gen(function* () {
-    const client = StrataHostClient.layer({ env: () => env, timeoutMs: 2_000, ...options });
-    const toolkit = yield* StrataToolkit.pipe(
-      Effect.provide(StrataToolkitHandlersLive.pipe(Layer.provide(client))),
+    const client = ExarchHostClient.layer({ env: () => env, timeoutMs: 2_000, ...options });
+    const toolkit = yield* ExarchToolkit.pipe(
+      Effect.provide(ExarchToolkitHandlersLive.pipe(Layer.provide(client))),
     );
-    const call = <Name extends keyof typeof StrataToolkit.tools>(
+    const call = <Name extends keyof typeof ExarchToolkit.tools>(
       name: Name,
       params: Parameters<typeof toolkit.handle<Name>>[1],
     ) =>
@@ -94,7 +94,7 @@ const makeHarness = (
         Stream.unwrap,
         Stream.runCollect,
         Effect.map(
-          (chunk) => chunk.at(-1)!.result as Tool.Success<(typeof StrataToolkit.tools)[Name]>,
+          (chunk) => chunk.at(-1)!.result as Tool.Success<(typeof ExarchToolkit.tools)[Name]>,
         ),
         Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
         Effect.provide(client),
@@ -102,9 +102,9 @@ const makeHarness = (
     return { call };
   });
 
-describe("strata toolkit handlers", () => {
+describe("exarch toolkit handlers", () => {
   it.effect(
-    "posts each tool request to Strata with the thread and environment and returns its JSON",
+    "posts each tool request to Exarch with the thread and environment and returns its JSON",
     () =>
       Effect.gen(function* () {
         const host = yield* Effect.promise(() =>
@@ -115,15 +115,15 @@ describe("strata toolkit handlers", () => {
         );
         try {
           const harness = yield* makeHarness({
-            STRATA_HOST_URL: host.url,
-            STRATA_HOST_TOKEN: "secret-token",
+            EXARCH_HOST_URL: host.url,
+            EXARCH_HOST_TOKEN: "secret-token",
           });
-          const result = yield* harness.call("strata_act", {
+          const result = yield* harness.call("exarch_act", {
             actionId: "act-1",
             entries: [{ verb: "save", document: "/docs/a.md" }],
           });
           expect(result).toEqual({
-            tool: "/tools/strata_act",
+            tool: "/tools/exarch_act",
             echo: {
               threadId: "thread-1",
               environmentId: "environment-1",
@@ -131,17 +131,17 @@ describe("strata toolkit handlers", () => {
             },
           });
           expect(host.received[0]?.authorization).toBe("Bearer secret-token");
-          const library = yield* harness.call("strata_library", {});
-          expect(library).toMatchObject({ tool: "/tools/strata_library" });
-          const documents = yield* harness.call("strata_open_documents", {});
-          expect(documents).toMatchObject({ tool: "/tools/strata_open_documents" });
+          const library = yield* harness.call("exarch_library", {});
+          expect(library).toMatchObject({ tool: "/tools/exarch_library" });
+          const documents = yield* harness.call("exarch_open_documents", {});
+          expect(documents).toMatchObject({ tool: "/tools/exarch_open_documents" });
         } finally {
           yield* Effect.promise(host.close);
         }
       }),
   );
 
-  it.effect("a refusal from Strata surfaces its code and message", () =>
+  it.effect("a refusal from Exarch surfaces its code and message", () =>
     Effect.gen(function* () {
       const host = yield* Effect.promise(() =>
         stubHost(() => ({
@@ -150,11 +150,11 @@ describe("strata toolkit handlers", () => {
         })),
       );
       try {
-        const harness = yield* makeHarness({ STRATA_HOST_URL: host.url, STRATA_HOST_TOKEN: "t" });
-        const error = yield* harness.call("strata_document", {}).pipe(Effect.flip);
+        const harness = yield* makeHarness({ EXARCH_HOST_URL: host.url, EXARCH_HOST_TOKEN: "t" });
+        const error = yield* harness.call("exarch_document", {}).pipe(Effect.flip);
         expect(error).toMatchObject({
-          _tag: "StrataToolFailedError",
-          tool: "strata_document",
+          _tag: "ExarchToolFailedError",
+          tool: "exarch_document",
           code: "NOT_ATTACHED",
           detail: "Attach the thread first.",
         });
@@ -168,18 +168,18 @@ describe("strata toolkit handlers", () => {
   it.effect("unset variables and an unreachable host are one not-connected error", () =>
     Effect.gen(function* () {
       const unset = yield* makeHarness({});
-      const missing = yield* unset.call("strata_items", {}).pipe(Effect.flip);
-      expect(missing).toMatchObject({ _tag: "StrataNotConnectedError" });
-      expect(missing.message).toBe(StrataHostClient.STRATA_NOT_CONNECTED_MESSAGE);
+      const missing = yield* unset.call("exarch_items", {}).pipe(Effect.flip);
+      expect(missing).toMatchObject({ _tag: "ExarchNotConnectedError" });
+      expect(missing.message).toBe(ExarchHostClient.EXARCH_NOT_CONNECTED_MESSAGE);
 
       const host = yield* Effect.promise(() =>
         stubHost(() => ({ status: 200, body: { ok: true, result: {} } })),
       );
       yield* Effect.promise(host.close);
-      const gone = yield* makeHarness({ STRATA_HOST_URL: host.url, STRATA_HOST_TOKEN: "t" });
-      const unreachable = yield* gone.call("strata_items", {}).pipe(Effect.flip);
-      expect(unreachable).toMatchObject({ _tag: "StrataNotConnectedError" });
-      expect(unreachable.message).toBe(StrataHostClient.STRATA_NOT_CONNECTED_MESSAGE);
+      const gone = yield* makeHarness({ EXARCH_HOST_URL: host.url, EXARCH_HOST_TOKEN: "t" });
+      const unreachable = yield* gone.call("exarch_items", {}).pipe(Effect.flip);
+      expect(unreachable).toMatchObject({ _tag: "ExarchNotConnectedError" });
+      expect(unreachable.message).toBe(ExarchHostClient.EXARCH_NOT_CONNECTED_MESSAGE);
     }),
   );
 });
@@ -234,8 +234,8 @@ describe("task card handlers", () => {
       const bridge = fakeBridge();
       try {
         const harness = yield* makeHarness({});
-        expect(yield* harness.call("strata_progress_card_read", {})).toEqual({ card });
-        const result = yield* harness.call("strata_progress_card", {
+        expect(yield* harness.call("exarch_progress_card_read", {})).toEqual({ card });
+        const result = yield* harness.call("exarch_progress_card", {
           markdown: "Halfway",
           plan: [
             { step: "Read", status: "completed" },
@@ -259,8 +259,8 @@ describe("task card handlers", () => {
             },
           },
         ]);
-        // The earlier Strata field names still decode into the same write.
-        yield* harness.call("strata_progress_card", {
+        // The earlier Exarch field names still decode into the same write.
+        yield* harness.call("exarch_progress_card", {
           writeId: "native-2",
           plan: [{ text: "Legacy", status: "pending" }],
         });
@@ -268,12 +268,12 @@ describe("task card handlers", () => {
           threadId: "thread-1",
           input: { steps: [{ step: "Legacy", status: "pending" }] },
         });
-        expect(yield* harness.call("strata_progress_card", {})).toEqual({
+        expect(yield* harness.call("exarch_progress_card", {})).toEqual({
           message: "Progress card cleared",
           revision: null,
           steps: null,
         });
-        expect(yield* harness.call("strata_progress_card_read", {})).toEqual({ card: null });
+        expect(yield* harness.call("exarch_progress_card_read", {})).toEqual({ card: null });
       } finally {
         bridge.close();
       }
@@ -289,14 +289,14 @@ describe("task card handlers", () => {
         try {
           const harness = yield* makeHarness({});
           const refused = yield* harness
-            .call("strata_progress_card", { markdown: "Through MCP" })
+            .call("exarch_progress_card", { markdown: "Through MCP" })
             .pipe(Effect.flip);
           expect(refused).toMatchObject({
             _tag: "TaskProgressRefusedError",
             detail: CODEX_MCP_WRITE_REFUSED,
           });
           expect(bridge.written).toEqual([]);
-          expect(yield* harness.call("strata_progress_card_read", {})).toEqual({ card });
+          expect(yield* harness.call("exarch_progress_card_read", {})).toEqual({ card });
         } finally {
           route.close();
           bridge.close();
@@ -312,7 +312,7 @@ describe("task card handlers", () => {
         // The September 12 review sent its steps under the wrong name; the
         // decoder must not turn that into a note-only update.
         const refused = yield* harness
-          .call("strata_progress_card", {
+          .call("exarch_progress_card", {
             markdown: "Reviewing",
             steps: [{ step: "Read", status: "completed" }],
           })
@@ -322,13 +322,13 @@ describe("task card handlers", () => {
           detail: expect.stringContaining('unknown field "steps"'),
         });
         const wrongStep = yield* harness
-          .call("strata_progress_card", { plan: [{ title: "Read", status: "completed" }] })
+          .call("exarch_progress_card", { plan: [{ title: "Read", status: "completed" }] })
           .pipe(Effect.flip);
         expect(wrongStep).toMatchObject({
           detail: expect.stringContaining('plan[0] has an unknown field "title"'),
         });
         const twoActive = yield* harness
-          .call("strata_progress_card", {
+          .call("exarch_progress_card", {
             plan: [
               { step: "a", status: "in_progress" },
               { step: "b", status: "in_progress" },
@@ -339,7 +339,7 @@ describe("task card handlers", () => {
           detail: expect.stringContaining("at most one in_progress"),
         });
         expect(bridge.written).toEqual([]);
-        expect(yield* harness.call("strata_progress_card_read", {})).toEqual({ card });
+        expect(yield* harness.call("exarch_progress_card_read", {})).toEqual({ card });
       } finally {
         bridge.close();
       }
@@ -380,18 +380,18 @@ describe("uncertain document action outcomes", () => {
         const address = server.address();
         if (!address || typeof address === "string") throw new Error("host did not bind");
         const harness = yield* makeHarness(
-          { STRATA_HOST_URL: `http://127.0.0.1:${address.port}`, STRATA_HOST_TOKEN: "synthetic" },
+          { EXARCH_HOST_URL: `http://127.0.0.1:${address.port}`, EXARCH_HOST_TOKEN: "synthetic" },
           { timeoutMs: ending === "timeout" ? 100 : 2_000 },
         );
         try {
           const pending = yield* harness
-            .call("strata_act", { actionId: "original-action", entries: [{ verb: "comment" }] })
+            .call("exarch_act", { actionId: "original-action", entries: [{ verb: "comment" }] })
             .pipe(Effect.flip, Effect.forkScoped);
           yield* Effect.promise(() => admission);
           if (ending === "host-stop") server.closeAllConnections();
           const error = yield* Fiber.join(pending);
           expect(error).toMatchObject({
-            _tag: "StrataOutcomeUncertainError",
+            _tag: "ExarchOutcomeUncertainError",
             actionId: "original-action",
           });
           expect(error.message).toContain('same actionId "original-action"');
@@ -429,14 +429,14 @@ describe("uncertain document action outcomes", () => {
             { status: 200 },
           )) as typeof globalThis.fetch;
         const harness = yield* makeHarness(
-          { STRATA_HOST_URL: "http://synthetic.invalid", STRATA_HOST_TOKEN: "synthetic" },
+          { EXARCH_HOST_URL: "http://synthetic.invalid", EXARCH_HOST_TOKEN: "synthetic" },
           { fetch },
         );
         const error = yield* harness
-          .call("strata_act", { actionId: "body-action", entries: [] })
+          .call("exarch_act", { actionId: "body-action", entries: [] })
           .pipe(Effect.flip);
         expect(error).toMatchObject({
-          _tag: "StrataOutcomeUncertainError",
+          _tag: "ExarchOutcomeUncertainError",
           actionId: "body-action",
         });
         expect(error.message).toContain('same actionId "body-action"');
@@ -448,8 +448,8 @@ describe("uncertain document action outcomes", () => {
     Effect.gen(function* () {
       const missing = yield* makeHarness({});
       expect(
-        yield* missing.call("strata_act", { actionId: "unsent", entries: [] }).pipe(Effect.flip),
-      ).toMatchObject({ _tag: "StrataNotConnectedError" });
+        yield* missing.call("exarch_act", { actionId: "unsent", entries: [] }).pipe(Effect.flip),
+      ).toMatchObject({ _tag: "ExarchNotConnectedError" });
       const host = yield* Effect.promise(() =>
         stubHost(() => ({
           status: 409,
@@ -461,13 +461,13 @@ describe("uncertain document action outcomes", () => {
       );
       try {
         const refused = yield* makeHarness({
-          STRATA_HOST_URL: host.url,
-          STRATA_HOST_TOKEN: "synthetic",
+          EXARCH_HOST_URL: host.url,
+          EXARCH_HOST_TOKEN: "synthetic",
         });
         const error = yield* refused
-          .call("strata_act", { actionId: "refused", entries: [] })
+          .call("exarch_act", { actionId: "refused", entries: [] })
           .pipe(Effect.flip);
-        expect(error).toMatchObject({ _tag: "StrataToolFailedError", code: "NOT_LEAD" });
+        expect(error).toMatchObject({ _tag: "ExarchToolFailedError", code: "NOT_LEAD" });
       } finally {
         yield* Effect.promise(host.close);
       }
@@ -476,33 +476,33 @@ describe("uncertain document action outcomes", () => {
 });
 
 it.effect("returns same-ID uncertainty advice in the actual MCP tool error result", () => {
-  const host = StrataHostClient.layer({
-    env: () => ({ STRATA_HOST_URL: "http://synthetic.invalid", STRATA_HOST_TOKEN: "synthetic" }),
+  const host = ExarchHostClient.layer({
+    env: () => ({ EXARCH_HOST_URL: "http://synthetic.invalid", EXARCH_HOST_TOKEN: "synthetic" }),
     fetch: (async () => {
       throw new Error("reply lost");
     }) as typeof globalThis.fetch,
   });
-  const registration = McpServer.toolkit(StrataToolkit).pipe(
-    Layer.provide(StrataToolkitHandlersLive),
+  const registration = McpServer.toolkit(ExarchToolkit).pipe(
+    Layer.provide(ExarchToolkitHandlersLive),
     Layer.provide(host),
     Layer.provideMerge(McpServer.McpServer.layer),
   );
   const client = McpSchema.McpServerClient.of({
     clientId: 1,
     clientCapabilities: {},
-    clientInfo: { name: "strata-test", version: "1" },
+    clientInfo: { name: "exarch-test", version: "1" },
     protocolVersion: "2025-06-18",
     initializePayload: {
       protocolVersion: "2025-06-18",
       capabilities: {},
-      clientInfo: { name: "strata-test", version: "1" },
+      clientInfo: { name: "exarch-test", version: "1" },
     },
     getClient: Effect.die("unused"),
   });
   return Effect.gen(function* () {
     const server = yield* McpServer.McpServer;
     const result = yield* server
-      .callTool({ name: "strata_act", arguments: { actionId: "wire-action", entries: [] } })
+      .callTool({ name: "exarch_act", arguments: { actionId: "wire-action", entries: [] } })
       .pipe(
         Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
         Effect.provideService(McpSchema.McpServerClient, client),

@@ -1,10 +1,10 @@
-# Third-party notices for the Strata branch
+# Third-party notices for the Exarch branch
 
 ## OpenClaw progress card
 
-`apps/server/src/strata/TaskProgressInput.ts`, `TaskProgressInstructions.ts`,
-the `strata_progress_card` tool description in
-`apps/server/src/mcp/toolkits/strata/tools.ts`, and their tests adapt the
+`apps/server/src/exarch/TaskProgressInput.ts`, `TaskProgressInstructions.ts`,
+the `exarch_progress_card` tool description in
+`apps/server/src/mcp/toolkits/exarch/tools.ts`, and their tests adapt the
 progress card from OpenClaw at commit
 `11921d88856c0d1690b1036ff6e0e48d9ef9043b`
 (https://github.com/openclaw/openclaw): `src/agents/tools/progress-card-tool.ts`,

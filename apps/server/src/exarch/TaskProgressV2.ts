@@ -42,7 +42,7 @@ export const taskProgressEnabled = Effect.gen(function* () {
     : true;
 });
 
-export const registerProgressBridge = Effect.fn("strata.registerV2ProgressBridge")(function* (
+export const registerProgressBridge = Effect.fn("exarch.registerV2ProgressBridge")(function* (
   dispatch: OrchestratorV2Shape["dispatch"],
   read: Bridge["read"],
 ) {
@@ -67,10 +67,10 @@ export const registerProgressBridge = Effect.fn("strata.registerV2ProgressBridge
       installBridge({
         enabled,
         read,
-        write: Effect.fn("strata.writeV2Progress")(function* ({ threadId, input }) {
+        write: Effect.fn("exarch.writeV2Progress")(function* ({ threadId, input }) {
           const result = yield* dispatch({
             type: "thread.task-progress.write",
-            commandId: CommandId.make(`strata-progress-${NodeCrypto.randomUUID()}`),
+            commandId: CommandId.make(`exarch-progress-${NodeCrypto.randomUUID()}`),
             threadId,
             ...(input.markdown === undefined ? {} : { markdown: input.markdown }),
             ...(input.steps === undefined ? {} : { plan: input.steps }),

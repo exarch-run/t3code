@@ -1,4 +1,4 @@
-import { CODEX_TASK_PROGRESS_TOOLS } from "../../strata/TaskProgressCodexRoute.ts";
+import { CODEX_TASK_PROGRESS_TOOLS } from "../../exarch/TaskProgressCodexRoute.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CommandId,

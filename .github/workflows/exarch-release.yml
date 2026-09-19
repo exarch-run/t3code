@@ -1,18 +1,18 @@
-name: Strata engine release
+name: Exarch engine release
 
 # Builds the `t3` server package from this branch and publishes it as a GitHub
-# release. Strata's packaging installs the release package by URL with lockfile
+# release. Exarch's packaging installs the release package by URL with lockfile
 # integrity. The resource monitor is compiled here from native/resource-monitor
-# for every platform Strata ships, so a release needs no other package.
+# for every platform Exarch ships, so a release needs no other package.
 
 on:
   push:
     tags:
-      - "v*-strata.*"
+      - "v*-exarch.*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to build, for example v0.0.42-strata.2005"
+        description: "Existing tag to build, for example v0.0.42-exarch.2005"
         required: true
         type: string
 
@@ -22,7 +22,7 @@ permissions:
   attestations: write
 
 concurrency:
-  group: strata-release-${{ inputs.tag || github.ref }}
+  group: exarch-release-${{ inputs.tag || github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -112,8 +112,8 @@ jobs:
         run: |
           set -euo pipefail
           tag="${INPUT_TAG:-$GITHUB_REF_NAME}"
-          if [[ ! "$tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-strata\.([0-9]+)$ ]]; then
-            echo "Tag must look like v0.0.41-strata.1, got: $tag" >&2
+          if [[ ! "$tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-exarch\.([0-9]+)$ ]]; then
+            echo "Tag must look like v0.0.41-exarch.1, got: $tag" >&2
             exit 1
           fi
           source_commit="$(git rev-parse --verify "refs/tags/$tag^{commit}")"
@@ -122,15 +122,15 @@ jobs:
             exit 1
           fi
           version="${tag#v}"
-          base_branch="$(node -p "require('./strata/base.json').upstreamBranch")"
-          base_commit="$(node -p "require('./strata/base.json').upstreamCommit")"
-          base_version="$(node -p "require('./strata/base.json').sourceVersion")"
+          base_branch="$(node -p "require('./exarch/base.json').upstreamBranch")"
+          base_commit="$(node -p "require('./exarch/base.json').upstreamCommit")"
+          base_version="$(node -p "require('./exarch/base.json').sourceVersion")"
           if [[ "$base_version" != "${BASH_REMATCH[1]}" ]]; then
-            echo "strata/base.json names $base_version; the tag says ${BASH_REMATCH[1]}" >&2
+            echo "exarch/base.json names $base_version; the tag says ${BASH_REMATCH[1]}" >&2
             exit 1
           fi
           if ! git merge-base --is-ancestor "$base_commit" HEAD; then
-            echo "strata/base.json names $base_commit, which is not an ancestor of HEAD" >&2
+            echo "exarch/base.json names $base_commit, which is not an ancestor of HEAD" >&2
             exit 1
           fi
           {
@@ -198,7 +198,7 @@ jobs:
         run: |
           set -euo pipefail
           out="$RUNNER_TEMP/release"
-          result="$(node strata/pack.mjs --version "$VERSION" --out "$out")"
+          result="$(node exarch/pack.mjs --version "$VERSION" --out "$out")"
           echo "$result"
           {
             echo "file=$(node -pe 'JSON.parse(process.argv[1]).file' "$result")"
@@ -237,7 +237,7 @@ jobs:
               upstreamBranch: env.BASE_BRANCH,
               upstreamCommit: env.BASE_COMMIT,
               helperBinaries: { path: "dist/resource-monitor", targets: ["linux-x64", "darwin-x64", "darwin-arm64", "win32-x64"], source: "compiled by this workflow run from native/resource-monitor at the release commit" },
-              strataCommits: commits,
+              exarchCommits: commits,
               tarball: { name: require("node:path").basename(env.FILE), sha256: env.SHA256 },
               workflowRun: `https://github.com/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`,
               builtAt: new Date().toISOString(),
@@ -245,11 +245,11 @@ jobs:
             };
             fs.writeFileSync(`${env.OUT}/provenance.json`, JSON.stringify(record, null, 2) + "\n");
             const notes = [
-              `Strata engine ${env.VERSION}`,
+              `Exarch engine ${env.VERSION}`,
               "",
               `Source: ${env.TAG} (${env.SOURCE_COMMIT}).`,
               "",
-              `Built from upstream ${env.BASE_BRANCH} (${env.BASE_COMMIT}) plus ${commits.length} Strata commit(s). The resource monitor is compiled by this run for Linux x64, macOS x64 and arm64, and Windows x64.`,
+              `Built from upstream ${env.BASE_BRANCH} (${env.BASE_COMMIT}) plus ${commits.length} Exarch commit(s). The resource monitor is compiled by this run for Linux x64, macOS x64 and arm64, and Windows x64.`,
               "",
               `Package SHA-256: ${env.SHA256}`,
               "",
@@ -276,7 +276,7 @@ jobs:
           set -euo pipefail
           gh release create "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
-            --title "Strata engine $VERSION" \
+            --title "Exarch engine $VERSION" \
             --notes-file "$OUT/notes.md" \
             --verify-tag \
             "$FILE" "$FILE.sha256" "$OUT/provenance.json"

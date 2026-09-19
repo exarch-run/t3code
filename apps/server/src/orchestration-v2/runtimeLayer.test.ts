@@ -1,4 +1,4 @@
-import { publishProgress, readProgressCard } from "../strata/TaskProgressRuntime.ts";
+import { publishProgress, readProgressCard } from "../exarch/TaskProgressRuntime.ts";
 import { SourceControlProviderRegistry } from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -2822,18 +2822,18 @@ it.layer(SharedApplicationDataPlaneTestLayer)("shared application data plane", (
   );
 });
 
-it.layer(Layer.merge(TestLayer, SqlitePersistenceMemory))("Strata v2 task cards", (it) => {
+it.layer(Layer.merge(TestLayer, SqlitePersistenceMemory))("Exarch v2 task cards", (it) => {
   it.effect(
     "commits concurrent cards, replays receipts, clears, and retains the card in the shell",
     () =>
       Effect.gen(function* () {
         const orchestrator = yield* OrchestratorV2;
-        const threadId = ThreadId.make("strata-v2-progress");
+        const threadId = ThreadId.make("exarch-v2-progress");
         yield* orchestrator.dispatch({
           type: "thread.create",
-          commandId: CommandId.make("strata-v2-create"),
+          commandId: CommandId.make("exarch-v2-create"),
           threadId,
-          projectId: ProjectId.make("strata-v2-project"),
+          projectId: ProjectId.make("exarch-v2-project"),
           title: "Progress",
           createdBy: "user",
           creationSource: "web",
@@ -2862,7 +2862,7 @@ it.layer(Layer.merge(TestLayer, SqlitePersistenceMemory))("Strata v2 task cards"
         );
         const command = {
           type: "thread.task-progress.write" as const,
-          commandId: CommandId.make("strata-v2-progress-retry"),
+          commandId: CommandId.make("exarch-v2-progress-retry"),
           threadId,
           markdown: "Final",
         };
@@ -2886,12 +2886,12 @@ it.layer(Layer.merge(TestLayer, SqlitePersistenceMemory))("Strata v2 task cards"
   it.effect("rejects invalid cards without advancing the last good card", () =>
     Effect.gen(function* () {
       const orchestrator = yield* OrchestratorV2;
-      const threadId = ThreadId.make("strata-v2-progress-invalid");
+      const threadId = ThreadId.make("exarch-v2-progress-invalid");
       yield* orchestrator.dispatch({
         type: "thread.create",
-        commandId: CommandId.make("strata-v2-invalid-create"),
+        commandId: CommandId.make("exarch-v2-invalid-create"),
         threadId,
-        projectId: ProjectId.make("strata-v2-project"),
+        projectId: ProjectId.make("exarch-v2-project"),
         title: "Progress",
         createdBy: "user",
         creationSource: "web",
@@ -2905,7 +2905,7 @@ it.layer(Layer.merge(TestLayer, SqlitePersistenceMemory))("Strata v2 task cards"
       const result = yield* orchestrator
         .dispatch({
           type: "thread.task-progress.write",
-          commandId: CommandId.make("strata-v2-invalid-card"),
+          commandId: CommandId.make("exarch-v2-invalid-card"),
           threadId,
           plan: [
             { step: "One", status: "in_progress" },

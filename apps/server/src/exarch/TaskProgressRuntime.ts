@@ -16,8 +16,8 @@ import {
 
 /**
  * Task progress for every session, after OpenClaw's progress card (commit
- * 11921d88, MIT; see strata/THIRD_PARTY_NOTICES.md). The tools live on the
- * shared Strata toolkit, so whoever holds a chat's credential can publish to
+ * 11921d88, MIT; see exarch/THIRD_PARTY_NOTICES.md). The tools live on the
+ * shared Exarch toolkit, so whoever holds a chat's credential can publish to
  * that chat's one durable card: the chat comes from the credential the engine
  * issued at session start and stays valid while the session lives, whether or
  * not a turn is running. Each write replaces the whole card; an empty write

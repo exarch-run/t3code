@@ -4,7 +4,7 @@ import * as Path from "effect/Path";
 import { isProjectSessionFilePath } from "@t3tools/contracts";
 
 /**
- * Strata's session files: files from the project folder the server places in
+ * Exarch's session files: files from the project folder the server places in
  * the model's context at session start, the way an assistant workspace's soul,
  * identity, user, and memory files are loaded, so no rules file has to ask the
  * agent to read them. Missing files are skipped; long files are cut with a

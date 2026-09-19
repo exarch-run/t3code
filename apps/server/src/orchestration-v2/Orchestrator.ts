@@ -2,7 +2,7 @@ import {
   nextTaskProgressRecord,
   registerProgressBridge,
   taskProgressEnabled,
-} from "../strata/TaskProgressV2.ts";
+} from "../exarch/TaskProgressV2.ts";
 import { threadPullRequestsOf } from "@t3tools/shared/threadPullRequests";
 import {
   normalizeThreadPullRequestKey,

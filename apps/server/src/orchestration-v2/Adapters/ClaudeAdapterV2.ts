@@ -102,8 +102,8 @@ import {
 import type { ServerProviderShape } from "../../provider/Services/ServerProvider.ts";
 import { mergeProviderInstanceEnvironment } from "../../provider/ProviderInstanceEnvironment.ts";
 import { T3_CODE_ORCHESTRATION_INSTRUCTIONS } from "../../provider/T3OrchestrationInstructions.ts";
-import { claudeTaskProgressHooks } from "../../strata/TaskProgressClaude.ts";
-import { claudeTaskProgressOwnershipHooks } from "../../strata/TaskProgressOwnership.ts";
+import { claudeTaskProgressHooks } from "../../exarch/TaskProgressClaude.ts";
+import { claudeTaskProgressOwnershipHooks } from "../../exarch/TaskProgressOwnership.ts";
 import { buildRuntimeInstructions } from "../../provider/RuntimeInstructions.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { IdAllocatorV2, type IdAllocatorV2Shape } from "../IdAllocator.ts";
@@ -715,7 +715,7 @@ export function makeClaudeQueryOptions(input: {
   readonly sessionContext?: string | undefined;
   readonly modelSelection: ModelSelection;
   readonly nativeThreadId: string;
-  /** The Strata thread whose saved task card is restored into Claude's context. */
+  /** The Exarch thread whose saved task card is restored into Claude's context. */
   readonly threadId?: ThreadId;
   readonly resume: boolean;
   readonly resumeSessionAt?: string;

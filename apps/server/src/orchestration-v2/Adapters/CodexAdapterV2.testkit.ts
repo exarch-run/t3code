@@ -10,7 +10,7 @@ import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 
 import { ServerConfig } from "../../config.ts";
-import { CODEX_TASK_PROGRESS_TOOLS } from "../../strata/TaskProgressCodexRoute.ts";
+import { CODEX_TASK_PROGRESS_TOOLS } from "../../exarch/TaskProgressCodexRoute.ts";
 import { layer as idAllocatorLayer } from "../IdAllocator.ts";
 import { ProviderAdapterOpenSessionError } from "../ProviderAdapter.ts";
 import { ProviderAdapterDriverCreateError } from "../ProviderAdapterDriver.ts";
@@ -205,7 +205,7 @@ export const CodexOrchestratorReplayHarness: OrchestratorV2ProviderReplayHarness
   driver: CODEX_DRIVER_KIND,
   decodeTranscript: (transcript) =>
     decodeCodexAppServerReplayTranscript(transcript).pipe(
-      // Upstream recordings predate Strata's dynamic task-card tools. Preserve
+      // Upstream recordings predate Exarch's dynamic task-card tools. Preserve
       // exact matching of every request, including this added declaration.
       Effect.map((decoded) => ({
         ...decoded,

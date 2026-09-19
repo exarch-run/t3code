@@ -2,7 +2,7 @@ import {
   CODEX_TASK_PROGRESS_TOOLS,
   CODEX_SUBAGENT_WRITE_REFUSED,
   registerCodexRoute,
-} from "../../strata/TaskProgressCodexRoute.ts";
+} from "../../exarch/TaskProgressCodexRoute.ts";
 import {
   mcpToolPresentation,
   type McpToolPresentation,

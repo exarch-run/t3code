@@ -1,10 +1,10 @@
 /**
- * Task card input: what an agent may send to strata_progress_card and how it
+ * Task card input: what an agent may send to exarch_progress_card and how it
  * becomes a canonical write. Adapted from OpenClaw's progress card
  * (src/session-cards/progress-card-input.ts and
  * src/agents/tools/progress-card-tool.ts at commit
  * 11921d88856c0d1690b1036ff6e0e48d9ef9043b, MIT; see
- * strata/THIRD_PARTY_NOTICES.md). Validation runs on the raw tool arguments,
+ * exarch/THIRD_PARTY_NOTICES.md). Validation runs on the raw tool arguments,
  * before any decoder could drop a field the model got wrong.
  */
 import {
@@ -39,7 +39,7 @@ const asRecord = (value: unknown): Record<string, unknown> | null =>
 
 /**
  * The current contract is `markdown` and `plan[].step`. Sessions that cached
- * the earlier Strata contract may still send `writeId` and `plan[].text`;
+ * the earlier Exarch contract may still send `writeId` and `plan[].text`;
  * those decode into the same write. Anything else is a mistake the model has
  * to hear about, because a misnamed checklist must never become a silent
  * note-only update.
@@ -50,11 +50,11 @@ const STEP_FIELDS = new Set(["step", "status", "text"]);
 /** Validates and normalizes the replace-on-write task card payload. */
 export function normalizeTaskProgressInput(rawArgs: unknown): NormalizedTaskProgressInput {
   const input = rawArgs === undefined ? {} : asRecord(rawArgs);
-  if (!input) throw new TaskProgressInputError("strata_progress_card arguments must be an object");
+  if (!input) throw new TaskProgressInputError("exarch_progress_card arguments must be an object");
   for (const key of Object.keys(input)) {
     if (!TOP_LEVEL_FIELDS.has(key)) {
       throw new TaskProgressInputError(
-        `unknown field "${key}"; strata_progress_card takes markdown and plan (steps as {step, status})`,
+        `unknown field "${key}"; exarch_progress_card takes markdown and plan (steps as {step, status})`,
       );
     }
   }
@@ -179,4 +179,4 @@ export const TASK_PROGRESS_TOOL_JSON_SCHEMA = {
 
 /** The writer's description, shared by the MCP tool and the Codex dynamic tool (after OpenClaw's progress_card). */
 export const TASK_PROGRESS_TOOL_DESCRIPTION =
-  'Maintain this chat\'s task card: the single durable status surface Strata shows beside the owner\'s composer, for someone who is not reading the transcript. Create a card only for substantial work with at least two meaningful sequential steps. Do not create a card for greetings, quick questions, or single-step requests, and do not invent steps just to justify one. Existing cards may still be updated or cleared. Each call replaces the whole card. Pick the representation that fits the work, using either or both parts: `markdown` \u2014 a compact note; tables for comparisons or metrics, a bold one-liner for simple state, or one <progress aria-label="CI \u00b7 4/6" value="4" max="6"></progress> bar for a long operation. Put a progress bar first and give it a short aria-label with its purpose and current/total values. Other raw HTML is stripped. Known URL? Link it. Don\'t leave PRs or issues as bare IDs. And `plan` \u2014 an ordered step checklist (pending | in_progress | completed, at most one in_progress) for genuinely sequential work. The checklist is optional: omit it whenever a table, bar, or sentence says it better, and never repeat the same facts in both parts. Call with both parts empty to clear. Update on meaningful change \u2014 a step done, a blocker, results in \u2014 not every message. Max 8 KB markdown, 50 steps. No read is required first; the main agent keeps the card.';
+  'Maintain this chat\'s task card: the single durable status surface Exarch shows beside the owner\'s composer, for someone who is not reading the transcript. Create a card only for substantial work with at least two meaningful sequential steps. Do not create a card for greetings, quick questions, or single-step requests, and do not invent steps just to justify one. Existing cards may still be updated or cleared. Each call replaces the whole card. Pick the representation that fits the work, using either or both parts: `markdown` \u2014 a compact note; tables for comparisons or metrics, a bold one-liner for simple state, or one <progress aria-label="CI \u00b7 4/6" value="4" max="6"></progress> bar for a long operation. Put a progress bar first and give it a short aria-label with its purpose and current/total values. Other raw HTML is stripped. Known URL? Link it. Don\'t leave PRs or issues as bare IDs. And `plan` \u2014 an ordered step checklist (pending | in_progress | completed, at most one in_progress) for genuinely sequential work. The checklist is optional: omit it whenever a table, bar, or sentence says it better, and never repeat the same facts in both parts. Call with both parts empty to clear. Update on meaningful change \u2014 a step done, a blocker, results in \u2014 not every message. Max 8 KB markdown, 50 steps. No read is required first; the main agent keeps the card.';
