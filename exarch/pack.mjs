@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// Packs apps/server into the tarball StrataMD bundles, the way upstream's
+// Packs apps/server into the tarball ExarchMD bundles, the way upstream's
 // publish command does: a trimmed manifest (no dev dependencies, catalog
 // references resolved), the workspace LICENSE beside it, then `npm pack`.
-// Usage: node strata/pack.mjs --version 0.0.41-strata.1 --out /path/to/dir
+// Usage: node exarch/pack.mjs --version 0.0.41-exarch.1 --out /path/to/dir
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
@@ -24,8 +24,8 @@ const out = resolve(option("--out"));
 const target = args.includes("--target") ? option("--target") : null;
 const platforms = ["linux-x64", "darwin-x64", "darwin-arm64", "win32-x64"];
 if (target !== null && !platforms.includes(target)) throw new Error(`Unsupported target ${target}`);
-if (!/^\d+\.\d+\.\d+-strata\.\d+$/.test(version))
-  throw new Error(`Version must look like 0.0.41-strata.1, got ${version}`);
+if (!/^\d+\.\d+\.\d+-exarch\.\d+$/.test(version))
+  throw new Error(`Version must look like 0.0.41-exarch.1, got ${version}`);
 
 for (const asset of [
   "dist/bin.mjs",
@@ -108,7 +108,7 @@ await mkdir(out, { recursive: true });
 try {
   await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
   if (!hadLicense) await copyFile(join(root, "LICENSE"), licensePath);
-  await copyFile(join(root, "strata/THIRD_PARTY_NOTICES.md"), noticePath);
+  await copyFile(join(root, "exarch/THIRD_PARTY_NOTICES.md"), noticePath);
   const result = spawnSync("npm", ["pack", "--ignore-scripts", "--pack-destination", out], {
     cwd: serverDir,
     stdio: ["ignore", "pipe", "inherit"],

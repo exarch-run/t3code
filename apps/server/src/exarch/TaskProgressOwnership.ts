@@ -8,9 +8,9 @@
 import type { HookCallback, HookCallbackMatcher, HookEvent } from "@anthropic-ai/claude-agent-sdk";
 
 /** The writer as Claude names it once the `t3-code` MCP server is attached. */
-export const CLAUDE_TASK_PROGRESS_TOOL = "mcp__t3-code__strata_progress_card";
+export const CLAUDE_TASK_PROGRESS_TOOL = "mcp__t3-code__exarch_progress_card";
 export const SUBAGENT_WRITE_REFUSED =
-  "Only the main agent maintains the Strata task card. Report progress in your result instead.";
+  "Only the main agent maintains the Exarch task card. Report progress in your result instead.";
 
 export const claudeTaskProgressOwnershipHook: HookCallback = async (input) => {
   if (

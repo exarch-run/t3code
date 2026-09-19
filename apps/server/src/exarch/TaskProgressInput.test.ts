@@ -41,7 +41,7 @@ describe("normalizeTaskProgressInput", () => {
     });
   });
 
-  it("accepts the earlier Strata field names from sessions that cached them", () => {
+  it("accepts the earlier Exarch field names from sessions that cached them", () => {
     expect(
       normalizeTaskProgressInput({
         writeId: "native-1",

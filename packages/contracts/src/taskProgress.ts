@@ -4,7 +4,7 @@ import * as Schema from "effect/Schema";
 /**
  * Task progress card. Version 2 is the canonical record and follows
  * OpenClaw's progress card (commit 11921d88, MIT, see
- * strata/THIRD_PARTY_NOTICES.md): a session-durable card with optional
+ * exarch/THIRD_PARTY_NOTICES.md): a session-durable card with optional
  * Markdown and an optional ordered checklist, replaced whole on every write
  * and cleared by an empty write. Version 1 stays published for readers that
  * negotiated it; the server projects the canonical record into that shape.

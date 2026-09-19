@@ -17,12 +17,12 @@ import {
 } from "./TaskProgressInput.ts";
 import { installMcpRefusal, publishProgress, readProgressCard } from "./TaskProgressRuntime.ts";
 
-export const CODEX_TASK_PROGRESS_TOOL = "strata_progress_card";
-export const CODEX_TASK_PROGRESS_READ_TOOL = "strata_progress_card_read";
+export const CODEX_TASK_PROGRESS_TOOL = "exarch_progress_card";
+export const CODEX_TASK_PROGRESS_READ_TOOL = "exarch_progress_card_read";
 export const CODEX_SUBAGENT_WRITE_REFUSED =
-  "Only the main agent maintains the Strata task card. Report progress in your result instead.";
+  "Only the main agent maintains the Exarch task card. Report progress in your result instead.";
 export const CODEX_MCP_WRITE_REFUSED =
-  "This chat writes its task card through the strata_progress_card dynamic tool; the t3-code MCP copy is not accepted here.";
+  "This chat writes its task card through the exarch_progress_card dynamic tool; the t3-code MCP copy is not accepted here.";
 
 type DynamicToolCall = CodexRpc.ServerRequestParamsByMethod["item/tool/call"];
 type DynamicToolResult = CodexRpc.ServerRequestResponsesByMethod["item/tool/call"];
@@ -39,7 +39,7 @@ export const CODEX_TASK_PROGRESS_TOOLS = [
     type: "function" as const,
     name: CODEX_TASK_PROGRESS_READ_TOOL,
     description:
-      "Read this chat's current Strata task card, for example after a resume. Returns card with markdown, steps and revision, or null before any write and after a clear. Reading is optional; publishing never requires it.",
+      "Read this chat's current Exarch task card, for example after a resume. Returns card with markdown, steps and revision, or null before any write and after a clear. Reading is optional; publishing never requires it.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
 ];

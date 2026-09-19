@@ -4,41 +4,41 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
 /**
- * The private local channel to Strata (StrataMD plan: Strata and T3 as one
- * app, phase 3). Strata launches this engine with `STRATA_HOST_URL` and
- * `STRATA_HOST_TOKEN` in its environment; a developer running the dev server
- * sources the same two values from Strata's `strata-host.env`. Every tool
+ * The private local channel to Exarch (ExarchMD plan: Exarch and T3 as one
+ * app, phase 3). Exarch launches this engine with `EXARCH_HOST_URL` and
+ * `EXARCH_HOST_TOKEN` in its environment; a developer running the dev server
+ * sources the same two values from Exarch's `exarch-host.env`. Every tool
  * request is one JSON POST carrying the invocation's thread and environment
- * ids, so Strata can refuse a call that does not belong to the engine it is
+ * ids, so Exarch can refuse a call that does not belong to the engine it is
  * running. A lost write reply is uncertain: retries must retain the action ID.
  */
-export const STRATA_HOST_URL = "STRATA_HOST_URL";
-export const STRATA_HOST_TOKEN = "STRATA_HOST_TOKEN";
-export const STRATA_NOT_CONNECTED_MESSAGE = "Strata is not connected. Connect Strata and retry.";
-export const DEFAULT_STRATA_REQUEST_TIMEOUT_MS = 30_000;
+export const EXARCH_HOST_URL = "EXARCH_HOST_URL";
+export const EXARCH_HOST_TOKEN = "EXARCH_HOST_TOKEN";
+export const EXARCH_NOT_CONNECTED_MESSAGE = "Exarch is not connected. Connect Exarch and retry.";
+export const DEFAULT_EXARCH_REQUEST_TIMEOUT_MS = 30_000;
 
-export class StrataNotConnectedError extends Schema.TaggedError<StrataNotConnectedError>()(
-  "StrataNotConnectedError",
+export class ExarchNotConnectedError extends Schema.TaggedError<ExarchNotConnectedError>()(
+  "ExarchNotConnectedError",
   { reason: Schema.String },
 ) {
   override get message(): string {
-    return STRATA_NOT_CONNECTED_MESSAGE;
+    return EXARCH_NOT_CONNECTED_MESSAGE;
   }
 }
 
 /** A request was attempted, but no authoritative outcome reached the caller. */
-export class StrataOutcomeUncertainError extends Schema.TaggedError<StrataOutcomeUncertainError>()(
-  "StrataOutcomeUncertainError",
+export class ExarchOutcomeUncertainError extends Schema.TaggedError<ExarchOutcomeUncertainError>()(
+  "ExarchOutcomeUncertainError",
   { actionId: Schema.String, reason: Schema.String },
 ) {
   override get message(): string {
-    return `The outcome of Strata action ${this.actionId} is unknown. It may already have been applied. Retry strata_act with the same actionId ${JSON.stringify(this.actionId)} and the same entries. Do not create a new action ID or repeat it in a strata block.`;
+    return `The outcome of Exarch action ${this.actionId} is unknown. It may already have been applied. Retry exarch_act with the same actionId ${JSON.stringify(this.actionId)} and the same entries. Do not create a new action ID or repeat it in a exarch block.`;
   }
 }
 
-/** Strata answered and refused: the code names the rule (NOT_ATTACHED, NOT_LEAD, block changed, …). */
-export class StrataToolFailedError extends Schema.TaggedError<StrataToolFailedError>()(
-  "StrataToolFailedError",
+/** Exarch answered and refused: the code names the rule (NOT_ATTACHED, NOT_LEAD, block changed, …). */
+export class ExarchToolFailedError extends Schema.TaggedError<ExarchToolFailedError>()(
+  "ExarchToolFailedError",
   { tool: Schema.String, code: Schema.String, detail: Schema.String },
 ) {
   override get message(): string {
@@ -46,36 +46,36 @@ export class StrataToolFailedError extends Schema.TaggedError<StrataToolFailedEr
   }
 }
 
-export const StrataHostError = Schema.Union([
-  StrataNotConnectedError,
-  StrataToolFailedError,
-  StrataOutcomeUncertainError,
+export const ExarchHostError = Schema.Union([
+  ExarchNotConnectedError,
+  ExarchToolFailedError,
+  ExarchOutcomeUncertainError,
 ]);
-export type StrataHostError = typeof StrataHostError.Type;
+export type ExarchHostError = typeof ExarchHostError.Type;
 
-export interface StrataHostRequest {
+export interface ExarchHostRequest {
   readonly tool: string;
   readonly threadId: string;
   readonly environmentId: string;
   readonly input: unknown;
 }
 
-export interface StrataHostClientShape {
-  readonly invoke: (request: StrataHostRequest) => Effect.Effect<unknown, StrataHostError>;
+export interface ExarchHostClientShape {
+  readonly invoke: (request: ExarchHostRequest) => Effect.Effect<unknown, ExarchHostError>;
 }
 
-export class StrataHostClient extends Context.Service<StrataHostClient, StrataHostClientShape>()(
-  "t3/mcp/StrataHostClient",
+export class ExarchHostClient extends Context.Service<ExarchHostClient, ExarchHostClientShape>()(
+  "t3/mcp/ExarchHostClient",
 ) {}
 
-export interface StrataHostClientOptions {
+export interface ExarchHostClientOptions {
   /** Read at every call, so a developer's sourced variables and tests both apply. */
   readonly env?: () => NodeJS.ProcessEnv;
   readonly fetch?: typeof globalThis.fetch;
   readonly timeoutMs?: number;
 }
 
-interface StrataHostReply {
+interface ExarchHostReply {
   readonly ok?: unknown;
   readonly result?: unknown;
   readonly error?: { readonly code?: unknown; readonly message?: unknown };
@@ -83,30 +83,30 @@ interface StrataHostReply {
 
 const encodeJsonText = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
-const readReply = async (response: Response): Promise<StrataHostReply> => {
+const readReply = async (response: Response): Promise<ExarchHostReply> => {
   const text = await response.text();
   try {
     const parsed: unknown = JSON.parse(text);
-    return typeof parsed === "object" && parsed !== null ? (parsed as StrataHostReply) : {};
+    return typeof parsed === "object" && parsed !== null ? (parsed as ExarchHostReply) : {};
   } catch {
     return {};
   }
 };
 
-export function makeStrataHostClient(options: StrataHostClientOptions = {}): StrataHostClientShape {
+export function makeExarchHostClient(options: ExarchHostClientOptions = {}): ExarchHostClientShape {
   const env = options.env ?? (() => process.env);
   const fetchImpl = options.fetch ?? globalThis.fetch;
-  const timeoutMs = options.timeoutMs ?? DEFAULT_STRATA_REQUEST_TIMEOUT_MS;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_EXARCH_REQUEST_TIMEOUT_MS;
   return {
-    invoke: Effect.fn("StrataHostClient.invoke")(function* (request) {
+    invoke: Effect.fn("ExarchHostClient.invoke")(function* (request) {
       const variables = env();
-      const url = variables[STRATA_HOST_URL]?.trim();
-      const token = variables[STRATA_HOST_TOKEN]?.trim();
+      const url = variables[EXARCH_HOST_URL]?.trim();
+      const token = variables[EXARCH_HOST_TOKEN]?.trim();
       if (!url || !token) {
-        return yield* new StrataNotConnectedError({ reason: "host variables unset" });
+        return yield* new ExarchNotConnectedError({ reason: "host variables unset" });
       }
       const actionId =
-        request.tool === "strata_act" &&
+        request.tool === "exarch_act" &&
         typeof request.input === "object" &&
         request.input !== null &&
         "actionId" in request.input &&
@@ -116,8 +116,8 @@ export function makeStrataHostClient(options: StrataHostClientOptions = {}): Str
       const uncertain = (cause: unknown) => {
         const reason = cause instanceof Error ? cause.message : String(cause);
         return actionId === null
-          ? new StrataNotConnectedError({ reason })
-          : new StrataOutcomeUncertainError({ actionId, reason });
+          ? new ExarchNotConnectedError({ reason })
+          : new ExarchOutcomeUncertainError({ actionId, reason });
       };
       const response = yield* Effect.tryPromise({
         try: () =>
@@ -146,18 +146,18 @@ export function makeStrataHostClient(options: StrataHostClientOptions = {}): Str
         (response.ok || response.status >= 500) &&
         !(reply.ok === false && typeof reply.error?.code === "string")
       ) {
-        return yield* uncertain(`Strata answered ${response.status} without a valid outcome.`);
+        return yield* uncertain(`Exarch answered ${response.status} without a valid outcome.`);
       }
       const code =
         typeof reply.error?.code === "string" ? reply.error.code : `HTTP_${response.status}`;
       const detail =
         typeof reply.error?.message === "string"
           ? reply.error.message
-          : `Strata answered ${response.status} without a reason.`;
-      return yield* new StrataToolFailedError({ tool: request.tool, code, detail });
+          : `Exarch answered ${response.status} without a reason.`;
+      return yield* new ExarchToolFailedError({ tool: request.tool, code, detail });
     }),
   };
 }
 
-export const layer = (options: StrataHostClientOptions = {}): Layer.Layer<StrataHostClient> =>
-  Layer.succeed(StrataHostClient, makeStrataHostClient(options));
+export const layer = (options: ExarchHostClientOptions = {}): Layer.Layer<ExarchHostClient> =>
+  Layer.succeed(ExarchHostClient, makeExarchHostClient(options));

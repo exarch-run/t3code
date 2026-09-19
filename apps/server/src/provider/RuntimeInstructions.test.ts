@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import { buildRuntimeInstructions } from "./RuntimeInstructions.ts";
-import { setProgressInstructionsEnabled } from "../strata/TaskProgressRuntime.ts";
+import { setProgressInstructionsEnabled } from "../exarch/TaskProgressRuntime.ts";
 
 describe("buildRuntimeInstructions", () => {
   it("requires explicit registration of every PR and stack layer", () => {
@@ -16,7 +16,7 @@ describe("buildRuntimeInstructions", () => {
     (harness) => {
       const instructions = buildRuntimeInstructions({ harness });
       expect(instructions).toContain("<task_progress>");
-      expect(instructions).toContain("strata_progress_card");
+      expect(instructions).toContain("exarch_progress_card");
       expect(instructions).toContain("at least two meaningful sequential steps");
       expect(instructions).toContain(
         "never for greetings, quick questions, or single-step requests",

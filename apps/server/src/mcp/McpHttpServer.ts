@@ -5,7 +5,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
-import { StrataToolkitRegistrationLive } from "./toolkits/strata/handlers.ts";
+import { ExarchToolkitRegistrationLive } from "./toolkits/exarch/handlers.ts";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
@@ -688,5 +688,5 @@ export const layer = Layer.mergeAll(
   WorktreeToolkitRegistrationLive,
   PullRequestsToolkitRegistrationLive,
   DeviceToolkitRegistrationLive,
-  StrataToolkitRegistrationLive,
+  ExarchToolkitRegistrationLive,
 ).pipe(Layer.provideMerge(McpTransportLive));

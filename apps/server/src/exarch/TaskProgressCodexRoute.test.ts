@@ -2,7 +2,7 @@ import { ThreadId, type TaskProgressCardV2 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
-import { StrataToolkit } from "../mcp/toolkits/strata/tools.ts";
+import { ExarchToolkit } from "../mcp/toolkits/exarch/tools.ts";
 import {
   CODEX_MCP_WRITE_REFUSED,
   CODEX_SUBAGENT_WRITE_REFUSED,
@@ -62,10 +62,10 @@ const call = (tool: string, callThreadId: string, args: unknown = {}) => ({
 describe("Codex task card route", () => {
   it("advertises the writer with the same closed schema and description as the MCP tool", () => {
     const [writer, reader] = CODEX_TASK_PROGRESS_TOOLS;
-    expect(writer).toMatchObject({ type: "function", name: "strata_progress_card" });
+    expect(writer).toMatchObject({ type: "function", name: "exarch_progress_card" });
     expect(writer?.inputSchema).toBe(TASK_PROGRESS_TOOL_JSON_SCHEMA);
-    expect(writer?.description).toBe(StrataToolkit.tools.strata_progress_card.description);
-    expect(reader).toMatchObject({ type: "function", name: "strata_progress_card_read" });
+    expect(writer?.description).toBe(ExarchToolkit.tools.exarch_progress_card.description);
+    expect(reader).toMatchObject({ type: "function", name: "exarch_progress_card_read" });
   });
 
   it("writes for the chat's own thread and turns helper threads away before any write", async () => {
@@ -74,7 +74,7 @@ describe("Codex task card route", () => {
     try {
       expect(codexRouted(threadId)).toBe(true);
       const helper = await Effect.runPromise(
-        route.handle(call("strata_progress_card", "helper-thread", { markdown: "From a helper" })),
+        route.handle(call("exarch_progress_card", "helper-thread", { markdown: "From a helper" })),
       );
       expect(helper).toEqual({
         success: false,
@@ -83,7 +83,7 @@ describe("Codex task card route", () => {
       expect(bridge.written).toEqual([]);
       const parent = await Effect.runPromise(
         route.handle(
-          call("strata_progress_card", "root-thread", {
+          call("exarch_progress_card", "root-thread", {
             markdown: "Parent",
             plan: [
               { step: "Read", status: "completed" },
@@ -102,7 +102,7 @@ describe("Codex task card route", () => {
       });
       expect(bridge.written).toHaveLength(1);
       const read = await Effect.runPromise(
-        route.handle(call("strata_progress_card_read", "root-thread")),
+        route.handle(call("exarch_progress_card_read", "root-thread")),
       );
       expect(
         parse(read.contentItems[0]!.type === "inputText" ? read.contentItems[0]!.text : ""),
@@ -110,13 +110,13 @@ describe("Codex task card route", () => {
         card: { revision: 1, markdown: "Parent" },
       });
       const helperRead = await Effect.runPromise(
-        route.handle(call("strata_progress_card_read", "helper-thread")),
+        route.handle(call("exarch_progress_card_read", "helper-thread")),
       );
       expect(helperRead.success).toBe(false);
       const unknown = await Effect.runPromise(route.handle(call("something_else", "root-thread")));
       expect(unknown).toMatchObject({ success: false });
       const invalid = await Effect.runPromise(
-        route.handle(call("strata_progress_card", "root-thread", { markdown: "x", steps: [] })),
+        route.handle(call("exarch_progress_card", "root-thread", { markdown: "x", steps: [] })),
       );
       expect(invalid.success).toBe(false);
       expect(invalid.contentItems[0]).toMatchObject({
@@ -132,7 +132,7 @@ describe("Codex task card route", () => {
         expect(
           (
             await Effect.runPromise(
-              early.handle(call("strata_progress_card", "x", { markdown: "y" })),
+              early.handle(call("exarch_progress_card", "x", { markdown: "y" })),
             )
           ).success,
         ).toBe(false);
