@@ -1,6 +1,6 @@
 {
   "name": "@t3tools/desktop",
-  "version": "0.0.42-exarch.2007",
+  "version": "0.0.42-exarch.2008",
   "private": true,
   "type": "module",
   "main": "dist-electron/main.cjs",

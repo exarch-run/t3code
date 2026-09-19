@@ -142,8 +142,9 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "Building $version from $base_branch ($base_commit) at $source_commit"
 
-      - name: Use the public T3 Connect identifiers
-        run: cp .env.example .env
+      # Exarch's own relay, Clerk instance and hosted-app origin. Public values only.
+      - name: Use the public Exarch Connect identifiers
+        run: cp exarch/public-config.env .env
 
       - name: Align package versions to the release version
         run: node scripts/update-release-package-versions.ts "${{ steps.meta.outputs.version }}"
