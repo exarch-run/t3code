@@ -1,5 +1,6 @@
 import { vi } from "vite-plus/test";
 import { handoffPlan } from "../HandoffPlan.ts";
+import { layer as providerSwitchLayer, ProviderSwitchServiceV2 } from "../ProviderSwitchService.ts";
 import { historyResponseItems } from "../ContextHandoffBudget.ts";
 import { assert, describe, it } from "@effect/vitest";
 import {
@@ -3469,3 +3470,155 @@ for (const scenario of ["supplied", "clean", "workspace"] as const) {
     ),
   );
 }
+
+// Mirrors orchestration.getHandoffPlan: the real switch plan feeds the preview,
+// so the covered range the client is told must be the one the engine accepts.
+it.live("engine 2012 supplied handoffs cover cut-off runs and reject stale coverage", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const cwd = yield* checkpointWorkspace("2012-cut-off");
+      const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
+      const registry = makeProviderAdapterRegistryLayer([
+        makeTestAdapter({
+          instanceId: CODEX_MODEL_SELECTION.instanceId,
+          driver: CODEX_DRIVER,
+          capabilities: CodexProviderCapabilitiesV2,
+          modelSelection: CODEX_MODEL_SELECTION,
+          responseByRunOrdinal: {},
+          failedRunOrdinals: new Set([2]),
+          capturedTurns,
+        }),
+        makeTestAdapter({
+          instanceId: CLAUDE_MODEL_SELECTION.instanceId,
+          driver: CLAUDE_DRIVER,
+          capabilities: ClaudeProviderCapabilitiesV2,
+          modelSelection: CLAUDE_MODEL_SELECTION,
+          responseByRunOrdinal: {},
+          capturedTurns,
+        }),
+      ]);
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* OrchestratorV2;
+        const switchService = yield* ProviderSwitchServiceV2;
+        const id = ThreadId.make("thread:2012:cut-off");
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cut-off:create"),
+          threadId: id,
+          projectId: ProjectId.make("project:cut-off"),
+          title: "cut-off",
+          modelSelection: CODEX_MODEL_SELECTION,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: cwd,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const send = (n: number, selection: ModelSelection) =>
+          orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make(`cut-off:send:${n}`),
+            threadId: id,
+            messageId: MessageId.make(`cut-off:message:${n}`),
+            text: `Message ${n}`,
+            attachments: [],
+            modelSelection: selection,
+            dispatchMode: { type: "start_immediately" },
+            createdBy: "user",
+            creationSource: "web",
+          });
+        const preview = (selection: ModelSelection) =>
+          Effect.gen(function* () {
+            const projection = yield* orchestrator.getThreadProjection(id);
+            const plan = yield* switchService.plan({ projection, targetModelSelection: selection });
+            return handoffPlan(
+              projection,
+              plan,
+              selection === CODEX_MODEL_SELECTION
+                ? CodexProviderCapabilitiesV2
+                : ClaudeProviderCapabilitiesV2,
+            );
+          });
+        const switchTo = (
+          n: number,
+          selection: ModelSelection,
+          coveredRunOrdinals: { readonly from: number; readonly to: number },
+        ) =>
+          orchestrator.dispatch({
+            type: "provider.switch",
+            commandId: CommandId.make(`cut-off:switch:${n}`),
+            threadId: id,
+            modelSelection: selection,
+            suppliedHandoff: {
+              text: `Package ${n} covering ${coveredRunOrdinals.from}-${coveredRunOrdinals.to}`,
+              author: "records_only",
+              coveredRunOrdinals,
+            },
+          });
+
+        yield* send(1, CODEX_MODEL_SELECTION);
+        yield* waitForIdle(id);
+        yield* send(2, CODEX_MODEL_SELECTION);
+        const before = yield* waitForIdle(id);
+        assert.equal(before.runs[1]?.status, "failed");
+
+        // A newcomer receives the whole conversation; the failed run stays in
+        // range and is reported cut off rather than dropped.
+        const newcomer = yield* preview(CLAUDE_MODEL_SELECTION);
+        assert.equal(newcomer.strategy, "full_thread_summary");
+        assert.deepEqual(newcomer.coveredRunOrdinals, { from: 1, to: 2 });
+        assert.deepEqual(newcomer.cutOffRunOrdinals, [2]);
+        yield* switchTo(1, CLAUDE_MODEL_SELECTION, newcomer.coveredRunOrdinals!);
+        yield* send(3, CLAUDE_MODEL_SELECTION);
+        const handedOff = yield* waitForIdle(id);
+        assert.equal(handedOff.runs.at(-1)?.status, "completed");
+        const full = handedOff.contextHandoffs.at(-1);
+        assert.equal(full?.summaryText, "Package 1 covering 1-2");
+        assert.deepEqual(full?.coveredRunOrdinals, { from: 1, to: 2 });
+        assert.deepEqual(full?.cutOffRunOrdinals, [2]);
+
+        // A returning provider only receives the gap since its last delivered run.
+        const returning = yield* preview(CODEX_MODEL_SELECTION);
+        assert.equal(returning.strategy, "delta_since_target_last_seen");
+        assert.deepEqual(returning.coveredRunOrdinals, { from: 3, to: 3 });
+        yield* switchTo(2, CODEX_MODEL_SELECTION, returning.coveredRunOrdinals!);
+        yield* send(4, CODEX_MODEL_SELECTION);
+        const returned = yield* waitForIdle(id);
+        assert.equal(returned.runs.at(-1)?.status, "completed");
+        const delta = returned.contextHandoffs.at(-1);
+        assert.equal(delta?.summaryText, "Package 2 covering 3-3");
+        assert.deepEqual(delta?.coveredRunOrdinals, { from: 3, to: 3 });
+        assert.deepEqual(delta?.cutOffRunOrdinals, []);
+
+        // A package built for a range the engine no longer expects fails visibly
+        // and leaves no run behind; a fresh preview makes the retry succeed.
+        const backToClaude = yield* preview(CLAUDE_MODEL_SELECTION);
+        assert.deepEqual(backToClaude.coveredRunOrdinals, { from: 4, to: 4 });
+        yield* switchTo(3, CLAUDE_MODEL_SELECTION, { from: 1, to: 4 });
+        const stale = yield* send(5, CLAUDE_MODEL_SELECTION).pipe(Effect.flip);
+        assert.include(String(stale.cause), "stale");
+        assert.lengthOf((yield* orchestrator.getThreadProjection(id)).runs, 4);
+        const retry = yield* preview(CLAUDE_MODEL_SELECTION);
+        yield* switchTo(4, CLAUDE_MODEL_SELECTION, retry.coveredRunOrdinals!);
+        yield* send(6, CLAUDE_MODEL_SELECTION);
+        const recovered = yield* waitForIdle(id);
+        assert.equal(recovered.runs.at(-1)?.status, "completed");
+        assert.deepEqual(
+          recovered.contextHandoffs.at(-1)?.coveredRunOrdinals,
+          retry.coveredRunOrdinals,
+        );
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            makeOrchestratorV2ReplayLayerWithRegistry(
+              { name: "2012-cut-off", runtimePolicyOverride: { cwd } },
+              registry,
+            ),
+            providerSwitchLayer.pipe(Layer.provide(registry)),
+          ),
+        ),
+      );
+    }),
+  ),
+);

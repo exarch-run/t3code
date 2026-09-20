@@ -554,6 +554,8 @@ export const layer = Layer.effect(
                   startClean: active.startClean ?? false,
                   attachments: [],
                   modelSelection: active.modelSelection,
+                  runtimeMode: active.runtimeMode,
+                  interactionMode: active.interactionMode,
                   mode: "auto",
                   createdBy: active.createdBy,
                   creationSource: active.creationSource,

@@ -429,3 +429,76 @@ for (const scenario of [
     }),
   );
 }
+
+it.effect("applies requested modes to the thread before dispatching a message", () => {
+  const projectId = ProjectId.make("project:thread-management:modes");
+  const threadId = ThreadId.make("thread:thread-management:modes");
+  const messageId = MessageId.make("message:thread-management:modes");
+  const runId = RunId.make("run:thread-management:modes");
+  const dispatched: Array<OrchestrationV2Command> = [];
+  const projection = () =>
+    ({
+      thread: {
+        id: threadId,
+        projectId,
+        deletedAt: null,
+        archivedAt: null,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+      },
+      runs: dispatched.some((command) => command.type === "message.dispatch")
+        ? [{ id: runId, status: "running" }]
+        : [],
+      messages: [{ id: messageId, runId }],
+      turnItems: [{ type: "user_message", messageId, inputIntent: "turn_start" }],
+    }) as unknown as OrchestrationV2ThreadProjection;
+  const testLayer = layer.pipe(
+    Layer.provide(
+      Layer.mock(OrchestratorV2)({
+        getThreadProjection: () => Effect.sync(projection),
+        dispatch: (command) =>
+          Effect.sync(() => {
+            dispatched.push(command);
+            return { commandId: command.commandId, status: "applied" } as never;
+          }),
+      }),
+    ),
+  );
+  const send = (modes: { runtimeMode?: "approval-required"; interactionMode?: "plan" }) =>
+    Effect.gen(function* () {
+      const service = yield* ThreadManagementService;
+      return yield* service.sendToThread({
+        projectId,
+        commandId: CommandId.make("command:thread-management:modes"),
+        threadId,
+        messageId,
+        text: "Scheduled prompt",
+        attachments: [],
+        mode: "auto",
+        createdBy: "user",
+        creationSource: "web",
+        ...modes,
+      });
+    }).pipe(Effect.provide(testLayer));
+
+  return Effect.gen(function* () {
+    yield* send({ runtimeMode: "approval-required", interactionMode: "plan" });
+    expect(dispatched.map((command) => command.type)).toEqual([
+      "thread.runtime-mode.set",
+      "thread.interaction-mode.set",
+      "message.dispatch",
+    ]);
+    expect(dispatched[0]).toMatchObject({
+      commandId: "command:thread-management:modes:runtime-mode",
+      runtimeMode: "approval-required",
+    });
+    expect(dispatched[1]).toMatchObject({
+      commandId: "command:thread-management:modes:interaction-mode",
+      interactionMode: "plan",
+    });
+
+    dispatched.length = 0;
+    yield* send({});
+    expect(dispatched.map((command) => command.type)).toEqual(["message.dispatch"]);
+  });
+});

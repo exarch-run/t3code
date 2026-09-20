@@ -350,18 +350,22 @@ it.effect(
     }).pipe(Effect.provide(SqlitePersistenceMemory)),
 );
 
-it.effect("persists start-clean and passes it to a bound scheduled run", () =>
+it.effect("passes start-clean and the schedule's saved modes to a bound scheduled run", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const now = "2026-09-20T12:00:00Z";
       yield* TestClock.setTime(Date.parse(now));
-      const captured = yield* Ref.make<boolean | undefined>(undefined);
+      const captured = yield* Ref.make<{
+        readonly startClean: boolean | undefined;
+        readonly runtimeMode: string | undefined;
+        readonly interactionMode: string | undefined;
+      }>({ startClean: undefined, runtimeMode: undefined, interactionMode: undefined });
       const deps = Layer.mergeAll(
         NodeCrypto.layer,
         Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
-          sendToThread: (input) =>
-            Ref.set(captured, input.startClean).pipe(
+          sendToThread: ({ startClean, runtimeMode, interactionMode }) =>
+            Ref.set(captured, { startClean, runtimeMode, interactionMode }).pipe(
               Effect.andThen(Effect.die(new Error("Synthetic completion failure"))),
             ),
         }),
@@ -377,15 +381,21 @@ it.effect("persists start-clean and passes it to a bound scheduled run", () =>
           threadId: ThreadId.make("thread:test"),
           workspaceStrategy: { type: "root" as const },
           modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
-          runtimeMode: "full-access" as const,
-          interactionMode: "default" as const,
+          runtimeMode: "approval-required" as const,
+          interactionMode: "plan" as const,
         };
         const created = yield* service.upsert({ ...input, startClean: true });
         const saved = yield* service.upsert({ ...input, id: created.task.id });
         assert.isTrue(saved.task.startClean);
         assert.isTrue((yield* service.list()).tasks[0]?.startClean);
         yield* service.runNow({ id: created.task.id });
-        assert.isTrue(yield* Ref.get(captured));
+        // The bound chat's own access level and Plan/Build choice must not
+        // govern a scheduled run; the schedule carries those choices.
+        assert.deepEqual(yield* Ref.get(captured), {
+          startClean: true,
+          runtimeMode: "approval-required",
+          interactionMode: "plan",
+        });
       }).pipe(Effect.provide(scheduledTaskServiceLayer.pipe(Layer.provide(deps))));
     }),
   ).pipe(Effect.provide(SqlitePersistenceMemory)),

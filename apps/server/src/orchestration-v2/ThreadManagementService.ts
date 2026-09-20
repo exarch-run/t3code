@@ -1,6 +1,6 @@
 import {
   type ChatAttachment,
-  type CommandId,
+  CommandId,
   MessageId,
   type ModelSelection,
   type OrchestrationV2Actor,
@@ -13,7 +13,9 @@ import {
   type OrchestrationV2ThreadShell,
   type OrchestrationV2TurnItem,
   ProjectId,
+  type ProviderInteractionMode,
   RunId,
+  type RuntimeMode,
   type ScheduledTaskId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -100,6 +102,9 @@ export type ThreadManagementTerminalRunStatus = Extract<
 
 export interface ThreadManagementSendInput {
   readonly startClean?: boolean;
+  /** Applied to the thread before dispatch when they differ; a scheduled run carries its schedule's choices. */
+  readonly runtimeMode?: RuntimeMode;
+  readonly interactionMode?: ProviderInteractionMode;
   readonly projectId: ProjectId;
   readonly commandId: CommandId;
   readonly threadId: ThreadId;
@@ -486,6 +491,26 @@ const make = Effect.gen(function* () {
       if (target.thread.archivedAt !== null) {
         return yield* new ThreadManagementThreadArchivedError({
           threadId: input.threadId,
+        });
+      }
+
+      if (input.runtimeMode !== undefined && input.runtimeMode !== target.thread.runtimeMode) {
+        yield* orchestrator.dispatch({
+          type: "thread.runtime-mode.set",
+          commandId: CommandId.make(`${input.commandId}:runtime-mode`),
+          threadId: input.threadId,
+          runtimeMode: input.runtimeMode,
+        });
+      }
+      if (
+        input.interactionMode !== undefined &&
+        input.interactionMode !== target.thread.interactionMode
+      ) {
+        yield* orchestrator.dispatch({
+          type: "thread.interaction-mode.set",
+          commandId: CommandId.make(`${input.commandId}:interaction-mode`),
+          threadId: input.threadId,
+          interactionMode: input.interactionMode,
         });
       }
 
