@@ -81,6 +81,26 @@ const recordProviderUsage = (provider: string, instanceId: string | null = provi
   });
 
 it.layer(NodeServices.layer)("server settings", (it) => {
+  it.effect("persists complete helper policies and removes project overrides", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const service = yield* ServerSettingsModule.ServerSettingsService;
+      const policy = {
+        ...DEFAULT_SERVER_SETTINGS.helperPolicy,
+        projectOverrides: { [ProjectId.make("helper-project")]: { enabled: false } },
+      };
+      yield* service.updateSettings({ helperPolicy: policy });
+      const saved = yield* decodeServerSettingsJson(yield* fs.readFileString(config.settingsPath));
+      assert.deepEqual(saved.helperPolicy, policy);
+      const enabled = { ...policy, enabled: true, projectOverrides: {} };
+      yield* service.updateSettings({ helperPolicy: enabled });
+      const replaced = yield* decodeServerSettingsJson(
+        yield* fs.readFileString(config.settingsPath),
+      );
+      assert.deepEqual(replaced.helperPolicy, enabled);
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
   it.effect("migrates saved token delivery to paragraph buffering without resetting settings", () =>
     Effect.gen(function* () {
       const config = yield* ServerConfig.ServerConfig;
