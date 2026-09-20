@@ -56,7 +56,11 @@ export type T3McpToolSummaryAction =
   | "unlink-pr"
   | "list-prs"
   | "browser"
-  | "device";
+  | "device"
+  | "exarch-document"
+  | "exarch-act"
+  | "task-card"
+  | "task-card-read";
 
 export interface T3McpToolDefinition {
   readonly displayName: string;
@@ -272,6 +276,41 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
     "attachment-discard",
   ),
   t3_thread_send_attachments: tool(["Send", "Sending", "Sent", "attachments"], "attachment-send"),
+  // Exarch's additions to the shared toolkit: document tools, the task card,
+  // and the two preview operations its browser tabs support.
+  preview_emulate: tool(
+    ["Emulate", "Emulating", "Emulated", "a device in the preview browser"],
+    "browser",
+    "browser",
+  ),
+  preview_gesture: tool(
+    ["Send a gesture", "Sending a gesture", "Sent a gesture", "to the preview browser"],
+    "browser",
+    "browser",
+  ),
+  exarch_document: tool(["Read", "Reading", "Read", "an Exarch document"], "exarch-document"),
+  exarch_open_documents: tool(
+    ["List", "Listing", "Listed", "open Exarch documents"],
+    "exarch-document",
+  ),
+  exarch_items: tool(["Read", "Reading", "Read", "Exarch document items"], "exarch-document"),
+  exarch_changes: tool(["Read", "Reading", "Read", "Exarch document changes"], "exarch-document"),
+  exarch_resolve: tool(
+    ["Find", "Finding", "Found", "a quote in an Exarch document"],
+    "exarch-document",
+  ),
+  exarch_render_check: tool(
+    ["Check", "Checking", "Checked", "Exarch component rendering"],
+    "exarch-document",
+  ),
+  exarch_library: tool(["Read", "Reading", "Read", "the Exarch Library"], "exarch-document"),
+  exarch_components: tool(
+    ["Read", "Reading", "Read", "the Exarch component reference"],
+    "exarch-document",
+  ),
+  exarch_act: tool(["Apply", "Applying", "Applied", "Exarch document actions"], "exarch-act"),
+  exarch_progress_card: tool(["Update", "Updating", "Updated", "the task card"], "task-card"),
+  exarch_progress_card_read: tool(["Read", "Reading", "Read", "the task card"], "task-card-read"),
 };
 
 /**

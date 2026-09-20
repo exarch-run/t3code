@@ -24,6 +24,20 @@ describe("resolveT3McpToolPresentation", () => {
       expect(resolveT3McpToolPresentation(`mcp__another-server__${tool}`), tool).toBeNull();
     }
   });
+  it("names the Exarch document, task card, and preview device tools", () => {
+    expect(resolveT3McpToolPresentation("mcp__t3-code__exarch_act")).toEqual({
+      displayName: "Apply Exarch document actions",
+      logo: "t3-code",
+    });
+    expect(resolveT3McpToolPresentation("t3-code.exarch_progress_card")).toEqual({
+      displayName: "Update the task card",
+      logo: "t3-code",
+    });
+    expect(resolveT3McpToolPresentation("mcp__t3-code__preview_emulate")).toEqual({
+      displayName: "Emulate a device in the preview browser",
+      logo: "t3-code",
+    });
+  });
   it("pretty prints Claude and Cursor T3 MCP tool names", () => {
     expect(resolveT3McpToolPresentation("mcp__t3-code__t3_thread_read")).toEqual({
       displayName: "Read a T3 thread",

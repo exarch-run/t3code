@@ -7,6 +7,17 @@ function completed(input: unknown, output?: unknown): T3ToolSummaryCall {
 }
 
 describe("summarizeT3ToolCalls", () => {
+  it.each([
+    ["exarch-document", "Used Exarch document tools 2 times"],
+    ["exarch-act", "Applied Exarch document actions 2 times"],
+    ["task-card", "Updated the task card 2 times"],
+    ["task-card-read", "Read the task card 2 times"],
+  ] as const)("summarizes Exarch tool calls for %s", (action, label) => {
+    expect(summarizeT3ToolCalls(action, [completed({}), completed({})]).label).toBe(label);
+    expect(
+      summarizeT3ToolCalls(action, [{ input: {}, output: undefined, outcome: "failed" }]).label,
+    ).toMatch(/^Tried to /);
+  });
   it("counts registered projects, repository destinations, and accepted thread launches", () => {
     expect(
       summarizeT3ToolCalls("project-create", [

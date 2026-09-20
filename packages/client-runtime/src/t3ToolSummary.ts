@@ -385,6 +385,18 @@ export function summarizeT3ToolCalls(
     case "device":
       label = phrase("Used", "use", `device controls ${times}`);
       break;
+    case "exarch-document":
+      label = phrase("Used", "use", `Exarch document tools ${times}`);
+      break;
+    case "exarch-act":
+      label = phrase("Applied", "apply", `Exarch document actions ${times}`);
+      break;
+    case "task-card":
+      label = phrase("Updated", "update", `the task card ${times}`);
+      break;
+    case "task-card-read":
+      label = phrase("Read", "read", `the task card ${times}`);
+      break;
     case "capabilities":
       label = phrase("Checked", "check", `orchestration capabilities ${times}`);
       break;
