@@ -360,6 +360,7 @@ export function applyServerSettingsPatch(
     ...(backgroundActivity === undefined && backgroundActivityPatch !== undefined
       ? { backgroundActivity: backgroundActivityPatch }
       : {}),
+    ...(patch.helperPolicy !== undefined ? { helperPolicy: patch.helperPolicy } : {}),
     ...(patch.providerInstances !== undefined
       ? { providerInstances: patch.providerInstances }
       : {}),

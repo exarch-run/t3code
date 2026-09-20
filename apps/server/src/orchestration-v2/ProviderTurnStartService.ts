@@ -235,6 +235,9 @@ export const layer: Layer.Layer<
           handoff.status === "ready" &&
           (handoff.targetRunId === run.id ||
             (handoff.toProviderThreadId === run.providerThreadId &&
+              (handoff.delivery?.contextChannel === "system" ||
+                handoff.delivery?.contextChannel === "developer")) ||
+            (handoff.toProviderThreadId === run.providerThreadId &&
               projection.runs.some(
                 (source) =>
                   source.id === handoff.targetRunId &&
@@ -692,14 +695,26 @@ export const layer: Layer.Layer<
           toProviderThreadId: providerThread.id,
           fromProviderInstanceId: providerThread.providerInstanceId,
           toProviderInstanceId: run.providerInstanceId,
-          coveredRunOrdinals: { from: 1, to: Math.max(1, run.ordinal - 1) },
+          coveredRunOrdinals: {
+            from:
+              projection.runs.findLast(
+                (source) => source.startClean && source.ordinal < run.ordinal,
+              )?.ordinal ?? 1,
+            to: Math.max(1, run.ordinal - 1),
+          },
           strategy: "full_thread_summary",
           runs: projection.runs,
           items: projection.turnItems.filter(
             (item) =>
-              item.runId === null ||
+              (item.runId === null && !projection.runs.some((source) => source.startClean)) ||
               projection.runs.some(
-                (source) => source.id === item.runId && source.ordinal < run.ordinal,
+                (source) =>
+                  source.id === item.runId &&
+                  source.ordinal >=
+                    (projection.runs.findLast(
+                      (candidate) => candidate.startClean && candidate.ordinal < run.ordinal,
+                    )?.ordinal ?? 1) &&
+                  source.ordinal < run.ordinal,
               ),
           ),
           createdAt,
@@ -1060,7 +1075,21 @@ export const layer: Layer.Layer<
                     createdAt: yield* DateTime.now,
                   }),
                 ];
+          const supplied = effectiveHandoffs.some(
+            (handoff) => handoff.strategy === "manual_context" && handoff.author !== undefined,
+          );
+          const contextCapabilities = session.providerSession.capabilities.context;
+          const contextChannel =
+            supplied && contextCapabilities.acceptsDeveloperContext && session.driver === "codex"
+              ? ("developer" as const)
+              : supplied && contextCapabilities.acceptsSystemContext
+                ? ("system" as const)
+                : supplied && contextCapabilities.acceptsDeveloperContext
+                  ? ("developer" as const)
+                  : ("message_prefix" as const);
+          const inInstructions = contextChannel !== "message_prefix";
           const delivery = yield* deliverContextHandoffs({
+            ...(supplied ? { contextChannel } : {}),
             handoffs: [...effectiveHandoffs, ...retryHandoff],
             deferInline: compact,
             providerThread: runningProviderThread,
@@ -1076,7 +1105,7 @@ export const layer: Layer.Layer<
                   : 0,
             }),
             alreadyDeliveredItemIds: deliveredItemIds,
-            ...(session.injectHistory === undefined
+            ...(inInstructions || session.injectHistory === undefined
               ? {}
               : {
                   inject: (history: ProviderAdapterV2HistoricalContext) =>
@@ -1109,10 +1138,20 @@ export const layer: Layer.Layer<
           const start = compact ? session.compactThread! : session.startTurn;
           yield* start({
             ...turnInput,
+            ...(inInstructions
+              ? {
+                  runtimePolicy: {
+                    ...turnInput.runtimePolicy,
+                    sessionContext: [turnInput.runtimePolicy.sessionContext, delivery.context]
+                      .filter(Boolean)
+                      .join("\n\n"),
+                  },
+                }
+              : {}),
             message: {
               ...turnInput.message,
               text:
-                delivery.context === ""
+                inInstructions || delivery.context === ""
                   ? userText
                   : `${delivery.context}\n\nUser message:\n${userText}`,
             },

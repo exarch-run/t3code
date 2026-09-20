@@ -166,3 +166,73 @@ it.layer(TestLayer)("ContextHandoffService legacy import", (it) => {
     }),
   );
 });
+
+it.layer(TestLayer)("supplied handoff", (it) => {
+  const input = {
+    threadId: ThreadId.make("supplied"),
+    targetRunId: RunId.make("next"),
+    transferId: null,
+    fromProviderThreadIds: [],
+    toProviderThreadId: ProviderThreadId.make("target"),
+    fromProviderInstanceId: ProviderInstanceId.make("codex"),
+    toProviderInstanceId: ProviderInstanceId.make("claudeAgent"),
+    coveredRunOrdinals: { from: 1, to: 2 },
+    strategy: "full_thread_summary" as const,
+    items: [],
+    createdAt: DateTime.makeUnsafe("2026-09-20T00:00:00Z"),
+  };
+  it.effect("preserves multiline supplied text and author without compaction", () =>
+    Effect.gen(function* () {
+      const service = yield* ContextHandoffServiceV2;
+      const text = "Owner's exact words.\n\n  Indented detail.\n" + "x".repeat(2000);
+      const handoff = yield* service.prepareProviderHandoff({
+        ...input,
+        suppliedHandoff: {
+          text,
+          author: "jev_plus_writer",
+          coveredRunOrdinals: input.coveredRunOrdinals,
+        },
+      });
+      assert.equal(handoff.summaryText, text);
+      assert.equal(handoff.author, "jev_plus_writer");
+      assert.equal(handoff.strategy, "manual_context");
+      assert.isUndefined(handoff.history);
+    }),
+  );
+  it.effect("refuses a package whose run range no longer matches", () =>
+    Effect.gen(function* () {
+      const service = yield* ContextHandoffServiceV2;
+      const error = yield* service
+        .prepareProviderHandoff({
+          ...input,
+          suppliedHandoff: {
+            text: "stale",
+            author: "verbatim",
+            coveredRunOrdinals: { from: 1, to: 1 },
+          },
+        })
+        .pipe(Effect.flip);
+      assert.equal(error._tag, "ContextHandoffPrepareError");
+    }),
+  );
+  it.effect("uses the same supplied text for fork bring-back", () =>
+    Effect.gen(function* () {
+      const service = yield* ContextHandoffServiceV2;
+      const text = "Full fork findings.\n" + "y".repeat(1000);
+      const handoff = yield* service.prepareForkDelta({
+        ...input,
+        sourceThreadId: input.threadId,
+        targetThreadId: ThreadId.make("parent"),
+        deltaItems: [],
+        suppliedHandoff: {
+          text,
+          author: "writer_alone",
+          coveredRunOrdinals: input.coveredRunOrdinals,
+        },
+      });
+      assert.equal(handoff.summaryText, text);
+      assert.equal(handoff.author, "writer_alone");
+      assert.isUndefined(handoff.history);
+    }),
+  );
+});

@@ -1,5 +1,6 @@
 import {
   OrchestrationV2ContextHandoff,
+  type SuppliedHandoff,
   type OrchestrationV2TurnItem,
   type OrchestrationV2Run,
   ProviderInstanceId,
@@ -34,7 +35,7 @@ export class ContextHandoffPrepareError extends Schema.TaggedError<ContextHandof
   },
 ) {
   override get message(): string {
-    return `Failed to prepare context handoff for run ${this.targetRunId} in thread ${this.threadId}.`;
+    return `Failed to prepare context handoff for run ${this.targetRunId} in thread ${this.threadId}.${typeof this.cause === "string" ? ` ${this.cause}` : ""}`;
   }
 }
 
@@ -65,6 +66,7 @@ export interface ContextHandoffServiceV2Shape {
     readonly toProviderThreadId: ProviderThreadId;
     readonly fromProviderInstanceId: ProviderInstanceId;
     readonly toProviderInstanceId: ProviderInstanceId;
+    readonly suppliedHandoff?: SuppliedHandoff | undefined;
     readonly coveredRunOrdinals: OrchestrationV2ContextHandoff["coveredRunOrdinals"];
     readonly deltaItems: ReadonlyArray<OrchestrationV2TurnItem>;
     readonly createdAt: DateTime.Utc;
@@ -77,6 +79,7 @@ export interface ContextHandoffServiceV2Shape {
     readonly toProviderThreadId: ProviderThreadId;
     readonly fromProviderInstanceId: ProviderInstanceId;
     readonly toProviderInstanceId: ProviderInstanceId;
+    readonly suppliedHandoff?: SuppliedHandoff | undefined;
     readonly coveredRunOrdinals: OrchestrationV2ContextHandoff["coveredRunOrdinals"];
     readonly runs?: ReadonlyArray<OrchestrationV2Run>;
     readonly strategy: Extract<
@@ -92,54 +95,6 @@ export class ContextHandoffServiceV2 extends Context.Service<
   ContextHandoffServiceV2,
   ContextHandoffServiceV2Shape
 >()("t3/orchestration-v2/ContextHandoffService/ContextHandoffServiceV2") {}
-
-function compactText(text: string, maxLength = 240): string {
-  const compacted = text.replace(/\s+/g, " ").trim();
-  if (compacted.length <= maxLength) {
-    return compacted;
-  }
-  return `${compacted.slice(0, maxLength - 3)}...`;
-}
-
-function summarizeDeltaItem(item: OrchestrationV2TurnItem): string | null {
-  switch (item.type) {
-    case "user_message":
-      return `- User: ${compactText(item.text)}`;
-    case "assistant_message":
-      return `- Assistant: ${compactText(item.text)}`;
-    case "command_execution":
-      return `- Command: ${compactText(item.input)}`;
-    case "file_change":
-      return `- File change: ${item.fileName}`;
-    case "checkpoint":
-      return `- Checkpoint: ${item.files.length} files`;
-    case "handoff":
-      return `- Handoff: ${compactText(item.summary ?? item.strategy)}`;
-    default:
-      return null;
-  }
-}
-
-function makeForkDeltaSummary(input: {
-  readonly sourceThreadId: ThreadId;
-  readonly targetThreadId: ThreadId;
-  readonly coveredRunOrdinals: OrchestrationV2ContextHandoff["coveredRunOrdinals"];
-  readonly deltaItems: ReadonlyArray<OrchestrationV2TurnItem>;
-}): string {
-  const itemLines = input.deltaItems.flatMap((item) => {
-    const line = summarizeDeltaItem(item);
-    return line === null ? [] : [line];
-  });
-  return [
-    "Merge-back context from forked conversation.",
-    `Source thread: ${input.sourceThreadId}`,
-    `Target thread: ${input.targetThreadId}`,
-    `Covered fork runs: ${input.coveredRunOrdinals.from}-${input.coveredRunOrdinals.to}`,
-    "",
-    "Fork delta:",
-    ...(itemLines.length === 0 ? ["- No user-visible delta items."] : itemLines),
-  ].join("\n");
-}
 
 function makeLegacyImportSummary(items: ReadonlyArray<OrchestrationV2TurnItem>): string {
   const sections = items.flatMap((item) => {
@@ -347,10 +302,22 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
         readonly toProviderThreadId: ProviderThreadId;
         readonly fromProviderInstanceId: ProviderInstanceId;
         readonly toProviderInstanceId: ProviderInstanceId;
+        readonly suppliedHandoff?: SuppliedHandoff | undefined;
         readonly coveredRunOrdinals: OrchestrationV2ContextHandoff["coveredRunOrdinals"];
         readonly deltaItems: ReadonlyArray<OrchestrationV2TurnItem>;
         readonly createdAt: DateTime.Utc;
       }) {
+        if (
+          input.suppliedHandoff &&
+          (input.suppliedHandoff.coveredRunOrdinals.from !== input.coveredRunOrdinals.from ||
+            input.suppliedHandoff.coveredRunOrdinals.to !== input.coveredRunOrdinals.to)
+        ) {
+          return yield* new ContextHandoffPrepareError({
+            ...input,
+            threadId: input.targetThreadId,
+            cause: "Supplied fork handoff coverage is stale.",
+          });
+        }
         const handoffId = yield* idAllocator.allocate
           .contextHandoff({
             threadId: input.targetThreadId,
@@ -390,16 +357,22 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
           fromProviderThreadIds: Array.from(input.fromProviderThreadIds),
           toProviderThreadId: input.toProviderThreadId,
           coveredRunOrdinals: input.coveredRunOrdinals,
-          strategy: "fork_delta_summary",
+          strategy: input.suppliedHandoff ? "manual_context" : "fork_delta_summary",
+          author: input.suppliedHandoff?.author ?? "verbatim",
           status: "ready",
           summaryMessageId: null,
-          summaryText: makeForkDeltaSummary(input),
-          history: {
-            messages: selected.messages,
-            coverage,
-            omittedItems: selected.omittedItems,
-            omittedItemIds: selected.omittedItemIds,
-          },
+          summaryText:
+            input.suppliedHandoff?.text ?? renderHistory(selected.messages, selected.context),
+          ...(input.suppliedHandoff
+            ? {}
+            : {
+                history: {
+                  messages: selected.messages,
+                  coverage,
+                  omittedItems: selected.omittedItems,
+                  omittedItemIds: selected.omittedItemIds,
+                },
+              }),
           createdByProviderInstanceId: null,
           createdAt: input.createdAt,
           updatedAt: input.createdAt,
@@ -417,6 +390,7 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
       readonly toProviderThreadId: ProviderThreadId;
       readonly fromProviderInstanceId: ProviderInstanceId;
       readonly toProviderInstanceId: ProviderInstanceId;
+      readonly suppliedHandoff?: SuppliedHandoff | undefined;
       readonly coveredRunOrdinals: OrchestrationV2ContextHandoff["coveredRunOrdinals"];
       readonly runs?: ReadonlyArray<OrchestrationV2Run>;
       readonly strategy: Extract<
@@ -426,6 +400,16 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
       readonly items: ReadonlyArray<OrchestrationV2TurnItem>;
       readonly createdAt: DateTime.Utc;
     }) {
+      if (
+        input.suppliedHandoff &&
+        (input.suppliedHandoff.coveredRunOrdinals.from !== input.coveredRunOrdinals.from ||
+          input.suppliedHandoff.coveredRunOrdinals.to !== input.coveredRunOrdinals.to)
+      ) {
+        return yield* new ContextHandoffPrepareError({
+          ...input,
+          cause: "Supplied handoff coverage is stale. Request a new handoff plan.",
+        });
+      }
       const handoffId = yield* idAllocator.allocate
         .contextHandoff({
           threadId: input.threadId,
@@ -469,16 +453,30 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
         fromProviderThreadIds: Array.from(input.fromProviderThreadIds),
         toProviderThreadId: input.toProviderThreadId,
         coveredRunOrdinals: input.coveredRunOrdinals,
-        strategy: input.strategy,
+        strategy: input.suppliedHandoff ? "manual_context" : input.strategy,
+        author: input.suppliedHandoff?.author ?? "verbatim",
+        cutOffRunOrdinals: (input.runs ?? [])
+          .filter(
+            (run) =>
+              run.ordinal >= input.coveredRunOrdinals.from &&
+              run.ordinal <= input.coveredRunOrdinals.to &&
+              (run.status === "failed" || run.status === "interrupted"),
+          )
+          .map((run) => run.ordinal),
         status: "ready",
         summaryMessageId: null,
-        summaryText: renderHistory(selected.messages, selected.context),
-        history: {
-          messages: selected.messages,
-          coverage,
-          omittedItems: selected.omittedItems,
-          omittedItemIds: selected.omittedItemIds,
-        },
+        summaryText:
+          input.suppliedHandoff?.text ?? renderHistory(selected.messages, selected.context),
+        ...(input.suppliedHandoff
+          ? {}
+          : {
+              history: {
+                messages: selected.messages,
+                coverage,
+                omittedItems: selected.omittedItems,
+                omittedItemIds: selected.omittedItemIds,
+              },
+            }),
         createdByProviderInstanceId: null,
         createdAt: input.createdAt,
         updatedAt: input.createdAt,

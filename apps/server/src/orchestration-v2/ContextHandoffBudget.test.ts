@@ -550,3 +550,24 @@ describe("handoff delivery", () => {
     }),
   );
 });
+
+it.effect("never discards an oversized supplied package while marking it delivered", () =>
+  Effect.gen(function* () {
+    const { history: _, ...base } = handoff;
+    let persisted = false;
+    const error = yield* deliverContextHandoffs<never, never>({
+      handoffs: [
+        { ...base, strategy: "manual_context", author: "verbatim", summaryText: "x".repeat(5000) },
+      ],
+      providerThread,
+      budget: 1024,
+      alreadyDeliveredItemIds: new Set(),
+      persist: () =>
+        Effect.sync(() => {
+          persisted = true;
+        }),
+    }).pipe(Effect.flip);
+    assert.equal(error._tag, "ContextHandoffBudgetError");
+    assert.isFalse(persisted);
+  }),
+);

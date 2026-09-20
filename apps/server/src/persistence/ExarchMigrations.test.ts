@@ -11,6 +11,7 @@ layer("Exarch migration ledger", (it) => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* sql`CREATE TABLE projection_projects (id TEXT PRIMARY KEY)`;
+      yield* sql`CREATE TABLE scheduled_tasks (task_id TEXT PRIMARY KEY)`;
       yield* runExarchMigrations;
       const before = yield* sql`SELECT * FROM exarch_v2_sql_migrations`;
       yield* sql`ALTER TABLE exarch_v2_sql_migrations RENAME TO former_brand_v2_sql_migrations`;
@@ -21,6 +22,8 @@ layer("Exarch migration ledger", (it) => {
       assert.equal(old.length, 0);
       const columns = yield* sql<{ readonly name: string }>`PRAGMA table_info(projection_projects)`;
       assert.equal(columns.filter((column) => column.name === "session_files_json").length, 1);
+      const taskColumns = yield* sql<{ readonly name: string }>`PRAGMA table_info(scheduled_tasks)`;
+      assert.equal(taskColumns.filter((column) => column.name === "start_clean").length, 1);
       yield* runExarchMigrations;
       assert.deepEqual(yield* sql`SELECT * FROM exarch_v2_sql_migrations`, before);
     }),

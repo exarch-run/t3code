@@ -2,7 +2,7 @@ import * as NodeUtil from "node:util";
 
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, it } from "@effect/vitest";
-import { ScheduledTaskError } from "@t3tools/contracts";
+import { ProjectId, ThreadId, ProviderInstanceId, ScheduledTaskError } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -17,7 +17,11 @@ import * as TestClock from "effect/testing/TestClock";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
-import { layer as scheduledTaskServiceLayer, listDueTasks } from "./ScheduledTaskService.ts";
+import {
+  ScheduledTaskService,
+  layer as scheduledTaskServiceLayer,
+  listDueTasks,
+} from "./ScheduledTaskService.ts";
 
 const isScheduledTaskError = Schema.is(ScheduledTaskError);
 
@@ -344,4 +348,45 @@ it.effect(
         }),
       );
     }).pipe(Effect.provide(SqlitePersistenceMemory)),
+);
+
+it.effect("persists start-clean and passes it to a bound scheduled run", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const now = "2026-09-20T12:00:00Z";
+      yield* TestClock.setTime(Date.parse(now));
+      const captured = yield* Ref.make<boolean | undefined>(undefined);
+      const deps = Layer.mergeAll(
+        NodeCrypto.layer,
+        Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
+        Layer.mock(ThreadManagementService.ThreadManagementService)({
+          sendToThread: (input) =>
+            Ref.set(captured, input.startClean).pipe(
+              Effect.andThen(Effect.die(new Error("Synthetic completion failure"))),
+            ),
+        }),
+      );
+      yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService;
+        const input = {
+          title: "Clean run",
+          prompt: "Read today's records",
+          enabled: false,
+          schedule: { type: "interval" as const, everyMs: 60_000 },
+          projectId: ProjectId.make("project:test"),
+          threadId: ThreadId.make("thread:test"),
+          workspaceStrategy: { type: "root" as const },
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+          runtimeMode: "full-access" as const,
+          interactionMode: "default" as const,
+        };
+        const created = yield* service.upsert({ ...input, startClean: true });
+        const saved = yield* service.upsert({ ...input, id: created.task.id });
+        assert.isTrue(saved.task.startClean);
+        assert.isTrue((yield* service.list()).tasks[0]?.startClean);
+        yield* service.runNow({ id: created.task.id });
+        assert.isTrue(yield* Ref.get(captured));
+      }).pipe(Effect.provide(scheduledTaskServiceLayer.pipe(Layer.provide(deps))));
+    }),
+  ).pipe(Effect.provide(SqlitePersistenceMemory)),
 );

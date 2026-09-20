@@ -1,6 +1,6 @@
 {
   "name": "@t3tools/web",
-  "version": "0.0.42-exarch.2011",
+  "version": "0.0.42-exarch.2012",
   "private": true,
   "type": "module",
   "scripts": {

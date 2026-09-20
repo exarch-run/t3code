@@ -1,3 +1,6 @@
+import { DEFAULT_HELPER_POLICY, helperPolicyForProject } from "@t3tools/contracts";
+import { ServerSettingsService } from "../serverSettings.ts";
+import { resolveHelperTask } from "./HelperPolicy.ts";
 import {
   CommandId,
   isProviderAvailable,
@@ -101,6 +104,7 @@ export interface OrchestratorMcpServiceShape {
   readonly delegateTask: (
     scope: McpInvocationScope,
     input: OrchestratorMcpDelegateTaskInput,
+    initiatedBy?: "user",
   ) => Effect.Effect<OrchestratorMcpDelegateTaskResult, OrchestratorMcpFailure>;
   readonly taskStatus: (
     scope: McpInvocationScope,
@@ -551,12 +555,6 @@ function threadTitle(input: {
   return detail.length > 80 ? `${detail.slice(0, 77)}...` : detail;
 }
 
-function taskPrompt(input: OrchestratorMcpDelegateTaskInput): string {
-  return input.role === undefined || input.role === "general"
-    ? input.task
-    : `Act as the ${input.role} sub-agent for this task.\n\n${input.task}`;
-}
-
 function listItemFromShell(shell: OrchestrationV2ThreadShell): OrchestratorMcpThreadListItem {
   return {
     threadId: shell.id,
@@ -743,6 +741,13 @@ const make = Effect.gen(function* () {
   const providerRegistry = yield* ProviderRegistry;
   const providerAdapters = yield* ProviderAdapterRegistryV2;
   const scheduledTasks = yield* ScheduledTaskService;
+  const settingsService = yield* Effect.serviceOption(ServerSettingsService);
+  const readHelperPolicy = Option.isSome(settingsService)
+    ? settingsService.value.getSettings.pipe(
+        Effect.map((settings) => settings.helperPolicy),
+        Effect.mapError((error) => failure("orchestration_error", errorMessage(error))),
+      )
+    : Effect.succeed(DEFAULT_HELPER_POLICY);
 
   const requireCapability = (scope: McpInvocationScope) =>
     scope.capabilities.has("orchestration")
@@ -1111,6 +1116,7 @@ const make = Effect.gen(function* () {
           prompt: input.prompt,
           enabled: input.enabled ?? true,
           schedule: input.schedule,
+          startClean: input.startClean ?? false,
           projectId: parent.thread.projectId,
           threadId: bindToCurrentThread ? scope.threadId : null,
           workspaceStrategy: scheduledTaskWorkspaceStrategy(bindToCurrentThread),
@@ -1185,6 +1191,7 @@ const make = Effect.gen(function* () {
           prompt: input.prompt ?? existing.prompt,
           enabled: input.enabled ?? existing.enabled,
           schedule: input.schedule ?? existing.schedule,
+          startClean: input.startClean ?? existing.startClean ?? false,
           projectId: existing.projectId,
           threadId,
           workspaceStrategy,
@@ -1226,7 +1233,11 @@ const make = Effect.gen(function* () {
         const parent = yield* loadProjection(scope.threadId);
         const providers = yield* loadProviders;
         const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
+        const policy = helperPolicyForProject(yield* readHelperPolicy, parent.thread.projectId);
         return {
+          taskTypes: policy.enabled
+            ? policy.taskTypes.map(({ name, whenToUse }) => ({ name, whenToUse }))
+            : [],
           parentThreadId: scope.threadId,
           inheritedProviderInstanceId: parent.thread.modelSelection.instanceId,
           inheritedModel: parent.thread.modelSelection.model,
@@ -1242,20 +1253,27 @@ const make = Effect.gen(function* () {
               driverKind: provider.driver,
               displayName: provider?.displayName ?? null,
               models:
-                provider?.models.map((model) => ({
-                  id: model.slug,
-                  label: model.name ?? null,
-                  ...(model.capabilities?.optionDescriptors === undefined
-                    ? {}
-                    : { options: model.capabilities.optionDescriptors }),
-                })) ?? [],
-              canRunChildTask: constraints.length === 0,
-              canRunCrossProviderChildTask: constraints.length === 0,
+                provider?.models
+                  .filter((model) =>
+                    policy.visibleModels.some(
+                      (visible) =>
+                        visible.instanceId === provider.instanceId && visible.model === model.slug,
+                    ),
+                  )
+                  .map((model) => ({
+                    id: model.slug,
+                    label: model.name ?? null,
+                    ...(model.capabilities?.optionDescriptors === undefined
+                      ? {}
+                      : { options: model.capabilities.optionDescriptors }),
+                  })) ?? [],
+              canRunChildTask: policy.enabled && constraints.length === 0,
+              canRunCrossProviderChildTask: policy.enabled && constraints.length === 0,
               constraints: [...constraints],
             };
           }),
           features: {
-            appOwnedSubagents: true,
+            appOwnedSubagents: policy.enabled,
             asyncPolling: true,
             cancellation: true,
             batchThreadCreation: true,
@@ -1266,17 +1284,17 @@ const make = Effect.gen(function* () {
           },
         };
       }),
-    delegateTask: (scope, input) =>
+    delegateTask: (scope, input, initiatedBy) =>
       Effect.gen(function* () {
         yield* requireCapability(scope);
         const parent = yield* loadProjection(scope.threadId);
         const parentRun = parent.runs
-          .filter(isActiveRun)
+          .filter((run) => initiatedBy === "user" || isActiveRun(run))
           .toSorted((left, right) => right.ordinal - left.ordinal)[0];
         if (
           parentRun === undefined ||
           parentRun.rootNodeId === null ||
-          parentRun.providerInstanceId !== scope.providerInstanceId
+          (initiatedBy !== "user" && parentRun.providerInstanceId !== scope.providerInstanceId)
         ) {
           return yield* failure(
             "parent_not_active",
@@ -1284,12 +1302,39 @@ const make = Effect.gen(function* () {
           );
         }
         const providers = yield* loadProviders;
+        const policy = yield* readHelperPolicy;
+        const availableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
+        if (initiatedBy !== "user" && input.target !== undefined) {
+          return yield* failure(
+            "invalid_request",
+            "Helpers select a task type; the owner's table selects the model.",
+          );
+        }
+        const resolved = yield* Effect.try({
+          try: () =>
+            resolveHelperTask({
+              policy,
+              parent,
+              providers,
+              availableInstanceIds,
+              taskType: input.taskType,
+              override:
+                input.target?.providerInstanceId && input.target.model
+                  ? { instanceId: input.target.providerInstanceId, model: input.target.model }
+                  : undefined,
+            }),
+          catch: (error) => failure("invalid_request", errorMessage(error)),
+        });
         const target = yield* resolveTarget({
           parent,
-          target: input.target,
           providers,
+          target: {
+            providerInstanceId: resolved.modelSelection.instanceId,
+            model: resolved.modelSelection.model,
+            options: resolved.modelSelection.options,
+          },
         });
-        const runtimeMode = yield* resolveRuntimeMode(parent.thread.runtimeMode, input.runtimeMode);
+        const runtimeMode = parent.thread.runtimeMode;
         const interactionMode = yield* resolveInteractionMode(
           parent.thread.interactionMode,
           input.interactionMode,
@@ -1303,13 +1348,14 @@ const make = Effect.gen(function* () {
         const result = yield* threadManagement
           .dispatch({
             type: "delegated_task.request",
-            createdBy: "agent",
-            creationSource: "mcp",
+            createdBy: initiatedBy ?? "agent",
+            creationSource: initiatedBy ? "web" : "mcp",
+            taskType: resolved.row.name,
             commandId,
             parentThreadId: scope.threadId,
             parentRunId: parentRun.id,
             parentNodeId: parentRun.rootNodeId,
-            task: taskPrompt(input),
+            task: `${resolved.row.whenToUse}\n\n${input.task}`,
             ...(input.title === undefined ? {} : { title: input.title }),
             modelSelection: target.modelSelection,
             runtimeMode,

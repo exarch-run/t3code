@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import { SuppliedHandoff } from "./suppliedHandoff.ts";
 
 import { TrimmedNonEmptyString } from "./baseSchemas.ts";
 
@@ -11,6 +12,7 @@ import { TrimmedNonEmptyString } from "./baseSchemas.ts";
  * the conversation continues inside the worktree on the thread's next run.
  */
 export const WorktreeMcpHandoffInput = Schema.Struct({
+  suppliedHandoff: Schema.optional(SuppliedHandoff),
   branch: TrimmedNonEmptyString.annotate({
     description: "Branch name to create for the worktree (e.g. 'feature/my-change').",
   }),

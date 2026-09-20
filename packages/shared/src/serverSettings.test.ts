@@ -24,6 +24,20 @@ import {
 const FOLDED_SERVER_SETTINGS = { ...DEFAULT_SERVER_SETTINGS, projectSettingsFolded: true };
 
 describe("serverSettings helpers", () => {
+  it("replaces helper policy so removed project overrides stay removed", () => {
+    const policy = {
+      ...DEFAULT_SERVER_SETTINGS.helperPolicy,
+      enabled: true,
+      projectOverrides: { [ProjectId.make("helper-project")]: { enabled: false } },
+    };
+    const saved = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, { helperPolicy: policy });
+    expect(saved.helperPolicy.projectOverrides).toEqual(policy.projectOverrides);
+    const cleared = applyServerSettingsPatch(saved, {
+      helperPolicy: { ...policy, projectOverrides: {} },
+    });
+    expect(cleared.helperPolicy.projectOverrides).toEqual({});
+    expect(cleared.helperPolicy.enabled).toBe(true);
+  });
   it("changes a cleanup rule without replacing the machine's other rules", () => {
     const enabled = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
       storageCleanup: { worktreeAfterDays: 8, worktreeOnMerge: true, logsAfterDays: 30 },

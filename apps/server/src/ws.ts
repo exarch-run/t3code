@@ -1,3 +1,10 @@
+import * as Clock from "effect/Clock";
+import { ADOPTION_RPC, AdoptionError } from "@t3tools/contracts";
+import * as AdoptionOrchestrator from "./mcp/OrchestratorMcpService.ts";
+import * as AdoptionWorktree from "./mcp/WorktreeMcpService.ts";
+import * as AdoptionSwitch from "./orchestration-v2/ProviderSwitchService.ts";
+import { ProviderAdapterRegistryV2 } from "./orchestration-v2/ProviderAdapterRegistry.ts";
+import { handoffPlan } from "./orchestration-v2/HandoffPlan.ts";
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import { OrchestratorV2 } from "./orchestration-v2/Orchestrator.ts";
@@ -1632,7 +1639,13 @@ const makeWsRpcLayer = (
               otlpLogsEnabled: config.otlpLogsUrl !== undefined,
             },
             settings,
-            taskProgress: { version: 1 as const, supportedVersions: [2], providers: providers.map(provider => provider.driver), newChatsOnly: false, enabled: settings.enableTaskProgress },
+            taskProgress: {
+              version: 1 as const,
+              supportedVersions: [2],
+              providers: providers.map((provider) => provider.driver),
+              newChatsOnly: false,
+              enabled: settings.enableTaskProgress,
+            },
             shellResumeCompletionMarker: true,
             ...(fileManagerRevealKind === undefined
               ? {}
@@ -1820,6 +1833,87 @@ const makeWsRpcLayer = (
             ORCHESTRATION_V2_WS_METHODS.getArchivedShellSnapshot,
             getOrchestrationV2ArchivedShellSnapshot,
             { "rpc.aggregate": "orchestration" },
+          ),
+        [ADOPTION_RPC.getHandoffText.method]: (input) =>
+          Effect.gen(function* () {
+            const projection = yield* threadManagement.getThreadProjection(input.threadId);
+            const handoff = projection.contextHandoffs.find(
+              (value) => value.id === input.handoffId,
+            );
+            if (!handoff)
+              return yield* new AdoptionError({
+                message: `Handoff ${input.handoffId} was not found in thread ${input.threadId}.`,
+              });
+            return { text: handoff.summaryText };
+          }).pipe(Effect.mapError((error) => new AdoptionError({ message: String(error) }))),
+        [ADOPTION_RPC.getHandoffPlan.method]: (input) =>
+          Effect.gen(function* () {
+            const projection = yield* threadManagement.getThreadProjection(input.threadId);
+            const registry = yield* ProviderAdapterRegistryV2;
+            const adapter = yield* registry.get(input.modelSelection.instanceId);
+            const capabilities = yield* adapter.getCapabilities();
+            const service = yield* AdoptionSwitch.ProviderSwitchServiceV2;
+            const plan = yield* service.plan({
+              projection,
+              targetModelSelection: input.modelSelection,
+            });
+            return handoffPlan(projection, plan, capabilities, input.reason === "worktree_move");
+          }).pipe(
+            Effect.provide(AdoptionSwitch.layer),
+            Effect.mapError((error) => new AdoptionError({ message: String(error) })),
+          ),
+        [ADOPTION_RPC.startHelper.method]: (input) =>
+          Effect.gen(function* () {
+            const parent = yield* threadManagement.getThreadProjection(input.parentThreadId);
+            const service = yield* AdoptionOrchestrator.OrchestratorMcpService;
+            return yield* service.delegateTask(
+              {
+                environmentId: yield* serverEnvironment.getEnvironmentId,
+                threadId: input.parentThreadId,
+                providerSessionId: `owner:${input.parentThreadId}`,
+                providerInstanceId: parent.thread.modelSelection.instanceId,
+                capabilities: new Set(["orchestration"]),
+                issuedAt: yield* Clock.currentTimeMillis,
+              },
+              {
+                taskType: input.taskType,
+                task: input.brief,
+                clientRequestId: input.commandId,
+                ...(input.title ? { title: input.title } : {}),
+                ...(input.modelOverride
+                  ? {
+                      target: {
+                        providerInstanceId: input.modelOverride.instanceId,
+                        model: input.modelOverride.model,
+                      },
+                    }
+                  : {}),
+              },
+              "user",
+            );
+          }).pipe(
+            Effect.provide(AdoptionOrchestrator.layer),
+            Effect.mapError((error) => new AdoptionError({ message: String(error) })),
+          ),
+        [ADOPTION_RPC.moveToWorktree.method]: (input) =>
+          Effect.gen(function* () {
+            const projection = yield* threadManagement.getThreadProjection(input.threadId);
+            const service = yield* AdoptionWorktree.WorktreeMcpService;
+            return yield* service.handoff(
+              {
+                environmentId: yield* serverEnvironment.getEnvironmentId,
+                threadId: input.threadId,
+                providerSessionId: `owner:${input.threadId}`,
+                providerInstanceId: projection.thread.modelSelection.instanceId,
+                capabilities: new Set(["worktree"]),
+                issuedAt: yield* Clock.currentTimeMillis,
+              },
+              input,
+              "user",
+            );
+          }).pipe(
+            Effect.provide(AdoptionWorktree.layer),
+            Effect.mapError((error) => new AdoptionError({ message: String(error) })),
           ),
         [ORCHESTRATION_V2_WS_METHODS.getThreadProjection]: (input) =>
           observeRpcEffect(
@@ -3538,6 +3632,7 @@ const makeWsRpcLayer = (
 
 export const websocketRpcRouteLayer = Layer.unwrap(
   Effect.gen(function* () {
+    const adoptionAdapters = yield* ProviderAdapterRegistryV2;
     const previewAutomationBroker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
     const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
     const pullRequests = yield* PullRequestService.PullRequestService;
@@ -3593,6 +3688,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
               previewAutomationBroker,
             ).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
+              Layer.provide(Layer.succeed(ProviderAdapterRegistryV2, adoptionAdapters)),
               Layer.provide(Layer.succeed(SqlClient.SqlClient, sql)),
               Layer.provide(AgentSessionScanner.layer),
               Layer.provide(ProviderMaintenanceRunner.layer),

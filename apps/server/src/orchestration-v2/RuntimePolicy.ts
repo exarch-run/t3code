@@ -1,3 +1,5 @@
+import { helperPolicyForProject } from "@t3tools/contracts";
+import { ServerSettingsService } from "../serverSettings.ts";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import { readSessionFiles } from "../provider/SessionFiles.ts";
@@ -82,27 +84,61 @@ export const layerFromProjectRepository: Layer.Layer<
     const projects = yield* ProjectionProjects.ProjectionProjectRepository;
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
+    const settings = yield* Effect.serviceOption(ServerSettingsService);
     return RuntimePolicyV2.of({
       resolve: Effect.fn("RuntimePolicyV2.resolve")(function* (input) {
         const project = yield* projects.getById({ projectId: input.thread.projectId }).pipe(
-          Effect.mapError(cause => new RuntimePolicyResolveError({ projectId: input.thread.projectId,
-            providerInstanceId: input.modelSelection.instanceId, cause })),
+          Effect.mapError(
+            (cause) =>
+              new RuntimePolicyResolveError({
+                projectId: input.thread.projectId,
+                providerInstanceId: input.modelSelection.instanceId,
+                cause,
+              }),
+          ),
           Effect.map(Option.getOrNull),
         );
         const cwd = input.thread.worktreePath ?? project?.workspaceRoot;
-        if (cwd === undefined) return yield* new RuntimePolicyResolveError({
-          projectId: input.thread.projectId, providerInstanceId: input.modelSelection.instanceId,
-          cause: "Project not found.",
-        });
-        const sessionContext = yield* readSessionFiles(cwd, project?.sessionFiles ?? []).pipe(
+        if (cwd === undefined)
+          return yield* new RuntimePolicyResolveError({
+            projectId: input.thread.projectId,
+            providerInstanceId: input.modelSelection.instanceId,
+            cause: "Project not found.",
+          });
+        const sessionContext = yield* readSessionFiles(
+          cwd,
+          input.thread.appOwnedHelper ? [] : (project?.sessionFiles ?? []),
+        ).pipe(
           Effect.provideService(FileSystem.FileSystem, fileSystem),
           Effect.provideService(Path.Path, path),
         );
+        const helperPolicy = Option.isSome(settings)
+          ? helperPolicyForProject(
+              (yield* settings.value.getSettings.pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new RuntimePolicyResolveError({
+                      projectId: input.thread.projectId,
+                      providerInstanceId: input.modelSelection.instanceId,
+                      cause,
+                    }),
+                ),
+              )).helperPolicy,
+              input.thread.projectId,
+            )
+          : undefined;
+        const helperInstructions = helperPolicy?.enabled
+          ? [
+              "Available helper task types. Call delegate_task with the exact taskType and a self-contained task brief; the owner's policy selects the model.",
+              ...helperPolicy.taskTypes.map((row) => `${row.name}: ${row.whenToUse}`),
+            ].join("\n")
+          : undefined;
+        const context = [sessionContext, helperInstructions].filter(Boolean).join("\n\n");
         return ProviderAdapterV2RuntimePolicy.make({
           runtimeMode: input.thread.runtimeMode,
           interactionMode: input.thread.interactionMode,
           cwd,
-          ...(sessionContext === undefined ? {} : { sessionContext }),
+          ...(context ? { sessionContext: context } : {}),
         });
       }),
     });

@@ -2,6 +2,7 @@ import { SshDeviceHostConfigs } from "./device.ts";
 import * as Effect from "effect/Effect";
 import * as Duration from "effect/Duration";
 import * as Schema from "effect/Schema";
+import { HelperPolicy, DEFAULT_HELPER_POLICY } from "./helperPolicy.ts";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import {
   ForwardCompatibleNullable,
@@ -1120,6 +1121,9 @@ export const StorageCleanupSettings = Schema.Struct({
 export type StorageCleanupSettings = typeof StorageCleanupSettings.Type;
 
 export const ServerSettings = Schema.Struct({
+  helperPolicy: HelperPolicy.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_HELPER_POLICY)),
+  ),
   worktreeCleanup: WorktreeCleanup.pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   storageCleanup: StorageCleanupSettings.pipe(
     Schema.withDecodingDefault(
@@ -1471,6 +1475,7 @@ const OpenCodeSettingsPatch = Schema.Struct({
 });
 
 export const ServerSettingsPatch = Schema.Struct({
+  helperPolicy: Schema.optionalKey(HelperPolicy),
   worktreeCleanup: Schema.optionalKey(
     Schema.NullOr(
       Schema.Union([

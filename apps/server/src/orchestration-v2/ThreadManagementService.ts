@@ -99,6 +99,7 @@ export type ThreadManagementTerminalRunStatus = Extract<
 >;
 
 export interface ThreadManagementSendInput {
+  readonly startClean?: boolean;
   readonly projectId: ProjectId;
   readonly commandId: CommandId;
   readonly threadId: ThreadId;
@@ -493,7 +494,9 @@ const make = Effect.gen(function* () {
         OrchestrationV2Command,
         { readonly type: "message.dispatch" }
       >["dispatchMode"];
-      if (input.mode === "steer" || input.mode === "restart") {
+      if (input.startClean) {
+        dispatchMode = { type: "queue_after_active" };
+      } else if (input.mode === "steer" || input.mode === "restart") {
         if (steerableRun === undefined) {
           return yield* new ThreadManagementNoSteerableRunError({
             threadId: input.threadId,
@@ -514,6 +517,7 @@ const make = Effect.gen(function* () {
 
       const dispatch = yield* orchestrator.dispatch({
         type: "message.dispatch",
+        ...(input.startClean ? { startClean: true } : {}),
         commandId: input.commandId,
         threadId: input.threadId,
         messageId: input.messageId,

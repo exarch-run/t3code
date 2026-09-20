@@ -3,6 +3,7 @@ import { TaskProgressRecordV2, TaskProgressStep } from "./taskProgress.ts";
 import { OrchestrationMessageContext } from "./composerContext.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import { SuppliedHandoff, HandoffAuthor } from "./suppliedHandoff.ts";
 
 import {
   CheckpointId,
@@ -158,6 +159,7 @@ export type OrchestrationV2ContextTransferResolution =
   typeof OrchestrationV2ContextTransferResolution.Type;
 
 export const OrchestrationV2ContextTransfer = Schema.Struct({
+  suppliedHandoff: Schema.optional(SuppliedHandoff),
   id: ContextTransferId,
   type: OrchestrationV2ContextTransferType,
   sourceThreadId: ThreadId,
@@ -329,6 +331,18 @@ export const OrchestrationV2ProviderCapabilities = Schema.Struct({
 export type OrchestrationV2ProviderCapabilities = typeof OrchestrationV2ProviderCapabilities.Type;
 
 export const OrchestrationV2AppThread = Schema.Struct({
+  helperTaskType: Schema.optional(Schema.String),
+  appOwnedHelper: Schema.optional(Schema.Boolean),
+  pendingHandoff: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        afterRunOrdinal: NonNegativeInt,
+        modelSelection: ModelSelection,
+        resetSession: Schema.Boolean,
+        suppliedHandoff: Schema.optional(SuppliedHandoff),
+      }),
+    ),
+  ),
   taskProgressV2: Schema.optional(TaskProgressRecordV2),
   ...OrchestrationV2CreationFields,
   id: ThreadId,
@@ -445,6 +459,7 @@ export type OrchestrationV2DelegatedCompletionCohort =
   typeof OrchestrationV2DelegatedCompletionCohort.Type;
 
 export const OrchestrationV2Run = Schema.Struct({
+  startClean: Schema.optional(Schema.Boolean),
   id: RunId,
   threadId: ThreadId,
   ordinal: PositiveInt,
@@ -542,6 +557,7 @@ export const OrchestrationV2ExecutionNode = Schema.Struct({
 export type OrchestrationV2ExecutionNode = typeof OrchestrationV2ExecutionNode.Type;
 
 export const OrchestrationV2Subagent = Schema.Struct({
+  taskType: Schema.optional(Schema.String),
   id: NodeId,
   threadId: ThreadId,
   runId: Schema.NullOr(RunId),
@@ -560,11 +576,13 @@ export const OrchestrationV2Subagent = Schema.Struct({
   role: Schema.optional(Schema.String),
   effort: Schema.optional(Schema.String),
   lastToolName: Schema.optional(Schema.String),
-  usage: Schema.optional(Schema.Struct({
-    total_tokens: Schema.Number,
-    tool_uses: Schema.Number,
-    duration_ms: Schema.Number,
-  })),
+  usage: Schema.optional(
+    Schema.Struct({
+      total_tokens: Schema.Number,
+      tool_uses: Schema.Number,
+      duration_ms: Schema.Number,
+    }),
+  ),
   // Parent-wake policy for app-owned tasks: "always" offers a continuation on
   // every terminal (async delegations; queue_after_active sequences it behind
   // a live parent run), "settled_only" offers only when the parent has no
@@ -698,6 +716,8 @@ export const OrchestrationV2HistoricalMessage = Schema.Struct({
 export type OrchestrationV2HistoricalMessage = typeof OrchestrationV2HistoricalMessage.Type;
 
 export const OrchestrationV2ContextHandoff = Schema.Struct({
+  author: Schema.optional(HandoffAuthor),
+  cutOffRunOrdinals: Schema.optional(Schema.Array(PositiveInt)),
   id: ContextHandoffId,
   transferId: Schema.optional(Schema.NullOr(ContextTransferId)),
   threadId: ThreadId,
@@ -732,6 +752,7 @@ export const OrchestrationV2ContextHandoff = Schema.Struct({
     Schema.Struct({
       nativeThreadId: Schema.String,
       status: Schema.Literals(["pending", "injected", "inline"]),
+      contextChannel: Schema.optional(Schema.Literals(["system", "developer", "message_prefix"])),
       itemIds: Schema.Array(TurnItemId),
       // Covered by recovery instructions, but not present in native model history.
       omittedItemIds: Schema.optional(Schema.Array(TurnItemId)),
@@ -833,7 +854,7 @@ export const OrchestrationV2ConversationMessage = Schema.Struct({
   role: Schema.Literals(["user", "assistant", "system"]),
   text: Schema.String,
   context: Schema.optional(OrchestrationMessageContext),
-    questionResponse: Schema.optional(QuestionResponse),
+  questionResponse: Schema.optional(QuestionResponse),
   attachments: Schema.Array(ChatAttachment),
   streaming: Schema.Boolean,
   createdAt: Schema.DateTimeUtc,
@@ -2339,6 +2360,7 @@ export const OrchestrationV2Command = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("thread.metadata.update"),
+    suppliedHandoff: Schema.optional(SuppliedHandoff),
     commandId: CommandId,
     threadId: ThreadId,
     title: Schema.optional(TrimmedNonEmptyString),
@@ -2424,6 +2446,7 @@ export const OrchestrationV2Command = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("message.dispatch"),
+    startClean: Schema.optional(Schema.Boolean),
     notification: Schema.optional(OrchestrationV2Notification),
     ...OrchestrationV2CreationFields,
     scheduledTaskId: Schema.optional(ScheduledTaskId),
@@ -2564,6 +2587,7 @@ export const OrchestrationV2Command = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("thread.merge_back"),
+    suppliedHandoff: Schema.optional(SuppliedHandoff),
     ...OrchestrationV2CreationFields,
     commandId: CommandId,
     sourceThreadId: ThreadId,
@@ -2573,6 +2597,7 @@ export const OrchestrationV2Command = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("delegated_task.request"),
+    taskType: Schema.optional(TrimmedNonEmptyString),
     ...OrchestrationV2CreationFields,
     commandId: CommandId,
     parentThreadId: ThreadId,
@@ -2619,6 +2644,7 @@ export const OrchestrationV2Command = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("provider.switch"),
+    suppliedHandoff: Schema.optional(SuppliedHandoff),
     commandId: CommandId,
     threadId: ThreadId,
     modelSelection: ModelSelection,
@@ -2704,7 +2730,7 @@ export const OrchestrationV2ThreadLaunchInput = Schema.Struct({
       messageId: Schema.optional(MessageId),
       text: Schema.String,
       context: Schema.optional(OrchestrationMessageContext),
-    questionResponse: Schema.optional(QuestionResponse),
+      questionResponse: Schema.optional(QuestionResponse),
       attachments: Schema.Array(ChatAttachment),
     }),
   ),

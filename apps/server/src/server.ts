@@ -607,7 +607,7 @@ const makeRoutesLayer = Layer.mergeAll(
     attachmentUploadRouteLayer,
     deviceHubProxyRouteLayer,
     staticAndDevRouteLayer,
-    websocketRpcRouteLayer,
+    websocketRpcRouteLayer.pipe(Layer.provide(providerAdapterRegistryLayerFromProviderInstances)),
   ),
   // The MCP session registry is provided globally (shared with V2 provider
   // sessions) rather than inline here. The orchestrator toolkit resolves

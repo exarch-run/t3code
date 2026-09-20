@@ -1,5 +1,6 @@
 import { OrchestrationDispatchCommandError } from "./orchestration.ts";
 import * as Schema from "effect/Schema";
+import { ADOPTION_RPC, AdoptionError } from "./adoption.ts";
 import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
@@ -1480,6 +1481,26 @@ const WsOrchestrationV2GetWorkflowScriptRpc = Rpc.make(
   },
 );
 
+const WsHandoffTextRpc = Rpc.make(ADOPTION_RPC.getHandoffText.method, {
+  payload: ADOPTION_RPC.getHandoffText.input,
+  success: ADOPTION_RPC.getHandoffText.output,
+  error: Schema.Union([AdoptionError, EnvironmentAuthorizationError]),
+});
+const WsHandoffPlanRpc = Rpc.make(ADOPTION_RPC.getHandoffPlan.method, {
+  payload: ADOPTION_RPC.getHandoffPlan.input,
+  success: ADOPTION_RPC.getHandoffPlan.output,
+  error: Schema.Union([AdoptionError, EnvironmentAuthorizationError]),
+});
+const WsStartHelperRpc = Rpc.make(ADOPTION_RPC.startHelper.method, {
+  payload: ADOPTION_RPC.startHelper.input,
+  success: ADOPTION_RPC.startHelper.output,
+  error: Schema.Union([AdoptionError, EnvironmentAuthorizationError]),
+});
+const WsMoveToWorktreeRpc = Rpc.make(ADOPTION_RPC.moveToWorktree.method, {
+  payload: ADOPTION_RPC.moveToWorktree.input,
+  success: ADOPTION_RPC.moveToWorktree.output,
+  error: Schema.Union([AdoptionError, EnvironmentAuthorizationError]),
+});
 const WsOrchestrationV2LaunchThreadRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.launchThread, {
   payload: OrchestrationV2RpcSchemas.launchThread.input,
   success: OrchestrationV2RpcSchemas.launchThread.output,
@@ -1778,6 +1799,10 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationV2GetArchivedShellSnapshotRpc,
   WsOrchestrationV2GetThreadProjectionRpc,
   WsOrchestrationV2LaunchThreadRpc,
+  WsHandoffTextRpc,
+  WsHandoffPlanRpc,
+  WsStartHelperRpc,
+  WsMoveToWorktreeRpc,
   WsOrchestrationV2SubscribeArchivedShellRpc,
   WsOrchestrationV2SubscribeShellRpc,
   WsOrchestrationV2SubscribeThreadRpc,

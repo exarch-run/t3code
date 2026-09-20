@@ -50,6 +50,7 @@ interface ScheduledTaskRow {
   readonly title: string;
   readonly prompt: string;
   readonly enabled: number;
+  readonly start_clean: number;
   readonly schedule_json: string;
   readonly project_id: string;
   readonly thread_id: string | null;
@@ -137,6 +138,7 @@ const decodeRow = (row: ScheduledTaskRow) =>
       title: row.title,
       prompt: row.prompt,
       enabled: row.enabled === 1,
+      startClean: row.start_clean === 1,
       schedule,
       projectId: row.project_id,
       threadId: row.thread_id,
@@ -222,6 +224,7 @@ export const layer = Layer.effect(
         title,
         prompt,
         enabled,
+        start_clean,
         schedule_json,
         project_id,
         thread_id,
@@ -254,6 +257,7 @@ export const layer = Layer.effect(
         title,
         prompt,
         enabled,
+        start_clean,
         schedule_json,
         project_id,
         thread_id,
@@ -306,6 +310,7 @@ export const layer = Layer.effect(
           title,
           prompt,
           enabled,
+          start_clean,
           schedule_json,
           project_id,
           thread_id,
@@ -328,6 +333,7 @@ export const layer = Layer.effect(
           ${task.title},
           ${task.prompt},
           ${task.enabled ? 1 : 0},
+          ${task.startClean ? 1 : 0},
           ${JSON.stringify(task.schedule)},
           ${task.projectId},
           ${task.threadId},
@@ -351,6 +357,7 @@ export const layer = Layer.effect(
           title = excluded.title,
           prompt = excluded.prompt,
           enabled = excluded.enabled,
+          start_clean = excluded.start_clean,
           schedule_json = excluded.schedule_json,
           project_id = excluded.project_id,
           thread_id = excluded.thread_id,
@@ -524,10 +531,12 @@ export const layer = Layer.effect(
                   runtimeMode: active.runtimeMode,
                   interactionMode: active.interactionMode,
                   workspaceStrategy: active.workspaceStrategy,
+                  startClean: active.startClean ?? false,
                   initialMessage: {
                     messageId,
                     scheduledTaskId: active.id,
                     text: prompt,
+                    startClean: active.startClean ?? false,
                     attachments: [],
                   },
                   createdBy: active.createdBy,
@@ -542,6 +551,7 @@ export const layer = Layer.effect(
                   messageId,
                   scheduledTaskId: active.id,
                   text: prompt,
+                  startClean: active.startClean ?? false,
                   attachments: [],
                   modelSelection: active.modelSelection,
                   mode: "auto",
@@ -754,6 +764,7 @@ export const layer = Layer.effect(
           title: input.title,
           prompt: input.prompt,
           enabled: input.enabled,
+          startClean: input.startClean ?? existingTask?.startClean ?? false,
           schedule: input.schedule,
           projectId: input.projectId,
           threadId: input.threadId ?? null,

@@ -578,7 +578,9 @@ function rootProviderThreadsForProvider(
       (providerThread) =>
         providerThread.providerInstanceId === providerInstanceId &&
         providerThread.appThreadId === projection.thread.id &&
-        providerThread.ownerNodeId === null,
+        providerThread.ownerNodeId === null &&
+        (providerThread.lastRunOrdinal ?? 0) >=
+          (projection.runs.findLast((run) => run.startClean)?.ordinal ?? 0),
     )
     .toSorted(
       (left, right) =>
@@ -1126,14 +1128,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         projection,
         queuedProviderThread.id,
       );
+      const queuedHandoff =
+        projection.thread.pendingHandoff?.afterRunOrdinal === queuedRun.ordinal - 1
+          ? projection.thread.pendingHandoff
+          : undefined;
       const coveredRuns =
+        queuedRun.startClean ||
         canResumeAcrossInstances ||
         latestHandoffRun === undefined ||
-        latestHandoffRun.providerInstanceId === queuedRun.providerInstanceId
+        (latestHandoffRun.providerInstanceId === queuedRun.providerInstanceId &&
+          !queuedHandoff?.resetSession)
           ? []
           : projection.runs.filter(
               (run) =>
                 isHandoffSourceRun(run) &&
+                run.ordinal >=
+                  (projection.runs.findLast((candidate) => candidate.startClean)?.ordinal ?? 1) &&
                 run.ordinal > (targetLastCompletedRun?.ordinal ?? 0) &&
                 run.ordinal <= latestHandoffRun.ordinal,
             );
@@ -1197,6 +1207,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 },
                 runs: projection.runs,
                 strategy: handoffStrategy,
+                suppliedHandoff: queuedHandoff?.suppliedHandoff,
                 items: [
                   ...(needsFullContext && latestCompletedRun !== undefined
                     ? legacyImportItems
@@ -1219,7 +1230,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 ),
               );
       const legacyImportRecoveryHandoff =
-        latestCompletedRun === undefined && needsFullContext && legacyImportItems.length > 0
+        !queuedRun.startClean &&
+        latestCompletedRun === undefined &&
+        needsFullContext &&
+        legacyImportItems.length > 0
           ? yield* contextHandoffService
               .prepareLegacyImport({
                 threadId,
@@ -2235,6 +2249,29 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           })
         : null;
 
+    const selectionNeedsFreshContext =
+      providerSwitchPlan?.transition.type === "create_with_handoff" &&
+      !providerSwitchPlan.instanceChanged;
+    const handoffChange =
+      (command.type === "provider.switch" &&
+        (command.suppliedHandoff !== undefined || selectionNeedsFreshContext)) ||
+      (command.type === "thread.metadata.update" &&
+        command.worktreePath !== undefined &&
+        command.worktreePath !== thread.worktreePath);
+    const pendingHandoff = handoffChange
+      ? {
+          afterRunOrdinal: Math.max(
+            0,
+            ...(yield* loadProjectionForCommand(command)).runs.map((run) => run.ordinal),
+          ),
+          modelSelection:
+            command.type === "provider.switch" ? command.modelSelection : thread.modelSelection,
+          resetSession: command.type === "thread.metadata.update" || selectionNeedsFreshContext,
+          ...("suppliedHandoff" in command && command.suppliedHandoff
+            ? { suppliedHandoff: command.suppliedHandoff }
+            : {}),
+        }
+      : undefined;
     const now = yield* DateTime.now;
     let snoozedUntil: DateTime.Utc | null = null;
     if (command.type === "thread.snooze") {
@@ -2426,6 +2463,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ...(command.title === undefined ? {} : { title: command.title }),
             ...(command.branch === undefined ? {} : { branch: command.branch }),
             ...(command.worktreePath === undefined ? {} : { worktreePath: command.worktreePath }),
+            ...(pendingHandoff ? { pendingHandoff } : {}),
             ...(command.linkedPullRequest === undefined
               ? {}
               : {
@@ -2620,6 +2658,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ...thread,
             providerInstanceId: command.modelSelection.instanceId,
             modelSelection: command.modelSelection,
+            pendingHandoff: pendingHandoff ?? null,
             updatedAt: now,
           };
       }
@@ -3076,6 +3115,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const transfer: OrchestrationV2ContextTransfer = {
       id: transferId,
       type: "merge_back",
+      ...(command.suppliedHandoff ? { suppliedHandoff: command.suppliedHandoff } : {}),
       sourceThreadId: command.sourceThreadId,
       targetThreadId: command.targetThreadId,
       sourcePoint: contextSourcePointForRun(sourceProjection, sourceRun),
@@ -3514,9 +3554,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             toProviderThreadId: targetProviderThreadBase.id,
             fromProviderInstanceId: targetRun.providerInstanceId,
             toProviderInstanceId: input.modelSelection.instanceId,
-            coveredRunOrdinals: { from: 1, to: targetRun.ordinal },
+            coveredRunOrdinals: {
+              from: input.projection.runs.findLast((run) => run.startClean)?.ordinal ?? 1,
+              to: targetRun.ordinal,
+            },
             strategy: "full_thread_summary",
-            items: input.projection.turnItems,
+            items: input.projection.turnItems.filter(
+              (item) =>
+                !input.projection.runs.some((run) => run.startClean) ||
+                (item.runId !== null &&
+                  input.projection.runs.some(
+                    (run) =>
+                      run.id === item.runId &&
+                      run.ordinal >=
+                        (input.projection.runs.findLast((candidate) => candidate.startClean)
+                          ?.ordinal ?? 1),
+                  )),
+            ),
             runs: input.projection.runs,
             createdAt: now,
           })
@@ -4098,11 +4152,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         return;
       }
 
-      const activeProviderThread = projection.providerThreads.find(
-        (candidate) => candidate.id === projection.thread.activeProviderThreadId,
-      );
+      const pendingHandoff =
+        projection.thread.pendingHandoff?.afterRunOrdinal === nextRunOrdinal(projection) - 1 &&
+        modelSelectionsEqual(projection.thread.pendingHandoff.modelSelection, modelSelection)
+          ? projection.thread.pendingHandoff
+          : undefined;
+      const resetSession = command.startClean === true || pendingHandoff?.resetSession === true;
+      const activeProviderThread = command.startClean
+        ? undefined
+        : projection.providerThreads.find(
+            (candidate) => candidate.id === projection.thread.activeProviderThreadId,
+          );
       const activeRun = projection.runs.find(isBlockingRun);
-      const pendingMergeBackTransfers = pendingMergeBackTransfersForThread(projection);
+      const pendingMergeBackTransfers = command.startClean
+        ? []
+        : pendingMergeBackTransfersForThread(projection);
       const shouldQueue =
         activeRun !== undefined &&
         (dispatchMode.type === "defer_start" ||
@@ -4131,8 +4195,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         const now = yield* DateTime.now;
         const ordinal = nextRunOrdinal(projection);
         const runId = idAllocator.derive.run({ threadId: command.threadId, ordinal });
-        const targetProviderThread =
-          modelSelection.instanceId === queueProviderThread.providerInstanceId
+        const targetProviderThread = resetSession
+          ? undefined
+          : modelSelection.instanceId === queueProviderThread.providerInstanceId
             ? queueProviderThread
             : rootProviderThreadsForProvider(projection, modelSelection.instanceId)[0];
         const queuedAdapter = yield* providerAdapters
@@ -4206,6 +4271,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 ),
               );
         const run: OrchestrationV2Run = {
+          ...(command.startClean ? { startClean: true } : {}),
           id: runId,
           threadId: command.threadId,
           ordinal,
@@ -4380,7 +4446,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         }
         return;
       }
-      const pendingForkTransfer = pendingForkTransferForThread(projection);
+      const pendingForkTransfer = command.startClean
+        ? undefined
+        : pendingForkTransferForThread(projection);
       const pendingMergeBackSourceThreadIds = new Set(
         pendingMergeBackTransfers.map((transfer) => transfer.sourceThreadId),
       );
@@ -4428,12 +4496,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ? projection.turnItems.filter((item) => item.runId === null)
           : [];
       const isProviderSwitch =
+        command.startClean !== true &&
         activeProviderThread !== undefined &&
-        activeProviderThread.providerInstanceId !== modelSelection.instanceId;
+        (pendingHandoff?.resetSession === true ||
+          activeProviderThread.providerInstanceId !== modelSelection.instanceId);
       // Account overlays share native history. Selection commands may already
       // have updated the app thread, so classify against the native thread's owner.
       const canResumeAcrossInstances =
         isProviderSwitch &&
+        !resetSession &&
         activeProviderThread.nativeThreadRef !== null &&
         (yield* providerSwitchService
           .plan({
@@ -4481,22 +4552,24 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             driver: adapter.driver,
             nativeThreadId: `pending:${runId}`,
           });
-        const legacyImportHandoff = shouldPrepareLegacyImportHandoff({
-          historyOrigin: projection.thread.historyOrigin,
-          hasCompletedRun: latestCompletedRun !== undefined,
-          legacyImportItemCount: legacyImportItems.length,
-        })
-          ? yield* contextHandoffService
-              .prepareLegacyImport({
-                threadId: command.threadId,
-                targetRunId: runId,
-                toProviderThreadId: providerThreadId,
-                toProviderInstanceId: modelSelection.instanceId,
-                items: legacyImportItems,
-                createdAt: now,
-              })
-              .pipe(mapDispatchError(command))
-          : null;
+        const legacyImportHandoff =
+          !command.startClean &&
+          shouldPrepareLegacyImportHandoff({
+            historyOrigin: projection.thread.historyOrigin,
+            hasCompletedRun: latestCompletedRun !== undefined,
+            legacyImportItemCount: legacyImportItems.length,
+          })
+            ? yield* contextHandoffService
+                .prepareLegacyImport({
+                  threadId: command.threadId,
+                  targetRunId: runId,
+                  toProviderThreadId: providerThreadId,
+                  toProviderInstanceId: modelSelection.instanceId,
+                  items: legacyImportItems,
+                  createdAt: now,
+                })
+                .pipe(mapDispatchError(command))
+            : null;
         const providerThread: OrchestrationV2ProviderThread =
           activeProviderThread === undefined
             ? {
@@ -4554,6 +4627,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                   mapDispatchError(command),
                 );
         const run: OrchestrationV2Run = {
+          ...(command.startClean ? { startClean: true } : {}),
           id: runId,
           threadId: command.threadId,
           ordinal,
@@ -4835,8 +4909,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             }),
         ),
       );
-      const targetProviderThread =
-        isProviderSwitch && !canResumeAcrossInstances
+      const targetProviderThread = resetSession
+        ? undefined
+        : isProviderSwitch && !canResumeAcrossInstances
           ? rootProviderThreadsForProvider(projection, modelSelection.instanceId)[0]
           : activeProviderThread;
       const providerSessionId =
@@ -4998,6 +5073,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           : projection.runs.filter(
               (run) =>
                 isHandoffSourceRun(run) &&
+                run.ordinal >=
+                  (projection.runs.findLast((candidate) => candidate.startClean)?.ordinal ?? 1) &&
                 run.ordinal >
                   (requiresFullProviderSwitchContext
                     ? 0
@@ -5068,6 +5145,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                   targetProviderThread === undefined || requiresFullProviderSwitchContext
                     ? "full_thread_summary"
                     : "delta_since_target_last_seen",
+                suppliedHandoff: pendingHandoff?.suppliedHandoff,
                 items: providerSwitchItems,
                 runs: projection.runs,
                 createdAt: now,
@@ -5197,6 +5275,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                   mergeBackSourceProjection,
                   mergeBackDeltaItems,
                 ),
+                suppliedHandoff: pendingMergeBackTransfer.suppliedHandoff,
                 deltaItems: mergeBackDeltaItems,
                 createdAt: now,
               })
@@ -5234,6 +5313,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ),
         );
       const run: OrchestrationV2Run = {
+        ...(command.startClean ? { startClean: true } : {}),
         id: runId,
         threadId: command.threadId,
         ordinal,
@@ -5731,7 +5811,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const parentRun = parentProjection.runs.find(
         (candidate) => candidate.id === command.parentRunId,
       );
-      if (parentRun === undefined || !isBlockingRun(parentRun)) {
+      if (parentRun === undefined || (!isBlockingRun(parentRun) && command.createdBy !== "user")) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
@@ -5796,8 +5876,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           createdBy: command.createdBy,
           creationSource: command.creationSource,
         }),
-        runtimeMode: command.runtimeMode,
+        runtimeMode: parentProjection.thread.runtimeMode,
         interactionMode: command.interactionMode,
+        appOwnedHelper: true,
+        ...(command.taskType ? { helperTaskType: command.taskType } : {}),
       };
       const task: OrchestrationV2Subagent = {
         id: taskNodeId,
@@ -5805,6 +5887,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         runId: parentRun.id,
         parentNodeId: command.parentNodeId,
         origin: "app_owned",
+        ...(command.taskType ? { taskType: command.taskType } : {}),
         createdBy: command.createdBy,
         driver: targetAdapter.driver,
         providerInstanceId: command.modelSelection.instanceId,

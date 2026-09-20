@@ -1,4 +1,5 @@
 import { vi } from "vite-plus/test";
+import { handoffPlan } from "../HandoffPlan.ts";
 import { historyResponseItems } from "../ContextHandoffBudget.ts";
 import { assert, describe, it } from "@effect/vitest";
 import {
@@ -92,6 +93,7 @@ const CURSOR_DRIVER = ProviderDriverKind.make("cursor");
 const GROK_DRIVER = ProviderDriverKind.make("acp");
 
 interface CapturedTurn {
+  readonly sessionContext?: string | undefined;
   readonly driver: ProviderDriverKind;
   readonly threadId: ThreadId;
   readonly providerThreadId: ProviderThreadId;
@@ -243,6 +245,7 @@ function makeTestAdapter(input: {
                   threadId: turnInput.threadId,
                   providerThreadId: turnInput.providerThread.id,
                   text: turnInput.message.text,
+                  sessionContext: turnInput.runtimePolicy.sessionContext,
                   attachments: turnInput.message.attachments,
                 },
               ]);
@@ -3319,3 +3322,150 @@ describe("orchestration v2 provider switching", () => {
     ),
   );
 });
+
+for (const scenario of ["supplied", "clean", "workspace"] as const) {
+  it.live(`engine 2012 ${scenario} context boundary`, () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const cwd = yield* checkpointWorkspace(`2012-${scenario}`);
+        const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
+        const registry = makeProviderAdapterRegistryLayer([
+          makeTestAdapter({
+            instanceId: CODEX_MODEL_SELECTION.instanceId,
+            driver: CODEX_DRIVER,
+            capabilities: CodexProviderCapabilitiesV2,
+            modelSelection: CODEX_MODEL_SELECTION,
+            responseByRunOrdinal: { 1: "Earlier answer" },
+            capturedTurns,
+          }),
+          makeTestAdapter({
+            instanceId: CLAUDE_MODEL_SELECTION.instanceId,
+            driver: CLAUDE_DRIVER,
+            capabilities: ClaudeProviderCapabilitiesV2,
+            modelSelection: CLAUDE_MODEL_SELECTION,
+            responseByRunOrdinal: {},
+            capturedTurns,
+          }),
+        ]);
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* OrchestratorV2;
+          const id = ThreadId.make(`thread:2012:${scenario}`);
+          yield* orchestrator.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make(`${scenario}:create`),
+            threadId: id,
+            projectId: ProjectId.make(`project:${scenario}`),
+            title: scenario,
+            modelSelection: CODEX_MODEL_SELECTION,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: cwd,
+            createdBy: "user",
+            creationSource: "web",
+          });
+          const send = (n: number, selection: ModelSelection, clean = false) =>
+            orchestrator.dispatch({
+              type: "message.dispatch",
+              commandId: CommandId.make(`${scenario}:send:${n}`),
+              threadId: id,
+              messageId: MessageId.make(`${scenario}:message:${n}`),
+              text: n === 1 ? "Old private run context" : "Continue now",
+              attachments: [],
+              modelSelection: selection,
+              startClean: clean,
+              dispatchMode: { type: "start_immediately" },
+              createdBy: "user",
+              creationSource: "web",
+            });
+          yield* send(1, CODEX_MODEL_SELECTION);
+          const before = yield* waitForIdle(id);
+          const preview = handoffPlan(
+            before,
+            {
+              instanceChanged: scenario === "supplied",
+              modelChanged: false,
+              targetProviderThreadId:
+                scenario === "supplied" ? null : before.runs[0]!.providerThreadId,
+              releaseProviderSessionIds: [],
+              transition: { type: scenario === "supplied" ? "create_with_handoff" : "reuse" },
+            },
+            scenario === "supplied" ? ClaudeProviderCapabilitiesV2 : CodexProviderCapabilitiesV2,
+            scenario === "workspace",
+          );
+          assert.equal(preview.required, scenario !== "clean");
+          assert.deepEqual(
+            preview.coveredRunOrdinals,
+            scenario === "clean" ? null : { from: 1, to: 1 },
+          );
+          const text = "Supplied package\n\n" + "exact detail ".repeat(60);
+          const suppliedHandoff = {
+            text,
+            author: "verbatim" as const,
+            coveredRunOrdinals: { from: 1, to: 1 },
+          };
+          if (scenario === "supplied")
+            yield* orchestrator.dispatch({
+              type: "provider.switch",
+              commandId: CommandId.make(`${scenario}:switch`),
+              threadId: id,
+              modelSelection: CLAUDE_MODEL_SELECTION,
+              suppliedHandoff,
+            });
+          if (scenario === "workspace")
+            yield* orchestrator.dispatch({
+              type: "thread.metadata.update",
+              commandId: CommandId.make(`${scenario}:move`),
+              threadId: id,
+              worktreePath: `${cwd}/copy`,
+              suppliedHandoff,
+            });
+          yield* send(
+            2,
+            scenario === "supplied" ? CLAUDE_MODEL_SELECTION : CODEX_MODEL_SELECTION,
+            scenario === "clean",
+          );
+          const after = yield* waitForIdle(id);
+          assert.equal(after.runs.at(-1)?.status, "completed");
+          assert.notEqual(after.runs.at(-1)?.providerThreadId, before.runs[0]?.providerThreadId);
+          const turn = (yield* Ref.get(capturedTurns)).at(-1)!;
+          assert.equal(turn.text, "Continue now");
+          if (scenario === "clean") {
+            assert.lengthOf(after.contextHandoffs, 0);
+            assert.notInclude(turn.sessionContext ?? "", "Old private run context");
+            yield* send(3, CODEX_MODEL_SELECTION);
+            const replied = yield* waitForIdle(id);
+            assert.equal(
+              replied.runs.at(-1)?.providerThreadId,
+              after.runs.at(-1)?.providerThreadId,
+            );
+            yield* send(4, CLAUDE_MODEL_SELECTION);
+            const switched = yield* waitForIdle(id);
+            assert.equal(switched.contextHandoffs.at(-1)?.coveredRunOrdinals.from, 2);
+            assert.notInclude(
+              (yield* Ref.get(capturedTurns)).at(-1)?.text ?? "",
+              "Old private run context",
+            );
+          } else {
+            assert.equal(after.contextHandoffs.at(-1)?.summaryText, text);
+            assert.include(turn.sessionContext ?? "", text);
+            assert.equal(after.contextHandoffs.at(-1)?.author, "verbatim");
+            yield* send(
+              3,
+              scenario === "supplied" ? CLAUDE_MODEL_SELECTION : CODEX_MODEL_SELECTION,
+            );
+            yield* waitForIdle(id);
+            assert.include((yield* Ref.get(capturedTurns)).at(-1)?.sessionContext ?? "", text);
+          }
+        }).pipe(
+          Effect.provide(
+            makeOrchestratorV2ReplayLayerWithRegistry(
+              { name: `2012-${scenario}`, runtimePolicyOverride: { cwd } },
+              registry,
+            ),
+          ),
+        );
+      }),
+    ),
+  );
+}

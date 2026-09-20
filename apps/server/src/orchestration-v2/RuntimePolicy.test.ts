@@ -1,3 +1,4 @@
+import * as FileSystem from "effect/FileSystem";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -104,3 +105,55 @@ it.layer(TestLayer)("RuntimePolicyV2", (it) => {
     }),
   );
 });
+
+it.effect("excludes configured session files only for app-owned helpers", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "helper-policy-" });
+      yield* fs.writeFileString(`${cwd}/IDENTITY.md`, "Named agent identity and personal memory");
+      const now = yield* DateTime.now;
+      const repository = Layer.mock(ProjectionProjects.ProjectionProjectRepository)({
+        getById: () =>
+          Effect.succeed(
+            Option.some({
+              projectId,
+              title: "Project",
+              workspaceRoot: cwd,
+              defaultModelSelection: null,
+              defaultThreadEnvMode: null,
+              autoPull: false,
+              scripts: [],
+              sessionFiles: ["IDENTITY.md"],
+              createdAt: "2026-09-20T00:00:00Z",
+              updatedAt: "2026-09-20T00:00:00Z",
+              deletedAt: null,
+            }),
+          ),
+      });
+      yield* Effect.gen(function* () {
+        const policy = yield* RuntimePolicyV2;
+        const thread = makeThread({ now, worktreePath: cwd });
+        const parent = yield* policy.resolve({ thread, modelSelection });
+        assert.include(parent.sessionContext ?? "", "Named agent identity");
+        const child = yield* policy.resolve({
+          thread: { ...thread, appOwnedHelper: true },
+          modelSelection,
+        });
+        assert.isUndefined(child.sessionContext);
+        const native = yield* policy.resolve({
+          thread: {
+            ...thread,
+            lineage: {
+              ...thread.lineage,
+              relationshipToParent: "subagent",
+              parentThreadId: ThreadId.make("parent"),
+            },
+          },
+          modelSelection,
+        });
+        assert.include(native.sessionContext ?? "", "Named agent identity");
+      }).pipe(Effect.provide(layerFromProjectRepository.pipe(Layer.provide(repository))));
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);

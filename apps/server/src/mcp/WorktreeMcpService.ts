@@ -31,6 +31,7 @@ export class WorktreeMcpService extends Context.Service<
     readonly handoff: (
       scope: McpInvocationScope,
       input: WorktreeMcpHandoffInput,
+      initiatedBy?: "user",
     ) => Effect.Effect<WorktreeMcpHandoffResult, WorktreeMcpFailure>;
     readonly status: (
       scope: McpInvocationScope,
@@ -132,6 +133,7 @@ const make = Effect.gen(function* () {
   const performHandoff = Effect.fn("WorktreeMcpService.performHandoff")(function* (
     scope: McpInvocationScope,
     input: WorktreeMcpHandoffInput,
+    initiatedBy?: "user",
   ) {
     const alreadyInWorktree = (worktreePath: string) =>
       failure(
@@ -312,6 +314,7 @@ const make = Effect.gen(function* () {
               branch: worktree.worktree.refName,
               worktreePath,
               expectedWorktreePath: null,
+              ...(input.suppliedHandoff ? { suppliedHandoff: input.suppliedHandoff } : {}),
             })
             .pipe(
               Effect.catchCause((cause) =>
@@ -362,8 +365,8 @@ const make = Effect.gen(function* () {
                     text: input.continuationPrompt,
                     attachments: [],
                     mode: "queue",
-                    createdBy: "agent",
-                    creationSource: "mcp",
+                    createdBy: initiatedBy ?? "agent",
+                    creationSource: initiatedBy ? "web" : "mcp",
                   })
                   .pipe(
                     Effect.map((sendResult): WorktreeMcpContinuationStatus => ({
@@ -430,7 +433,7 @@ const make = Effect.gen(function* () {
   });
 
   const handoff: WorktreeMcpService["Service"]["handoff"] = Effect.fn("WorktreeMcpService.handoff")(
-    function* (scope, input) {
+    function* (scope, input, initiatedBy) {
       yield* requireCapability(scope);
       // uninterruptibleMask: the guard acquisition and the registration of the
       // releasing finalizer happen with no interruptible gap in between. An
@@ -448,7 +451,7 @@ const make = Effect.gen(function* () {
             );
           }
           handoffThreadsInFlight.add(scope.threadId);
-          return restore(performHandoff(scope, input)).pipe(
+          return restore(performHandoff(scope, input, initiatedBy)).pipe(
             Effect.ensuring(Effect.sync(() => handoffThreadsInFlight.delete(scope.threadId))),
           );
         }),

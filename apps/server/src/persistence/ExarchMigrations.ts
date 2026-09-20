@@ -6,6 +6,10 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 const applyMigrations = Migrator.make({})({
   table: "exarch_v2_sql_migrations",
   loader: Migrator.fromRecord({
+    "2_ScheduledTaskStartClean": Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`ALTER TABLE scheduled_tasks ADD COLUMN start_clean INTEGER NOT NULL DEFAULT 0`;
+    }),
     "1_ProjectSessionFiles": Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* sql`ALTER TABLE projection_projects ADD COLUMN session_files_json TEXT`;
@@ -17,11 +21,15 @@ const applyMigrations = Migrator.make({})({
 // The ledger must move before the migrator runs, or it would repeat ALTER TABLE.
 export const runExarchMigrations = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  const tables = yield* sql<{ readonly name: string }>`SELECT name FROM sqlite_master WHERE type = 'table'`;
+  const tables = yield* sql<{
+    readonly name: string;
+  }>`SELECT name FROM sqlite_master WHERE type = 'table'`;
   if (!tables.some((table) => table.name === "exarch_v2_sql_migrations")) {
     const previous = tables.filter((table) => table.name.endsWith("_v2_sql_migrations"));
     if (previous.length > 1) {
-      return yield* Effect.die(new Error("Multiple fork migration ledgers found; refusing to choose one"));
+      return yield* Effect.die(
+        new Error("Multiple fork migration ledgers found; refusing to choose one"),
+      );
     }
     if (previous[0]) {
       yield* sql`ALTER TABLE ${sql(previous[0].name)} RENAME TO exarch_v2_sql_migrations`;

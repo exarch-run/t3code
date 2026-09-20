@@ -1,3 +1,4 @@
+import { ServerSettingsService } from "../serverSettings.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
@@ -103,6 +104,24 @@ describe("OrchestratorMcpService", () => {
         Layer.mock(ProviderRegistry)({ getProviders: Effect.succeed([]) }),
         Layer.mock(ProviderAdapterRegistryV2)({ list: () => Effect.succeed([]) }),
         Layer.mock(ScheduledTaskService)({}),
+        ServerSettingsService.layerTest({
+          helperPolicy: {
+            enabled: true,
+            taskTypes: [
+              {
+                name: "Review",
+                whenToUse: "Check finished work",
+                model: { driverKind: ProviderDriverKind.make("antigravity"), model: "ant-model" },
+                effort: null,
+                familyRule: { differentFromParent: true, allowedDrivers: [] },
+              },
+            ],
+            visibleModels: [
+              { instanceId: ProviderInstanceId.make("antigravity"), model: "ant-model" },
+            ],
+            projectOverrides: {},
+          },
+        }),
       );
       const scope: McpInvocationScope = {
         environmentId: EnvironmentId.make("environment:mcp-ack"),
@@ -178,6 +197,24 @@ describe("OrchestratorMcpService", () => {
         Layer.mock(ProviderRegistry)({ getProviders: Effect.succeed([]) }),
         Layer.mock(ProviderAdapterRegistryV2)({ list: () => Effect.succeed([]) }),
         Layer.mock(ScheduledTaskService)({}),
+        ServerSettingsService.layerTest({
+          helperPolicy: {
+            enabled: true,
+            taskTypes: [
+              {
+                name: "Review",
+                whenToUse: "Check finished work",
+                model: { driverKind: ProviderDriverKind.make("antigravity"), model: "ant-model" },
+                effort: null,
+                familyRule: { differentFromParent: true, allowedDrivers: [] },
+              },
+            ],
+            visibleModels: [
+              { instanceId: ProviderInstanceId.make("antigravity"), model: "ant-model" },
+            ],
+            projectOverrides: {},
+          },
+        }),
       );
       const scope: McpInvocationScope = {
         environmentId: EnvironmentId.make("environment:mcp-cancel"),
@@ -244,6 +281,24 @@ describe("OrchestratorMcpService", () => {
         Layer.mock(ProviderRegistry)({ getProviders: Effect.succeed([]) }),
         Layer.mock(ProviderAdapterRegistryV2)({ list: () => Effect.succeed([]) }),
         Layer.mock(ScheduledTaskService)({}),
+        ServerSettingsService.layerTest({
+          helperPolicy: {
+            enabled: true,
+            taskTypes: [
+              {
+                name: "Review",
+                whenToUse: "Check finished work",
+                model: { driverKind: ProviderDriverKind.make("antigravity"), model: "ant-model" },
+                effort: null,
+                familyRule: { differentFromParent: true, allowedDrivers: [] },
+              },
+            ],
+            visibleModels: [
+              { instanceId: ProviderInstanceId.make("antigravity"), model: "ant-model" },
+            ],
+            projectOverrides: {},
+          },
+        }),
       );
       const scope: McpInvocationScope = {
         environmentId: EnvironmentId.make("environment:mcp-cancel-failed"),
@@ -317,6 +372,24 @@ describe("OrchestratorMcpService", () => {
         Layer.mock(ProviderRegistry)({ getProviders: Effect.succeed([]) }),
         Layer.mock(ProviderAdapterRegistryV2)({ list: () => Effect.succeed([]) }),
         Layer.mock(ScheduledTaskService)({}),
+        ServerSettingsService.layerTest({
+          helperPolicy: {
+            enabled: true,
+            taskTypes: [
+              {
+                name: "Review",
+                whenToUse: "Check finished work",
+                model: { driverKind: ProviderDriverKind.make("antigravity"), model: "ant-model" },
+                effort: null,
+                familyRule: { differentFromParent: true, allowedDrivers: [] },
+              },
+            ],
+            visibleModels: [
+              { instanceId: ProviderInstanceId.make("antigravity"), model: "ant-model" },
+            ],
+            projectOverrides: {},
+          },
+        }),
       );
       const scope: McpInvocationScope = {
         environmentId: EnvironmentId.make("environment:mcp-cancel-dispose-failed"),
@@ -498,6 +571,24 @@ describe("OrchestratorMcpService provider resolution", () => {
             disabledAntigravityInstanceId,
           ]),
           Layer.mock(ScheduledTaskService)({}),
+          ServerSettingsService.layerTest({
+            helperPolicy: {
+              enabled: true,
+              taskTypes: [
+                {
+                  name: "Review",
+                  whenToUse: "Check finished work",
+                  model: { driverKind: ProviderDriverKind.make("antigravity"), model: "ant-model" },
+                  effort: null,
+                  familyRule: { differentFromParent: true, allowedDrivers: [] },
+                },
+              ],
+              visibleModels: [
+                { instanceId: ProviderInstanceId.make("antigravity"), model: "ant-model" },
+              ],
+              projectOverrides: {},
+            },
+          }),
         );
 
         yield* Effect.gen(function* () {
@@ -613,13 +704,31 @@ describe("OrchestratorMcpService provider resolution", () => {
           }),
           adapterRegistryLayer([codexInstanceId, antigravityInstanceId]),
           Layer.mock(ScheduledTaskService)({}),
+          ServerSettingsService.layerTest({
+            helperPolicy: {
+              enabled: true,
+              taskTypes: [
+                {
+                  name: "Review",
+                  whenToUse: "Check finished work",
+                  model: { driverKind: ProviderDriverKind.make("antigravity"), model: "ant-model" },
+                  effort: null,
+                  familyRule: { differentFromParent: true, allowedDrivers: [] },
+                },
+              ],
+              visibleModels: [
+                { instanceId: ProviderInstanceId.make("antigravity"), model: "ant-model" },
+              ],
+              projectOverrides: {},
+            },
+          }),
         );
 
         yield* Effect.gen(function* () {
           const service = yield* OrchestratorMcpService.OrchestratorMcpService;
           const result = yield* service.delegateTask(scope, {
             task: "Summarize the diff.",
-            target: { providerInstanceId: antigravityInstanceId, model: "ant-model" },
+            taskType: "Review",
             mode: "async",
             clientRequestId: "delegate-antigravity-1",
           });
@@ -638,7 +747,7 @@ describe("OrchestratorMcpService provider resolution", () => {
       }),
   );
 
-  it.effect("resolves a driverKind target to a capable Antigravity instance", () =>
+  it.effect("resolves a task type to its configured family", () =>
     Effect.gen(function* () {
       const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
       const task = {
@@ -706,13 +815,31 @@ describe("OrchestratorMcpService provider resolution", () => {
         }),
         adapterRegistryLayer([codexInstanceId, antigravityInstanceId]),
         Layer.mock(ScheduledTaskService)({}),
+        ServerSettingsService.layerTest({
+          helperPolicy: {
+            enabled: true,
+            taskTypes: [
+              {
+                name: "Review",
+                whenToUse: "Check finished work",
+                model: { driverKind: ProviderDriverKind.make("antigravity"), model: "ant-model" },
+                effort: null,
+                familyRule: { differentFromParent: true, allowedDrivers: [] },
+              },
+            ],
+            visibleModels: [
+              { instanceId: ProviderInstanceId.make("antigravity"), model: "ant-model" },
+            ],
+            projectOverrides: {},
+          },
+        }),
       );
 
       yield* Effect.gen(function* () {
         const service = yield* OrchestratorMcpService.OrchestratorMcpService;
         const result = yield* service.delegateTask(scope, {
           task: "Summarize the diff.",
-          target: { driverKind: ProviderDriverKind.make("antigravity") },
+          taskType: "Review",
           mode: "async",
           clientRequestId: "delegate-antigravity-driver-1",
         });
@@ -754,6 +881,24 @@ describe("OrchestratorMcpService provider resolution", () => {
         }),
         adapterRegistryLayer([codexInstanceId]),
         Layer.mock(ScheduledTaskService)({}),
+        ServerSettingsService.layerTest({
+          helperPolicy: {
+            enabled: true,
+            taskTypes: [
+              {
+                name: "Review",
+                whenToUse: "Check finished work",
+                model: { driverKind: ProviderDriverKind.make("antigravity"), model: "ant-model" },
+                effort: null,
+                familyRule: { differentFromParent: true, allowedDrivers: [] },
+              },
+            ],
+            visibleModels: [
+              { instanceId: ProviderInstanceId.make("antigravity"), model: "ant-model" },
+            ],
+            projectOverrides: {},
+          },
+        }),
       );
 
       yield* Effect.gen(function* () {
@@ -766,8 +911,8 @@ describe("OrchestratorMcpService provider resolution", () => {
             clientRequestId: "delegate-fork-1",
           })
           .pipe(Effect.flip);
-        assert.equal(byInstance.code, "provider_unavailable");
-        assert.isTrue(byInstance.message.includes("No V2 provider adapter is registered."));
+        assert.equal(byInstance.code, "invalid_request");
+        assert.isTrue(byInstance.message.includes("owner's table selects the model"));
 
         const byDriver = yield* service
           .delegateTask(scope, {
@@ -777,10 +922,8 @@ describe("OrchestratorMcpService provider resolution", () => {
             clientRequestId: "delegate-fork-2",
           })
           .pipe(Effect.flip);
-        assert.equal(byDriver.code, "provider_unavailable");
-        assert.isTrue(
-          byDriver.message.includes("No V2 provider adapter is registered for driver forkOnly."),
-        );
+        assert.equal(byDriver.code, "invalid_request");
+        assert.isTrue(byDriver.message.includes("owner's table selects the model"));
       }).pipe(Effect.provide(OrchestratorMcpService.layer.pipe(Layer.provide(dependencies))));
     }),
   );

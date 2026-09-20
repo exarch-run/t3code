@@ -4,5 +4,6 @@
   "upstreamCommit": "7ec43faddc733671d7a31328b39925f8234bc94e",
   "npmPackage": "t3",
   "sourceVersion": "0.0.42",
-  "helperBinaries": "dist/resource-monitor"
+  "helperBinaries": "dist/resource-monitor",
+  "releaseVersion": "0.0.42-exarch.2012"
 }

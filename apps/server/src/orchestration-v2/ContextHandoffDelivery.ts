@@ -14,6 +14,7 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
     readonly providerThread: OrchestrationV2ProviderThread;
     readonly budget: number;
     readonly deferInline?: boolean;
+    readonly contextChannel?: "system" | "developer" | "message_prefix";
     readonly alreadyDeliveredItemIds: ReadonlySet<string>;
     readonly inject?: (
       history: ProviderAdapterV2HistoricalContext,
@@ -23,6 +24,8 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
     const nativeThreadId = input.providerThread.nativeThreadRef?.nativeId ?? undefined;
     const pending = input.handoffs.filter(
       (handoff) =>
+        handoff.delivery?.contextChannel === "system" ||
+        handoff.delivery?.contextChannel === "developer" ||
         nativeThreadId === undefined ||
         handoff.delivery?.nativeThreadId !== nativeThreadId ||
         handoff.delivery.status === "pending",
@@ -59,6 +62,14 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
       .filter((handoff) => handoff.history === undefined)
       .map((handoff) => handoff.summaryText)
       .join("\n\n");
+    // Supplied text is an indivisible package. Never claim delivery after dropping it.
+    const suppliedContext = pending
+      .filter((h) => h.author !== undefined && h.history === undefined)
+      .map((h) => h.summaryText)
+      .join("\n\n");
+    if (suppliedContext && historyCost([], `${coverage}\n${oldContext}`) + 512 > input.budget) {
+      return yield* new ContextHandoffBudgetError();
+    }
     const fullCoverage =
       oldContext && historyCost([], `${coverage}\n${oldContext}`) + 512 <= input.budget
         ? `${coverage}\n${oldContext}`
@@ -86,6 +97,7 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
                   delivery: {
                     nativeThreadId,
                     status,
+                    ...(input.contextChannel ? { contextChannel: input.contextChannel } : {}),
                     omittedItemIds: [
                       ...(handoff.history?.omittedItemIds ?? []),
                       ...(handoff.history?.messages ?? [])
