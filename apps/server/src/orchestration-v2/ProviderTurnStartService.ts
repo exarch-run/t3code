@@ -481,6 +481,16 @@ export const layer: Layer.Layer<
 
       // Session and execution setup can fail before the turn loop owns finalization.
       // Persist a terminal result here, guarded against Stop or a newer attempt.
+      // Upstream no longer reads a message off an arbitrary cause; a startup
+      // failure still names what could not start, so read it here.
+      const startupFailureMessage = (cause: unknown): string | undefined =>
+        cause instanceof Error
+          ? cause.message
+          : typeof cause === "object" &&
+              cause !== null &&
+              typeof (cause as { message?: unknown }).message === "string"
+            ? (cause as { message: string }).message
+            : undefined;
       const failStartup = (cause: unknown, expectedStatus: "starting" | "running" = "starting") =>
         Effect.gen(function* () {
           const current = yield* projectionStore.getThreadProjection(projection.thread.id);
@@ -513,7 +523,7 @@ export const layer: Layer.Layer<
               ) + 1,
             type: "error",
             title: "Could not start the turn",
-            failure: makeProviderFailure({ cause }),
+            failure: makeProviderFailure({ cause, message: startupFailureMessage(cause) }),
             status: "failed",
             startedAt: now,
             completedAt: now,

@@ -5,7 +5,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { runExarchMigrations } from "./ExarchMigrations.ts";
 
-const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
+const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layer({ filename: ":memory:" })));
 layer("Exarch migration ledger", (it) => {
   it.effect("preserves applied migrations across an application rename", () =>
     Effect.gen(function* () {
@@ -16,7 +16,8 @@ layer("Exarch migration ledger", (it) => {
       yield* sql`ALTER TABLE exarch_v2_sql_migrations RENAME TO former_brand_v2_sql_migrations`;
       yield* runExarchMigrations;
       assert.deepEqual(yield* sql`SELECT * FROM exarch_v2_sql_migrations`, before);
-      const old = yield* sql`SELECT name FROM sqlite_master WHERE name = 'former_brand_v2_sql_migrations'`;
+      const old =
+        yield* sql`SELECT name FROM sqlite_master WHERE name = 'former_brand_v2_sql_migrations'`;
       assert.equal(old.length, 0);
       const columns = yield* sql<{ readonly name: string }>`PRAGMA table_info(projection_projects)`;
       assert.equal(columns.filter((column) => column.name === "session_files_json").length, 1);

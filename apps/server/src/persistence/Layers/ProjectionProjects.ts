@@ -28,7 +28,7 @@ const ProjectionProjectDbRow = ProjectionProject.mapFields(
 );
 
 /** A null column reads back as an absent field, so rows from before the column decode as projects without session files. */
-function fromDbRow(row: ProjectionProjectDbRow): ProjectionProject {
+function fromDbRow(row: typeof ProjectionProjectDbRow.Type): ProjectionProject {
   const { sessionFiles, ...rest } = row;
   return { ...rest, autoPull: row.autoPull === 1, ...(sessionFiles ? { sessionFiles } : {}) };
 }

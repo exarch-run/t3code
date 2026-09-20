@@ -2426,6 +2426,14 @@ function rememberPendingClaudeSubagentModel(
 }
 
 /** Agent calls carry model overrides even when the SDK omits child assistant snapshots. */
+/** The fork keys subagents by task and records every tool use id on the entry. */
+function subagentRegisteredForToolUseId(context: ActiveClaudeTurnContext, toolUseId: string) {
+  for (const subagent of context.subagentsByTaskId.values()) {
+    if (subagent.toolUseIds.has(toolUseId)) return true;
+  }
+  return false;
+}
+
 function rememberClaudeSubagentRequestedModel(
   context: ActiveClaudeTurnContext,
   toolUseId: string,
@@ -2435,7 +2443,7 @@ function rememberClaudeSubagentRequestedModel(
   if (
     model === undefined ||
     model === "inherit" ||
-    context.subagentsByToolUseId.has(toolUseId) ||
+    subagentRegisteredForToolUseId(context, toolUseId) ||
     context.pendingSubagentModelsByToolUseId.has(toolUseId)
   )
     return;
@@ -5167,7 +5175,13 @@ export function makeClaudeAdapterV2(
                 typeof toolUse.input === "object" && toolUse.input !== null
                   ? (toolUse.input as Record<string, unknown>)
                   : {};
-              const model = typeof launch.model === "string" ? launch.model.trim() : undefined;
+              // "inherit" is not a model: leave it unset so the observed model wins.
+              const requestedModel =
+                typeof launch.model === "string" ? launch.model.trim() : undefined;
+              const model =
+                requestedModel === undefined || requestedModel === "inherit"
+                  ? undefined
+                  : requestedModel;
               const effort =
                 typeof launch.effort === "string"
                   ? launch.effort.trim()
