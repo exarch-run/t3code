@@ -1,5 +1,8 @@
 import { afterEach, expect, it, vi } from "vite-plus/test";
 import { AuthSessionId, type AuthEnvironmentScope } from "@t3tools/contracts";
+import * as Option from "effect/Option";
+import { CloudCliTokenManager } from "../cloud/CliTokenManager.ts";
+import { ServerEnvironmentIdentity } from "../environment/ServerEnvironment.ts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import {
@@ -51,6 +54,14 @@ function fixture(scopes: AuthEnvironmentScope[] | null) {
         } as unknown as EnvironmentAuth["Service"]),
       ),
       Layer.provideMerge(Layer.succeed(HttpClient.HttpClient, client)),
+      Layer.provideMerge(
+        Layer.succeed(CloudCliTokenManager, {
+          getExisting: Effect.succeed(Option.none()),
+        } as unknown as CloudCliTokenManager["Service"]),
+      ),
+      Layer.provideMerge(
+        Layer.succeed(ServerEnvironmentIdentity, {} as ServerEnvironmentIdentity["Service"]),
+      ),
     ),
     { disableLogger: true },
   );
@@ -114,4 +125,45 @@ it("streams command bodies", async () => {
   );
   expect(f.requests[0]!.body._tag).toBe("Stream");
   await response.body!.cancel();
+});
+it("forwards an incoming address without owner auth and preserves the service signature", async () => {
+  const f = fixture(null);
+  const response = await f.handler(
+    new Request(`https://computer.test/api/exarch/plugin-incoming/${"a".repeat(43)}`, {
+      method: "POST",
+      headers: { authorization: "service-signature", "x-signature": "synthetic", cookie: "omit" },
+      body: new Uint8Array([0, 255, 10]),
+    }),
+  );
+  expect(f.requests).toHaveLength(1);
+  expect(f.requests[0]!.headers.authorization).toBe("Bearer launch-token");
+  expect(JSON.parse(f.requests[0]!.headers["x-exarch-incoming-headers"]!)).toMatchObject({
+    authorization: "service-signature",
+    "x-signature": "synthetic",
+  });
+  expect(f.requests[0]!.headers["x-exarch-incoming-headers"]).not.toContain("cookie");
+  await response.body!.cancel();
+  expect(
+    (
+      await f.handler(
+        new Request("https://computer.test/api/exarch/plugin-incoming/invalid", { method: "POST" }),
+      )
+    ).status,
+  ).toBe(401);
+});
+it("requires account-management scope before discovering other computers", async () => {
+  const refused = fixture(["orchestration:read", "orchestration:operate"]);
+  const post = () =>
+    new Request("https://computer.test/api/exarch/linked-computers", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: '{"action":"list"}',
+    });
+  expect((await refused.handler(post())).status).toBe(403);
+  expect(refused.requests).toHaveLength(0);
+  const accepted = fixture(["relay:write"]);
+  const response = await accepted.handler(post());
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({ computers: [] });
+  expect(accepted.requests).toHaveLength(0);
 });

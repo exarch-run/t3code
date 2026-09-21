@@ -1,6 +1,8 @@
+import { linkedComputers, linkedComputerRequest } from "./exarch/linkedComputers.ts";
 import { forwardExarchRequest } from "./exarch/http.ts";
 import * as Mime from "effect/unstable/http/Mime";
 import {
+  AuthRelayWriteScope,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   EnvironmentHttpApi,
@@ -274,7 +276,10 @@ export function resolveDevRedirectUrl(devUrl: URL, requestUrl: URL): string {
 }
 
 const authenticateRawRouteWithScope = (
-  scope: typeof AuthOrchestrationReadScope | typeof AuthOrchestrationOperateScope,
+  scope:
+    | typeof AuthOrchestrationReadScope
+    | typeof AuthOrchestrationOperateScope
+    | typeof AuthRelayWriteScope,
 ) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
@@ -301,10 +306,29 @@ const exarchRoute = (method: "GET" | "POST") =>
     method,
     "/api/exarch/*",
     Effect.gen(function* () {
+      const request = yield* HttpServerRequest.HttpServerRequest;
+      if (
+        method === "POST" &&
+        /^\/api\/exarch\/plugin-incoming\/[A-Za-z0-9_-]{43}$/.test(request.url)
+      ) {
+        return yield* forwardExarchRequest("plugin-incoming", true).pipe(
+          Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 503 })),
+        );
+      }
+      if (method === "POST" && request.url === "/api/exarch/linked-computers") {
+        yield* authenticateRawRouteWithScope(AuthRelayWriteScope);
+        const input = yield* request.json.pipe(
+          Effect.flatMap(Schema.decodeUnknownEffect(linkedComputerRequest)),
+        );
+        return yield* linkedComputers(input).pipe(
+          Effect.flatMap((value) => HttpServerResponse.json(value)),
+          Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 503 })),
+        );
+      }
       const session = yield* authenticateRawRouteWithScope(
         method === "GET" ? AuthOrchestrationReadScope : AuthOrchestrationOperateScope,
       );
-      return yield* forwardExarchRequest(session.sessionId).pipe(
+      return yield* forwardExarchRequest(session.sessionId, false).pipe(
         Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 502 })),
       );
     }).pipe(

@@ -180,6 +180,117 @@ const ExarchRenderCheckTool = exarchTool(
     .annotate(Tool.Idempotent, true),
 );
 
+const ExarchRemoteInvestigationTool = exarchTool(
+  Tool.make("exarch_remote_investigation", {
+    description:
+      "Read ordinary history or start a read-only investigation on an approved computer using the app's existing authenticated connection. The active engine does not change. Start returns a chat id; use read to collect its reply and report its computer and sources. Private is excluded. Never pass connection credentials.",
+    parameters: Schema.Struct({
+      computer: Schema.String.annotate({
+        description: "Approved computer id from personal setup status.",
+      }),
+      request: Schema.Struct({
+        action: Schema.Literals(["list", "read", "start"]),
+        threadId: Schema.optional(Schema.String),
+        before: Schema.optional(Schema.String),
+        projectId: Schema.optional(Schema.String),
+        question: Schema.optional(Schema.String),
+        requestId: Schema.optional(Schema.String),
+      }).annotate({
+        description:
+          "{action: list}, {action: read, threadId, before?}, or {action: start, projectId, question, requestId: UUID}. Reuse requestId when retrying start.",
+      }),
+    }),
+    success: ExarchResult,
+    failure: ExarchToolError,
+    dependencies,
+  }).annotate(Tool.Title, "Investigate on another computer"),
+);
+
+const ExarchPersonalSetupTool = exarchTool(
+  Tool.make("exarch_personal_setup", {
+    description:
+      "Manage the owner's mapped personal setup on approved computers. Status contains paths, never credential contents. Computer approval remains in Library. Existing paired connection credentials stay in the app. Configure only items the owner chose to share.",
+    parameters: Schema.Struct({
+      action: Schema.Literals([
+        "status",
+        "configure",
+        "connect",
+        "remove",
+        "sync",
+        "resolve",
+      ]).annotate({ description: "Read status or manage personal setup." }),
+      choices: Schema.optional(
+        Schema.Struct({
+          enabled: Schema.Boolean,
+          plugins: Schema.Array(Schema.String),
+          credentials: Schema.Array(Schema.Struct({ id: Schema.String, path: Schema.String })),
+        }).annotate({
+          description:
+            "For configure: enabled, plugins (ids), credentials (id and absolute local path).",
+        }),
+      ),
+      name: Schema.optional(
+        Schema.String.annotate({ description: "Name shown for a connected computer." }),
+      ),
+      credentialFile: Schema.optional(
+        Schema.String.annotate({
+          description:
+            "Local file holding an existing ordinary engine pairing. Never pass its contents.",
+        }),
+      ),
+      computer: Schema.optional(
+        Schema.String.annotate({ description: "Computer id from status." }),
+      ),
+      id: Schema.optional(
+        Schema.String.annotate({ description: "Conflicted item id from status." }),
+      ),
+      keep: Schema.optional(
+        Schema.Literals(["local", "remote"]).annotate({
+          description: "Which whole copy to keep when resolving a conflict.",
+        }),
+      ),
+      localHash: Schema.optional(
+        Schema.NullOr(Schema.String).annotate({
+          description: "Local hash from the current conflict status.",
+        }),
+      ),
+      remoteHash: Schema.optional(
+        Schema.NullOr(Schema.String).annotate({
+          description: "Remote hash from the current conflict status.",
+        }),
+      ),
+    }),
+    success: ExarchResult,
+    failure: ExarchToolError,
+    dependencies,
+  }).annotate(Tool.Title, "Manage personal setup"),
+);
+
+const ExarchPluginsTool = exarchTool(
+  Tool.make("exarch_plugins", {
+    description:
+      "Manage a user-built Exarch plugin on this computer. Read status, prepare dependencies, start, stop, or run its ordinary code. Files remain outside the app bundle. Use only within the owner's authorization; credential values are never returned.",
+    parameters: Schema.Struct({
+      action: Schema.Literals([
+        "list",
+        "status",
+        "prepare",
+        "start",
+        "stop",
+        "run",
+        "rotate-incoming",
+        "migrate",
+      ]).annotate({ description: "Operation on this computer's plugins." }),
+      id: Schema.optional(
+        Schema.String.annotate({ description: "Plugin folder id, required except when listing." }),
+      ),
+    }),
+    success: ExarchResult,
+    failure: ExarchToolError,
+    dependencies,
+  }).annotate(Tool.Title, "Manage Exarch plugins"),
+);
+
 const ExarchLibraryTool = exarchTool(
   Tool.make("exarch_library", {
     description:
@@ -254,6 +365,9 @@ export const ExarchToolkit = Toolkit.make(
   ExarchRenderCheckTool,
   ExarchComponentsTool,
   ExarchLibraryTool,
+  ExarchPersonalSetupTool,
+  ExarchRemoteInvestigationTool,
+  ExarchPluginsTool,
   ExarchProgressCardTool,
   ExarchProgressCardReadTool,
 );

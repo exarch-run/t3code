@@ -6,6 +6,10 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 const applyMigrations = Migrator.make({})({
   table: "exarch_v2_sql_migrations",
   loader: Migrator.fromRecord({
+    "3_ScheduledTaskPlugin": Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`ALTER TABLE scheduled_tasks ADD COLUMN plugin_id TEXT`;
+    }),
     "2_ScheduledTaskStartClean": Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* sql`ALTER TABLE scheduled_tasks ADD COLUMN start_clean INTEGER NOT NULL DEFAULT 0`;

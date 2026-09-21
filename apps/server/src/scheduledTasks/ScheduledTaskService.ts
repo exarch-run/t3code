@@ -1,3 +1,4 @@
+import { runScheduledPlugin } from "../exarch/plugins.ts";
 import {
   CommandId,
   MessageId,
@@ -49,6 +50,7 @@ interface ScheduledTaskRow {
   readonly task_id: string;
   readonly title: string;
   readonly prompt: string;
+  readonly plugin_id: string | null;
   readonly enabled: number;
   readonly start_clean: number;
   readonly schedule_json: string;
@@ -137,6 +139,7 @@ const decodeRow = (row: ScheduledTaskRow) =>
       id: row.task_id,
       title: row.title,
       prompt: row.prompt,
+      ...(row.plugin_id ? { pluginId: row.plugin_id } : {}),
       enabled: row.enabled === 1,
       startClean: row.start_clean === 1,
       schedule,
@@ -223,6 +226,7 @@ export const layer = Layer.effect(
         task_id,
         title,
         prompt,
+        plugin_id,
         enabled,
         start_clean,
         schedule_json,
@@ -256,6 +260,7 @@ export const layer = Layer.effect(
         task_id,
         title,
         prompt,
+        plugin_id,
         enabled,
         start_clean,
         schedule_json,
@@ -309,6 +314,7 @@ export const layer = Layer.effect(
           task_id,
           title,
           prompt,
+          plugin_id,
           enabled,
           start_clean,
           schedule_json,
@@ -332,6 +338,7 @@ export const layer = Layer.effect(
           ${task.id},
           ${task.title},
           ${task.prompt},
+          ${task.pluginId ?? null},
           ${task.enabled ? 1 : 0},
           ${task.startClean ? 1 : 0},
           ${JSON.stringify(task.schedule)},
@@ -356,6 +363,7 @@ export const layer = Layer.effect(
         DO UPDATE SET
           title = excluded.title,
           prompt = excluded.prompt,
+          plugin_id = excluded.plugin_id,
           enabled = excluded.enabled,
           start_clean = excluded.start_clean,
           schedule_json = excluded.schedule_json,
@@ -520,8 +528,18 @@ export const layer = Layer.effect(
         // Effect.exit (not Effect.result) so defects and interruptions in the
         // dispatch are also captured and recorded as a failed run instead of
         // aborting before markCompleted.
-        const result =
-          active.threadId === null
+        const result = active.pluginId
+          ? yield* Effect.exit(
+              Effect.tryPromise({
+                try: () => runScheduledPlugin(active.pluginId!),
+                catch: () =>
+                  taskError(
+                    `Plugin ${active.pluginId} could not complete its scheduled run. Check its status in Library.`,
+                    { taskId: active.id },
+                  ),
+              }),
+            )
+          : active.threadId === null
             ? yield* Effect.exit(
                 threadLaunch.launch({
                   commandId,
@@ -736,6 +754,11 @@ export const layer = Layer.effect(
 
     const upsert: ScheduledTaskService["Service"]["upsert"] = (input) =>
       Effect.gen(function* () {
+        if (
+          input.pluginId &&
+          (input.runtimeMode !== "full-access" || input.interactionMode === "plan")
+        )
+          return yield* taskError("Plugin schedules require full access in build mode.");
         const now = yield* localNow;
         const uuid =
           input.commandId === undefined
@@ -765,6 +788,7 @@ export const layer = Layer.effect(
           id,
           title: input.title,
           prompt: input.prompt,
+          ...(input.pluginId ? { pluginId: input.pluginId } : {}),
           enabled: input.enabled,
           startClean: input.startClean ?? existingTask?.startClean ?? false,
           schedule: input.schedule,

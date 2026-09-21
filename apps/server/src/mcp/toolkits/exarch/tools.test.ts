@@ -24,7 +24,7 @@ it("keeps only the card tools out of Claude tool search", () => {
   }
 });
 
-it("lists the eleven Exarch tools with described object parameters", () => {
+it("lists the Exarch tools with described object parameters", () => {
   expect(Object.keys(ExarchToolkit.tools).sort()).toEqual([
     "exarch_act",
     "exarch_changes",
@@ -33,8 +33,11 @@ it("lists the eleven Exarch tools with described object parameters", () => {
     "exarch_items",
     "exarch_library",
     "exarch_open_documents",
+    "exarch_personal_setup",
+    "exarch_plugins",
     "exarch_progress_card",
     "exarch_progress_card_read",
+    "exarch_remote_investigation",
     "exarch_render_check",
     "exarch_resolve",
   ]);

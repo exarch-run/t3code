@@ -1,3 +1,6 @@
+import { vi } from "vite-plus/test";
+import { runScheduledPlugin } from "../exarch/plugins.ts";
+vi.mock("../exarch/plugins.ts", () => ({ runScheduledPlugin: vi.fn(async () => {}) }));
 import * as NodeUtil from "node:util";
 
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -396,6 +399,46 @@ it.effect("passes start-clean and the schedule's saved modes to a bound schedule
           runtimeMode: "approval-required",
           interactionMode: "plan",
         });
+      }).pipe(Effect.provide(scheduledTaskServiceLayer.pipe(Layer.provide(deps))));
+    }),
+  ).pipe(Effect.provide(SqlitePersistenceMemory)),
+);
+
+it.effect("runs and records a plugin schedule without launching a conversation", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const deps = Layer.mergeAll(
+        NodeCrypto.layer,
+        Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
+        Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+      );
+      yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService;
+        const input = {
+          pluginId: "example",
+          title: "Direct code",
+          prompt: "Run plugin example",
+          enabled: false,
+          schedule: { type: "interval" as const, everyMs: 60000 },
+          projectId: ProjectId.make("project:test"),
+          threadId: null,
+          workspaceStrategy: { type: "root" as const },
+          modelSelection: { instanceId: ProviderInstanceId.make("plugin"), model: "plugin" },
+          runtimeMode: "full-access" as const,
+          interactionMode: "default" as const,
+        };
+        const created = yield* service.upsert(input);
+        assert.equal((yield* service.list()).tasks[0]?.pluginId, "example");
+        yield* service.runNow({ id: created.task.id });
+        assert.equal(vi.mocked(runScheduledPlugin).mock.calls.at(-1)?.[0], "example");
+        const saved = (yield* service.list()).tasks[0]!;
+        assert.equal(saved.lastRunStatus, "succeeded");
+        assert.equal(saved.runCount, 1);
+        assert.equal(saved.threadId, null);
+        const refused = yield* service
+          .upsert({ ...input, runtimeMode: "approval-required" })
+          .pipe(Effect.flip);
+        assert.isTrue(isScheduledTaskError(refused));
       }).pipe(Effect.provide(scheduledTaskServiceLayer.pipe(Layer.provide(deps))));
     }),
   ).pipe(Effect.provide(SqlitePersistenceMemory)),

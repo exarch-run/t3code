@@ -1,4 +1,5 @@
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import {
   FetchHttpClient,
   HttpClient,
@@ -8,7 +9,10 @@ import {
 } from "effect/unstable/http";
 
 /** The application owns the address and per-launch token. Never accept a target or identity from the phone. */
-export const forwardExarchRequest = Effect.fn("exarch.forward")(function* (sessionId: string) {
+export const forwardExarchRequest = Effect.fn("exarch.forward")(function* (
+  sessionId: string,
+  incoming: boolean,
+) {
   const request = yield* HttpServerRequest.HttpServerRequest;
   const origin = process.env.EXARCH_HOST_URL;
   const token = process.env.EXARCH_HOST_TOKEN;
@@ -32,6 +36,20 @@ export const forwardExarchRequest = Effect.fn("exarch.forward")(function* (sessi
   for (const name of ["content-type", "last-event-id"]) {
     const value = request.headers[name];
     if (value !== undefined) headers[name] = value;
+  }
+  if (incoming) {
+    const original: Record<string, string> = {};
+    for (const [name, value] of Object.entries(request.headers)) {
+      if (
+        value !== undefined &&
+        !["cookie", "host", "connection", "content-length", "transfer-encoding"].includes(name) &&
+        !name.startsWith("x-exarch-")
+      )
+        original[name] = value;
+    }
+    headers["x-exarch-incoming-headers"] = yield* Schema.encodeEffect(
+      Schema.fromJsonString(Schema.Record(Schema.String, Schema.String)),
+    )(original);
   }
   let upstream = HttpClientRequest.make(request.method)(target.toString(), { headers });
   if (request.method === "POST")
