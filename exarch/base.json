@@ -5,5 +5,5 @@
   "npmPackage": "t3",
   "sourceVersion": "0.0.42",
   "helperBinaries": "dist/resource-monitor",
-  "releaseVersion": "0.0.42-exarch.2012"
+  "releaseVersion": "0.0.42-exarch.2013"
 }
