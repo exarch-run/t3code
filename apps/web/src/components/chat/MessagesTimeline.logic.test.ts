@@ -2913,7 +2913,7 @@ describe("resolveTimelineToolPresentation", () => {
   });
 
   it("pretty prints Codex T3 MCP tool names", () => {
-    expect(resolveTimelineToolPresentation("t3-code.create_threads")).toEqual({
+    expect(resolveTimelineToolPresentation("t3-code.t3_thread_launch")).toEqual({
       displayName: "Create T3 threads",
       logo: "t3-code",
     });

@@ -297,6 +297,8 @@ export const OrchestrationV2ProductionLayerLive = Layer.mergeAll(
   OrchestrationV2LayerLive.pipe(Layer.provide(ProjectServiceLayerLive)),
   ProjectServiceLayerLive,
   threadLaunchProvided,
+  commandReceiptStoreProvided,
+  providerAdapterRegistryProvided,
   threadLifecycleProvided,
   scheduledTaskProvided,
   providerContinuationWorkerProvided,

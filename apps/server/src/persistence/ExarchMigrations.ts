@@ -6,6 +6,14 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 const applyMigrations = Migrator.make({})({
   table: "exarch_v2_sql_migrations",
   loader: Migrator.fromRecord({
+    "5_AgentLaunchRequests": Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`CREATE TABLE exarch_agent_launch_requests (
+        request_key TEXT PRIMARY KEY,
+        input_json TEXT NOT NULL,
+        accepted_json TEXT NOT NULL
+      )`;
+    }),
     "4_ScheduledTaskOutcome": Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* sql`ALTER TABLE scheduled_tasks ADD COLUMN last_outcome_kind TEXT`;

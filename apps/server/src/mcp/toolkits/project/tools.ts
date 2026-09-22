@@ -1,14 +1,8 @@
-import { McpAttachmentInput } from "../attachment/input.ts";
+import { GitVcsDriver } from "../../../vcs/GitVcsDriver.ts";
 import {
+  AgentThreadLaunchInput,
+  AgentThreadLaunchResult,
   NonNegativeInt,
-  ModelSelection,
-  TrimmedNonEmptyString,
-  ThreadId,
-  RunId,
-  OrchestrationV2RunStatus,
-  OrchestrationV2ThreadLaunchWorkspaceStrategy,
-  RuntimeMode,
-  ProviderInteractionMode,
   Project,
   ProjectCreatePayload,
   ProjectUpdatePayload,
@@ -17,8 +11,12 @@ import {
   SourceControlCloneRepositoryInput,
   SourceControlCloneRepositoryResult,
 } from "@t3tools/contracts";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { CommandReceiptStoreV2 } from "../../../orchestration-v2/CommandReceiptStore.ts";
 import * as FileSystem from "effect/FileSystem";
 import { ServerConfig } from "../../../config.ts";
+import { ProviderRegistry } from "../../../provider/Services/ProviderRegistry.ts";
+import { ProviderAdapterRegistryV2 } from "../../../orchestration-v2/ProviderAdapterRegistry.ts";
 import { ThreadLaunchService } from "../../../orchestration-v2/ThreadLaunchService.ts";
 import * as Crypto from "effect/Crypto";
 import * as Schema from "effect/Schema";
@@ -85,38 +83,23 @@ const ProjectCloneTool = Tool.make("t3_project_clone", {
 })
   .annotate(Tool.Destructive, true)
   .annotate(Tool.OpenWorld, true);
-const ThreadLaunchTool = Tool.make("t3_thread_launch", {
+export const ThreadLaunchTool = Tool.make("t3_thread_launch", {
   ...shared,
   description:
-    'Create an ordinary TOP-LEVEL thread with an explicit workspace binding before its agent starts. Use this when the user requests independent work, a new thread, or a PR stack in its own worktree; use delegate_task for child subagents. Set workspaceStrategy to {type:"worktree",baseRef:"parent-branch",branch:"new-branch",startFromOrigin:false} for a new worktree based on local commits, or {type:"existing_worktree",worktreePath:"/absolute/path",branch:"existing-branch"} to use an existing checkout. For upstream commits, set startFromOrigin:true. Omitted workspaceStrategy means the project root, NOT the caller\'s worktree. Omit projectId/modelSelection/modes to inherit those settings. Put the task in message. Do not ask the agent to create its own worktree via shell: that does not update the thread binding. Each call creates a new launch with no retry key; retain threadId and use t3_thread_read/t3_thread_wait to follow preparation. After errors or lost responses, inspect t3_thread_list before retrying. Attachments must be pending uploads. Requires a full-access/default caller.',
-  parameters: Schema.Struct({
-    projectId: Schema.optional(ProjectId),
-    title: TrimmedNonEmptyString,
-    modelSelection: Schema.optional(ModelSelection),
-    runtimeMode: Schema.optional(RuntimeMode),
-    interactionMode: Schema.optional(ProviderInteractionMode),
-    workspaceStrategy: Schema.optional(
-      OrchestrationV2ThreadLaunchWorkspaceStrategy.annotate({
-        description:
-          "Choose where this thread runs before starting its agent: worktree creates and binds a new checkout from baseRef; existing_worktree binds worktreePath; root uses the project checkout. Omitted means root, not the caller's worktree. For a PR stack use the parent branch as baseRef and startFromOrigin:false. Uncommitted changes are not copied.",
-      }),
-    ),
-    message: Schema.optional(
-      Schema.String.check(Schema.isMaxLength(120000)).annotate({
-        description:
-          "First task prompt, delivered after workspace preparation. Omit message and attachments to create an idle thread.",
-      }),
-    ),
-    attachments: Schema.optional(Schema.Array(McpAttachmentInput).check(Schema.isMaxLength(8))),
-  }),
-  success: Schema.Struct({
-    threadId: ThreadId,
-    projectId: ProjectId,
-    modelSelection: ModelSelection,
-    runId: Schema.NullOr(RunId),
-    status: Schema.NullOr(OrchestrationV2RunStatus),
-  }),
-  dependencies: [...shared.dependencies, ThreadLaunchService, FileSystem.FileSystem, ServerConfig],
+    "Create one or several ordinary chats through one launch request. Use only when the user requests separate chats or independent work; this is not delegation. For subagents, call delegate_task. Provide requestId and a threads list, with a stable entryId and title for each chat. Reuse the same requestId and inputs after a lost response; changed inputs are refused. Omitted project/model/modes and workspace inherit the caller. workspaceStrategy may explicitly select root, existing_worktree, or a new worktree. A different project requires an explicit workspace. Each chat records its creator for automatic grouping without opening tabs. Workspace preparation finishes before its agent starts. Results are per entry; preparing is not completed work. Pending uploads only. Requires a full-access/default caller.",
+  parameters: AgentThreadLaunchInput,
+  success: AgentThreadLaunchResult,
+  dependencies: [
+    ...shared.dependencies,
+    ThreadLaunchService,
+    GitVcsDriver,
+    ProviderRegistry,
+    ProviderAdapterRegistryV2,
+    CommandReceiptStoreV2,
+    SqlClient.SqlClient,
+    FileSystem.FileSystem,
+    ServerConfig,
+  ],
 })
   .annotate(Tool.Destructive, true)
   .annotate(Tool.OpenWorld, true);

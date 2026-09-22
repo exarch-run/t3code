@@ -272,46 +272,37 @@ Interrupts the currently active task run through the normal V2 `run.interrupt`
 command. Native background work between turns currently has no interruptible run. It is idempotent for terminal tasks and accepts an optional cancellation
 reason. Use `t3_thread_interrupt` to interrupt a later follow-up run.
 
-### `create_threads`
-
-Creates between one and twenty ordinary top-level T3 threads:
-
-```ts
-type CreateThreadsInput = {
-  threads: Array<{
-    prompt?: string;
-    title?: string;
-    target?: {
-      providerInstanceId?: string;
-      driverKind?: string;
-      model?: string;
-    };
-    runtimeMode?: "inherit" | "approval-required" | "auto-accept-edits" | "full-access";
-    interactionMode?: "inherit" | "plan" | "default";
-  }>;
-  clientRequestId?: string;
-};
-```
-
-Each entry independently resolves provider, model, and modes. The new threads
-inherit the parent's project, branch, and worktree path, but they have no
-sub-agent lineage. Entries with a prompt immediately dispatch a run; entries
-without a prompt remain idle.
-
 ### `t3_thread_launch`
 
-Launches one ordinary top-level thread through the app's launch service. Use an
-explicit `workspaceStrategy` to create a new worktree (`worktree` with `baseRef`),
-attach an existing checkout (`existing_worktree` with `worktreePath`), or use the
-project root (`root`, also the default). The thread is bound to that workspace
-before the agent starts. Creating a worktree in the task prompt does not update
-this binding.
+Creates one to twenty ordinary chats through the shared launch service. Supply
+`requestId` and a `threads` list; each entry needs a stable `entryId` and `title`.
+The input and result schemas are in `packages/contracts/src/agentThreadLaunch.ts`.
+These chats have no subagent lineage. Use `delegate_task` for subagents.
 
-Pass the task in `message`. Project, model, and modes inherit when omitted;
-workspace does not. For stacked PRs, use the parent branch as `baseRef` with
-`startFromOrigin: false`. Launch requires a full-access/default caller and has
-no retry key, so inspect existing threads after a failed or lost response before
-launching again. `create_threads` remains the batch option for a shared checkout.
+Omitted project, model, modes, and workspace inherit the caller. Set an entry's
+`workspaceStrategy` to `root`, `existing_worktree` with `worktreePath`, or `worktree`
+with `baseRef`. A different project requires an explicit workspace. Existing
+checkouts must belong to the selected repository and match any supplied branch.
+Launch never switches a checkout. For stacked work, use the parent branch as
+`baseRef` with `startFromOrigin: false`.
+
+The creator relationship and chat are committed atomically, before the first
+message or workspace preparation. An empty entry remains idle and still records
+its creator. Workspace preparation precedes agent execution; async setup scripts
+may continue in the background according to their existing configuration.
+
+Retry a lost response with identical input and the same request and entry IDs.
+The originating chat scopes the request, so reconnects and model changes do not
+change accepted defaults or create duplicate chats or messages. Changed input is
+refused. Results retain input order and report each entry's chat, workspace,
+preparation status, run status, and error independently. `preparing` means the
+workspace is not ready yet, including a concurrent retry of an idle launch.
+Pending attachments already accepted on an earlier attempt are reused.
+
+Launch requires a live full-access/default caller. Cross-project creator records
+apply only to chats created by the accepted launch; group membership grants no
+additional history access. The previous batch tool and singleton launch input
+are removed without compatibility adapters.
 
 ### `t3_thread_list`
 

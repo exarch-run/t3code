@@ -46,7 +46,7 @@ describe("resolveT3McpToolPresentation", () => {
   });
 
   it("pretty prints Codex T3 MCP tool names", () => {
-    expect(resolveT3McpToolPresentation("t3-code.create_threads")).toEqual({
+    expect(resolveT3McpToolPresentation("t3-code.t3_thread_launch")).toEqual({
       displayName: "Create T3 threads",
       logo: "t3-code",
     });

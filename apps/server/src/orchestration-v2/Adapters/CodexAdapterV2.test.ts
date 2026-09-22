@@ -776,10 +776,11 @@ describe("CodexAdapterV2 dynamic tool projection", () => {
       type: "mcpToolCall",
       id: "call-create-threads",
       server: "t3-code",
-      tool: "create_threads",
+      tool: "t3_thread_launch",
       status: "completed",
       arguments: {
-        threads: [{ title: "Fixture child", prompt: "fixture child prompt" }],
+        requestId: "fixture-launch",
+        threads: [{ entryId: "child", title: "Fixture child", message: "fixture child prompt" }],
       },
       result: {
         content: [{ type: "text", text: '{"threads":[{"threadId":"thread:mcp:fixture:0"}]}' }],
@@ -790,9 +791,10 @@ describe("CodexAdapterV2 dynamic tool projection", () => {
     });
 
     assert.deepEqual(projection, {
-      toolName: "t3-code.create_threads",
+      toolName: "t3-code.t3_thread_launch",
       input: {
-        threads: [{ title: "Fixture child", prompt: "fixture child prompt" }],
+        requestId: "fixture-launch",
+        threads: [{ entryId: "child", title: "Fixture child", message: "fixture child prompt" }],
       },
       output: {
         threads: [{ threadId: "thread:mcp:fixture:0" }],

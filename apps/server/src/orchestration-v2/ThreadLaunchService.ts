@@ -4,6 +4,7 @@ import * as TerminalManager from "../terminal/Manager.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   CommandId,
+  type AgentThreadCreator,
   type ChatAttachment,
   type MessageId,
   type ModelSelection,
@@ -66,6 +67,10 @@ export interface ThreadLaunchInitialMessage {
 }
 
 export interface ThreadLaunchInput {
+  readonly creator?: AgentThreadCreator;
+  readonly waitForPreparation?: boolean;
+  readonly worktreeDestination?: string;
+  readonly recoveredWorkspace?: { readonly worktreePath: string; readonly branch: string | null };
   readonly startClean?: boolean;
   readonly commandId: CommandId;
   readonly threadId?: ThreadId;
@@ -254,7 +259,18 @@ const make = Effect.gen(function* () {
       // The server owns worktree naming: without an explicit branch, provision
       // under a temporary `t3code/<hash>` name so the worktree never waits on
       // name generation, then rename in the background below.
-      const requestedBranch = input.workspaceStrategy.branch;
+      // A committed workspace is reused after reconnect/restart. The create
+      // receipt alone says nothing about whether preparation finished.
+      const workspaceReceipt = input.creator
+        ? yield* readReceipt(input, CommandId.make(`${input.commandId}:workspace`))
+        : Option.none();
+      const savedWorkspace =
+        Option.isSome(workspaceReceipt) && workspaceReceipt.value.status === "accepted"
+          ? (yield* threads
+              .getThreadProjection(threadId)
+              .pipe(Effect.mapError(mapError(input, "update-thread", threadId)))).thread
+          : input.recoveredWorkspace;
+      const requestedBranch = savedWorkspace?.branch ?? input.workspaceStrategy.branch;
       let branch: string | null;
       if (input.workspaceStrategy.type === "worktree" && requestedBranch === undefined) {
         const uuid = yield* randomUuidV4;
@@ -266,7 +282,8 @@ const make = Effect.gen(function* () {
         input.workspaceStrategy.type === "existing_worktree"
           ? input.workspaceStrategy.worktreePath
           : null;
-      if (input.workspaceStrategy.type === "worktree") {
+      if (savedWorkspace) worktreePath = savedWorkspace.worktreePath;
+      if (input.workspaceStrategy.type === "worktree" && !savedWorkspace) {
         if (runId !== null) {
           yield* threads
             .dispatch({
@@ -324,7 +341,7 @@ const make = Effect.gen(function* () {
               refName: startRef,
               newRefName: branch!,
               baseRefName: input.workspaceStrategy.baseRef,
-              path: null,
+              path: input.worktreeDestination ?? null,
             },
             {
               progress: {
@@ -482,9 +499,25 @@ const make = Effect.gen(function* () {
           })
           .pipe(Effect.mapError(mapError(input, "release-run", threadId)));
       }
+      if (input.creator) {
+        yield* threads
+          .dispatch({
+            type: "thread.metadata.update",
+            commandId: CommandId.make(`${input.commandId}:prepared`),
+            threadId,
+          })
+          .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
+      }
       yield* setupTracker.stageStatus(threadId, "agent", "done");
-      yield* awaitAsyncSetup;
-      yield* setupTracker.finish(threadId, "done");
+      if (input.waitForPreparation && setup.status === "started" && setup.async) {
+        yield* awaitAsyncSetup.pipe(
+          Effect.andThen(setupTracker.finish(threadId, "done")),
+          Effect.forkIn(preparationScope),
+        );
+      } else {
+        yield* awaitAsyncSetup;
+        yield* setupTracker.finish(threadId, "done");
+      }
     }).pipe(
       Effect.onError((cause) =>
         Effect.gen(function* () {
@@ -670,6 +703,7 @@ const make = Effect.gen(function* () {
               })
             : threads.dispatch({
                 type: "thread.create",
+                ...(input.creator ? { creator: input.creator } : {}),
                 commandId: input.commandId,
                 threadId: candidateThreadId,
                 projectId: input.projectId,
@@ -751,7 +785,14 @@ const make = Effect.gen(function* () {
         const runIsPreparing =
           runId !== null &&
           projection.runs.some((run) => run.id === runId && run.status === "preparing");
-        const shouldSchedule = runId === null ? Option.isNone(launchReceipt) : runIsPreparing;
+        const preparationReceipt = input.creator
+          ? yield* readReceipt(input, CommandId.make(`${input.commandId}:prepared`))
+          : launchReceipt;
+        const shouldSchedule =
+          runId === null
+            ? Option.isNone(preparationReceipt) ||
+              (input.creator !== undefined && preparationReceipt.value.status !== "accepted")
+            : runIsPreparing;
         if (shouldSchedule) {
           const ownsPreparation = yield* reservePreparation(input.commandId);
           if (ownsPreparation) {
@@ -766,7 +807,16 @@ const make = Effect.gen(function* () {
                       Effect.mapError(mapError(input, "update-thread", threadId)),
                     );
               if (preparationStillRequired) {
-                yield* schedulePreparation(input, threadId, runId);
+                if (input.waitForPreparation) {
+                  yield* prepareInBackground(input, threadId, runId).pipe(
+                    Effect.onError((cause) =>
+                      failPreparedRun(input, threadId, runId, Cause.squash(cause)),
+                    ),
+                    Effect.ensuring(releasePreparation(input.commandId)),
+                  );
+                } else {
+                  yield* schedulePreparation(input, threadId, runId);
+                }
               } else {
                 yield* releasePreparation(input.commandId);
               }
@@ -776,7 +826,11 @@ const make = Effect.gen(function* () {
 
         return {
           threadId,
-          projection,
+          projection: input.waitForPreparation
+            ? yield* threads
+                .getThreadProjection(threadId)
+                .pipe(Effect.mapError(mapError(input, "create-thread", threadId)))
+            : projection,
           resumed: Option.isSome(launchReceipt) || messageWasAlreadyAccepted,
         };
       });

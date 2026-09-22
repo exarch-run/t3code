@@ -1,8 +1,8 @@
+import { AgentThreadLaunchInput } from "./agentThreadLaunch.ts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 
 import {
-  OrchestratorMcpCreateThreadsInput,
   OrchestratorMcpDelegateTaskInput,
   OrchestratorMcpDelegateTaskResult,
   OrchestratorMcpThreadInterruptInput,
@@ -12,7 +12,7 @@ import {
   OrchestratorMcpThreadWaitInput,
 } from "./orchestratorMcp.ts";
 
-const decodeCreateThreadsInput = Schema.decodeUnknownSync(OrchestratorMcpCreateThreadsInput);
+const decodeCreateThreadsInput = Schema.decodeUnknownSync(AgentThreadLaunchInput);
 const decodeDelegateTaskInput = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskInput);
 const decodeDelegateTaskResult = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskResult);
 const decodeThreadInterruptInput = Schema.decodeUnknownSync(OrchestratorMcpThreadInterruptInput);
@@ -110,20 +110,22 @@ describe("orchestrator MCP contracts", () => {
 
   it("decodes mixed prompted and empty thread batches", () => {
     const request = decodeCreateThreadsInput({
-      clientRequestId: "threads-1",
+      requestId: "threads-1",
       threads: [
-        { title: "Inherited empty thread" },
+        { entryId: "empty", title: "Inherited empty thread" },
         {
-          prompt: "Review the API.",
-          target: { driverKind: "claudeAgent" },
+          entryId: "review",
+          title: "Review",
+          message: "Review the API.",
+          modelSelection: { instanceId: "claudeAgent", model: "claude-sonnet-4-6" },
           runtimeMode: "approval-required",
         },
       ],
     });
 
     expect(request.threads).toHaveLength(2);
-    expect(request.threads[0]?.prompt).toBeUndefined();
-    expect(request.threads[1]?.target?.driverKind).toBe("claudeAgent");
+    expect(request.threads[0]?.message).toBeUndefined();
+    expect(request.threads[1]?.modelSelection?.instanceId).toBe("claudeAgent");
   });
 
   it("decodes project-scoped thread orchestration requests", () => {

@@ -1929,6 +1929,28 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       occurredAt: now,
       payload: thread,
     });
+    // The child and its creator item share one event commit. No saved child can
+    // be orphaned by a crash before a second record command reaches the server.
+    if (command.creator) {
+      if (command.createdBy !== "agent" || command.creationSource !== "mcp") {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "Only agent MCP launches can supply a creator.",
+        });
+      }
+      yield* dispatchCreatedThreadRecord(
+        {
+          type: "thread.created.record",
+          commandId: command.commandId,
+          ...command.creator,
+          targetThreadId: command.threadId,
+          targetRunId: null,
+        },
+        events,
+        thread,
+      );
+    }
     if (command.importedNativeThread !== undefined) {
       yield* emitEvent({
         type: "provider-thread.updated",
@@ -6167,6 +6189,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     function* (
       command: Extract<OrchestrationV2Command, { readonly type: "thread.created.record" }>,
       events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+      createdTarget?: OrchestrationV2AppThread,
     ) {
       const parentProjection = yield* projectionStore
         .getThreadProjection(command.parentThreadId)
@@ -6179,17 +6202,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               }),
           ),
         );
-      const targetProjection = yield* projectionStore
-        .getThreadProjection(command.targetThreadId)
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new OrchestratorProjectionError({
-                threadId: command.targetThreadId,
-                cause,
-              }),
-          ),
-        );
+      const targetProjection = createdTarget
+        ? { thread: createdTarget, runs: [] }
+        : yield* projectionStore.getThreadProjection(command.targetThreadId).pipe(
+            Effect.mapError(
+              (cause) =>
+                new OrchestratorProjectionError({
+                  threadId: command.targetThreadId,
+                  cause,
+                }),
+            ),
+          );
       const parentRun = parentProjection.runs.find(
         (candidate) => candidate.id === command.parentRunId,
       );
@@ -6208,7 +6231,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: `Parent node ${command.parentNodeId} is not the root of run ${command.parentRunId}.`,
         });
       }
-      if (parentProjection.thread.projectId !== targetProjection.thread.projectId) {
+      if (
+        !createdTarget &&
+        parentProjection.thread.projectId !== targetProjection.thread.projectId
+      ) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
@@ -8759,7 +8785,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   });
 
   const dispatchWithReceipt = (command: OrchestrationV2Command) =>
-    threadDispatch.withLock(commandThreadId(command), dispatchWithReceiptEffect(command));
+    threadDispatch.withLock(
+      command.type === "thread.create" && command.creator
+        ? command.creator.parentThreadId
+        : commandThreadId(command),
+      dispatchWithReceiptEffect(command),
+    );
 
   const handleTerminalRun = (stored: OrchestrationV2StoredEvent) =>
     Effect.gen(function* () {

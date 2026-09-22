@@ -1,7 +1,5 @@
 import {
   OrchestratorMcpCapabilitiesResult,
-  OrchestratorMcpCreateThreadsInput,
-  OrchestratorMcpCreateThreadsResult,
   OrchestratorMcpDelegateTaskInput,
   OrchestratorMcpDelegateTaskResult,
   OrchestratorMcpDeleteScheduledTaskInput,
@@ -141,19 +139,6 @@ const DeleteScheduledTaskTool = Tool.make("delete_scheduled_task", {
   .annotate(Tool.Title, "Delete a scheduled task")
   .annotate(Tool.Destructive, true);
 
-export const CreateThreadsTool = Tool.make("create_threads", {
-  description:
-    "Create one or more ORDINARY TOP-LEVEL T3 conversations. This is not delegation and does not create child agents/subagents. For delegated work, prefer native subagents within the current provider; call delegate_task for cross-provider or explicitly T3-owned child tasks. Use create_threads for a batch of separate top-level threads sharing this checkout. Prefer t3_thread_launch for a single thread. Both require the user to request separate/new/top-level threads or conversations. Each entry may override provider, model, options, runtime mode, and interaction mode; omitted settings inherit. Project, branch, and worktree always inherit and cannot be overridden here. For independent implementation or a PR stack in its own worktree, use t3_thread_launch with workspaceStrategy instead of asking the agent to create a worktree in its prompt.",
-  parameters: OrchestratorMcpCreateThreadsInput,
-  success: OrchestratorMcpCreateThreadsResult,
-  failure: OrchestratorMcpFailure,
-  failureMode: "return",
-  dependencies,
-})
-  .annotate(Tool.Title, "Create T3 threads")
-  .annotate(Tool.Destructive, true)
-  .annotate(Tool.OpenWorld, true);
-
 const ThreadListTool = Tool.make("t3_thread_list", {
   description:
     "List T3 threads in the calling thread's project, newest first. Filter by durable run status or title and paginate with the returned cursor. Threads from other projects are never exposed.",
@@ -243,7 +228,6 @@ export const OrchestratorToolkit = Toolkit.make(
   ListScheduledTasksTool,
   UpdateScheduledTaskTool,
   DeleteScheduledTaskTool,
-  CreateThreadsTool,
   ThreadListTool,
   ThreadReadTool,
   ThreadUpdateTool,

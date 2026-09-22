@@ -1,8 +1,8 @@
 import { assert, describe, it } from "@effect/vitest";
+import { ThreadLaunchTool } from "../project/tools.ts";
 import { Tool } from "effect/unstable/ai";
 
 import {
-  CreateThreadsTool,
   DelegateTaskTool,
   OrchestratorCapabilitiesTool,
   ScheduleTaskTool,
@@ -13,8 +13,8 @@ describe("orchestrator MCP tool guidance", () => {
   it("keeps delegation on the owner's task table and away from ordinary threads", () => {
     assert.include(DelegateTaskTool.description ?? "", "exact taskType");
     assert.include(DelegateTaskTool.description ?? "", "Do not supply target");
-    assert.include(CreateThreadsTool.description ?? "", "not delegation");
-    assert.include(CreateThreadsTool.description ?? "", "call delegate_task");
+    assert.include(ThreadLaunchTool.description ?? "", "not delegation");
+    assert.include(ThreadLaunchTool.description ?? "", "call delegate_task");
     const schema = Tool.getJsonSchema(DelegateTaskTool) as {
       readonly required?: ReadonlyArray<string>;
     };

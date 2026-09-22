@@ -1,3 +1,17 @@
+import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
+import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
+import * as CommandReceipts from "../orchestration-v2/CommandReceiptStore.ts";
+import * as IdAllocator from "../orchestration-v2/IdAllocator.ts";
+import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import * as ProjectService from "../project/ProjectService.ts";
+import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
+import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
+import * as SetupScripts from "../project/ProjectSetupScriptRunner.ts";
+import * as TerminalManager from "../terminal/Manager.ts";
+import * as GitWorkflow from "../git/GitWorkflowService.ts";
+import * as TextGeneration from "../textGeneration/TextGeneration.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import * as ServerConfig from "../config.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import {
@@ -11,7 +25,7 @@ import {
   type OrchestrationV2ProviderSession,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2ThreadProjection,
-  OrchestratorMcpCreateThreadsResult,
+  AgentThreadLaunchResult,
   OrchestratorMcpDelegateTaskResult,
   OrchestratorMcpTaskCancelResult,
   OrchestratorMcpThreadInterruptResult,
@@ -91,7 +105,17 @@ const createdThreadPrompt = "Complete the newly created ordinary thread.";
 const queuedFollowupPrompt = "Complete the queued follow-up and return the final result.";
 const queuedFollowupResult = "Queued delegated follow-up completed.";
 
-const decodeCreateThreadsResult = Schema.decodeUnknownEffect(OrchestratorMcpCreateThreadsResult);
+const decodeLaunchSchema = Schema.decodeUnknownEffect(AgentThreadLaunchResult);
+const decodeCreateThreadsResult = (value: unknown) =>
+  decodeLaunchSchema(value).pipe(
+    Effect.map((result) => ({
+      threads: result.threads.map((entry) => {
+        if (!entry.threadId || entry.error)
+          throw new Error(entry.error ?? "Launch returned no chat");
+        return { ...entry, threadId: entry.threadId };
+      }),
+    })),
+  );
 const decodeDelegateTaskResult = Schema.decodeUnknownEffect(OrchestratorMcpDelegateTaskResult);
 const decodeTaskCancelResult = Schema.decodeUnknownEffect(OrchestratorMcpTaskCancelResult);
 const decodeThreadInterruptResult = Schema.decodeUnknownEffect(
@@ -620,12 +644,56 @@ describe("orchestrator MCP toolkit", () => {
               runNow: () => Effect.die("ScheduledTaskService.runNow is unused in this test"),
             }),
           );
-          const testLayer = Layer.merge(
+          const launchExternal = Layer.mergeAll(
+            Layer.mock(GitVcsDriver)({}),
+            WorktreeSetupTracker.layer,
+            Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({
+              get: () => Effect.succeed(null),
+            }),
+            Layer.mock(TerminalManager.TerminalManager)({ close: () => Effect.void }),
+            Layer.mock(GitWorkflow.GitWorkflowService)({}),
+            Layer.mock(TextGeneration.TextGeneration)({}),
+            Layer.mock(SetupScripts.ProjectSetupScriptRunner)({
+              runForThread: () => Effect.succeed({ status: "no-script" as const }),
+            }),
+            Layer.mock(ProjectService.ProjectService)({
+              getById: (id) =>
+                Effect.succeed(
+                  Option.some({
+                    id,
+                    title: "MCP project",
+                    workspaceRoot: cwd,
+                    repositoryIdentity: null,
+                    faviconPath: null,
+                    defaultModelSelection: codexSelection,
+                    defaultThreadEnvMode: null,
+                    scripts: [],
+                    createdAt: "2026-09-22T00:00:00.000Z",
+                    updatedAt: "2026-09-22T00:00:00.000Z",
+                    deletedAt: null,
+                  }),
+                ),
+            }),
+            ServerSettings.layerTest(),
+            providerRegistryLayer,
+            registryLayer,
+            IdAllocator.layer,
+            CommandReceipts.layer.pipe(Layer.provide(SqlitePersistenceMemory)),
+            SqlitePersistenceMemory,
+            ServerConfig.layerTest(cwd, { prefix: "mcp-launch-" }),
+          );
+          const launchLayer = ThreadLaunch.layer.pipe(
+            Layer.provide(Layer.mergeAll(launchExternal, orchestrationLayer)),
+          );
+          const testLayer = Layer.mergeAll(
+            McpHttpServer.ProjectRegistrationLive,
             McpHttpServer.OrchestratorToolkitRegistrationLive,
             McpHttpServer.ThreadToolkitRegistrationLive,
           ).pipe(
             Layer.provideMerge(McpServer.McpServer.layer),
             Layer.provideMerge(orchestrationLayer),
+            Layer.provide(launchLayer),
+            Layer.provide(launchExternal),
             Layer.provide(registryLayer),
             Layer.provide(providerRegistryLayer),
             Layer.provide(scheduledTaskStubLayer),
@@ -1284,7 +1352,7 @@ describe("orchestrator MCP toolkit", () => {
             expect(taskStatusTool?.tool.annotations?.readOnlyHint).toBe(false);
             expect(taskStatusTool?.tool.annotations?.idempotentHint).toBe(true);
             const createThreadsTool = server.tools.find(
-              ({ tool }) => tool.name === "create_threads",
+              ({ tool }) => tool.name === "t3_thread_launch",
             );
             expect(createThreadsTool?.tool.annotations?.destructiveHint).toBe(true);
             const threadListTool = server.tools.find(({ tool }) => tool.name === "t3_thread_list");
@@ -1812,21 +1880,21 @@ describe("orchestrator MCP toolkit", () => {
             yield* expectOffersToStay(0);
 
             const createInput = {
-              clientRequestId: "create-thread-batch-1",
+              requestId: "create-thread-batch-1",
               threads: [
                 {
+                  entryId: "empty",
                   title: "Inherited empty thread",
                 },
                 {
+                  entryId: "prompted",
                   title: "Claude ordinary thread",
-                  prompt: createdThreadPrompt,
-                  target: {
-                    driverKind: "claudeAgent",
-                  },
+                  message: createdThreadPrompt,
+                  modelSelection: { instanceId: claudeInstanceId, model: claudeModel },
                 },
               ],
             };
-            const createCall = yield* invoke("create_threads", createInput);
+            const createCall = yield* invoke("t3_thread_launch", createInput);
             expect(createCall.isError).toBe(false);
             const created = yield* decodeCreateThreadsResult(createCall.structuredContent).pipe(
               Effect.orDie,
@@ -1836,16 +1904,10 @@ describe("orchestrator MCP toolkit", () => {
             const promptedThread = created.threads[1]!;
             expect(emptyThread).toMatchObject({
               status: "idle",
-              createdBy: "agent",
-              creationSource: "mcp",
-              providerInstanceId: codexInstanceId,
-              model: codexModel,
+              modelSelection: { instanceId: codexInstanceId, model: codexModel },
             });
             expect(promptedThread).toMatchObject({
-              createdBy: "agent",
-              creationSource: "mcp",
-              providerInstanceId: claudeInstanceId,
-              model: claudeModel,
+              modelSelection: { instanceId: claudeInstanceId, model: claudeModel },
             });
             const emptyProjection = yield* orchestrator.getThreadProjection(emptyThread.threadId);
             expect(emptyProjection.thread.lineage).toEqual({
@@ -1998,14 +2060,14 @@ describe("orchestrator MCP toolkit", () => {
               },
               {
                 targetThreadId: promptedThread.threadId,
-                targetRunId: promptedThread.runId,
+                targetRunId: null,
                 title: promptedThread.title,
                 providerInstanceId: claudeInstanceId,
                 model: claudeModel,
               },
             ]);
 
-            const repeatedCreateCall = yield* invoke("create_threads", createInput);
+            const repeatedCreateCall = yield* invoke("t3_thread_launch", createInput);
             const repeatedCreated = yield* decodeCreateThreadsResult(
               repeatedCreateCall.structuredContent,
             ).pipe(Effect.orDie);
@@ -2124,9 +2186,11 @@ describe("orchestrator MCP toolkit", () => {
               (yield* orchestrator.getThreadProjection(emptyThread.threadId)).runs,
             ).toHaveLength(1);
 
-            const activeThreadCall = yield* invoke("create_threads", {
-              threads: [{ prompt: cancellationPrompt, title: "Managed active thread" }],
-              clientRequestId: "managed-active-thread-1",
+            const activeThreadCall = yield* invoke("t3_thread_launch", {
+              threads: [
+                { entryId: "active", message: cancellationPrompt, title: "Managed active thread" },
+              ],
+              requestId: "managed-active-thread-1",
             });
             const activeThread = (yield* decodeCreateThreadsResult(
               activeThreadCall.structuredContent,
@@ -2143,7 +2207,7 @@ describe("orchestrator MCP toolkit", () => {
               type: "thread_created",
               title: "Managed active thread",
               targetThreadId: activeThread.threadId,
-              targetRunId: activeThread.runId,
+              targetRunId: null,
               targetProviderInstanceId: codexInstanceId,
               targetModel: codexModel,
             });

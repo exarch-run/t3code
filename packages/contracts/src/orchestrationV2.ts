@@ -2229,6 +2229,13 @@ export const OrchestrationV2StoredEventJson = Schema.Struct({
 });
 export type OrchestrationV2StoredEventJson = typeof OrchestrationV2StoredEventJson.Type;
 
+export const AgentThreadCreator = Schema.Struct({
+  parentThreadId: ThreadId,
+  parentRunId: RunId,
+  parentNodeId: NodeId,
+});
+export type AgentThreadCreator = typeof AgentThreadCreator.Type;
+
 export const OrchestrationV2Command = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("thread.task-progress.write"),
@@ -2240,6 +2247,7 @@ export const OrchestrationV2Command = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("thread.create"),
     ...OrchestrationV2CreationFields,
+    creator: Schema.optional(AgentThreadCreator),
     commandId: CommandId,
     threadId: ThreadId,
     projectId: ProjectId,
