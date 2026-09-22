@@ -1,7 +1,23 @@
 import { MIN_SCHEDULED_TASK_INTERVAL_MS, type ScheduledTaskSchedule } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Option from "effect/Option";
 
 const MINUTE_MS = 60_000;
+
+/** True when the runtime's zone database knows the IANA name. */
+export function isKnownTimeZone(name: string): boolean {
+  return Option.isSome(DateTime.zoneMakeNamed(name));
+}
+
+/**
+ * The engine computer's IANA zone, recorded on a fixed-time task that names
+ * none. A runtime whose local zone has no IANA name (a bare offset) records
+ * UTC so the task can still be saved and its zone read back.
+ */
+export function localTimeZoneName(): string {
+  const local = DateTime.zoneToString(DateTime.zoneMakeLocal());
+  return isKnownTimeZone(local) ? local : "UTC";
+}
 
 export function parseTimeOfDay(value: string): { hour: number; minute: number } | null {
   const match = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(value.trim());
@@ -23,10 +39,17 @@ export function nextScheduledRunAt(
 
   const time = parseTimeOfDay(schedule.timeOfDay);
   if (time === null) return null;
+  // Wall-clock parts are read in the task's stored zone, so the machine's own
+  // zone changing (travel, a container rebuild) does not move the run. A task
+  // saved before zones were recorded has none and keeps the caller's zone.
+  const origin =
+    schedule.timeZone === undefined
+      ? from
+      : Option.getOrElse(DateTime.setZoneNamed(from, schedule.timeZone), () => from);
   const weekdays =
     schedule.weekdays && schedule.weekdays.length > 0 ? new Set(schedule.weekdays) : null;
   for (let offset = 0; offset <= 7; offset += 1) {
-    const candidate = DateTime.setParts(DateTime.add(from, { days: offset }), {
+    const candidate = DateTime.setParts(DateTime.add(origin, { days: offset }), {
       hour: time.hour,
       minute: time.minute,
       second: 0,
@@ -66,6 +89,7 @@ export function isSameSchedule(a: ScheduledTaskSchedule, b: ScheduledTaskSchedul
     bTime !== null &&
     aTime.hour === bTime.hour &&
     aTime.minute === bTime.minute &&
+    a.timeZone === b.timeZone &&
     weekdayKey(a.weekdays) === weekdayKey(b.weekdays)
   );
 }

@@ -52,6 +52,9 @@ const make = Effect.gen(function* () {
     exarch_personal_setup: call("exarch_personal_setup"),
     exarch_components: call("exarch_components"),
     exarch_guide: call("exarch_guide"),
+    exarch_html_prepare: call("exarch_html_prepare"),
+    exarch_lifecycle: call("exarch_lifecycle"),
+    exarch_session: call("exarch_session"),
     // The writer is a dynamic tool (raw JSON Schema), which cannot declare
     // the invocation context as a dependency; the MCP server still provides
     // it on every call, so read it from the context without requiring it.

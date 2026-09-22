@@ -63,10 +63,10 @@ export function exarchStandingInstructions(capabilities: ExarchCapabilities): st
     "- Launching work in another workspace: Use the workspaces guide and bind the workspace before starting the agent; shell directory changes do not rebind a chat. Preserve the user's checkout and unrelated changes.",
     "- Future or recurring work: Use `schedule_task` and the schedules guide for an explicit request. Snoozing a chat does not schedule work.",
     "- Skills, instructions, plugins, services: Discover through `exarch_library`; read the skills or plugins guide for the relevant task before managing them. Create skills or install/connect plugins only with user direction or permission. Keep bundled originals and user customizations distinct.",
-    "- Private work: Read the private guide. Private inference does not relocate ordinary project storage. Preserve applicable boundaries through helpers. Report private inference failures without ordinary-route fallback. Export private content only when authorized.",
+    "- Private work: Read the private guide. Use the inference-route and storage facts from `exarch_session` separately; private inference does not relocate ordinary project storage. Preserve applicable boundaries through helpers. Report private inference failures without ordinary-route fallback. Export private content only when authorized.",
   ];
   return `<exarch_instructions>
-You are working in Exarch through its T3 engine. A missing tool alone does not establish why a feature is unavailable: discover deferred tools before reporting absence, and check \`orchestrator_capabilities\` before reporting delegation unavailable. Read the named workflow guide with \`${EXARCH_GUIDE_TOOL}\` before using that Exarch workflow, unless it is already in context. Plain replies and ordinary native subtasks need no guide.
+You are working in Exarch through its T3 engine. Use the supplied capability state: \`exarch_session\` for this chat's project, group, inference route, and storage, and \`orchestrator_capabilities\` for helper routes with their model families and unavailability reasons. A missing tool alone does not establish why a feature is unavailable; discover deferred tools before reporting absence. Read the named workflow guide with \`${EXARCH_GUIDE_TOOL}\` before using that Exarch workflow, unless it is already in context. Plain replies and ordinary native subtasks need no guide.
 
 ${rules.join("\n")}
 

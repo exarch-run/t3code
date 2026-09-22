@@ -4,19 +4,30 @@ import { Tool } from "effect/unstable/ai";
 import {
   CreateThreadsTool,
   DelegateTaskTool,
+  OrchestratorCapabilitiesTool,
   ScheduleTaskTool,
   ThreadUpdateTool,
 } from "./tools.ts";
 
 describe("orchestrator MCP tool guidance", () => {
-  it("directs subagent requests to delegation instead of ordinary threads", () => {
-    assert.include(DelegateTaskTool.description ?? "", "child agent/subagent");
-    assert.include(DelegateTaskTool.description ?? "", "cross-provider");
+  it("keeps delegation on the owner's task table and away from ordinary threads", () => {
+    assert.include(DelegateTaskTool.description ?? "", "exact taskType");
+    assert.include(DelegateTaskTool.description ?? "", "Do not supply target");
     assert.include(CreateThreadsTool.description ?? "", "not delegation");
     assert.include(CreateThreadsTool.description ?? "", "call delegate_task");
-    assert.include(DelegateTaskTool.description ?? "", "waitTimedOut");
-    assert.include(DelegateTaskTool.description ?? "", "does not cancel the child");
-    assert.include(DelegateTaskTool.description ?? "", "keep that taskId");
+    const schema = Tool.getJsonSchema(DelegateTaskTool) as {
+      readonly required?: ReadonlyArray<string>;
+    };
+    assert.notInclude(schema.required ?? [], "target");
+  });
+
+  it("tells agents capabilities report family and unavailable reasons from live settings", () => {
+    const description = OrchestratorCapabilitiesTool.description ?? "";
+    assert.include(description, "family");
+    assert.include(description, "not the driver");
+    assert.include(description, "unavailableReason");
+    assert.include(description, "without a session restart");
+    assert.include(description, "helpers-off from a missing tool");
   });
 
   it("documents wait timeout as a parent budget, not a child failure", () => {

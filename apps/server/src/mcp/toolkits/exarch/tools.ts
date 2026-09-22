@@ -67,7 +67,7 @@ export const ExarchActInput = Schema.Struct({
   }),
   entries: Schema.Array(Schema.Record(Schema.String, Schema.Unknown)).annotate({
     description:
-      'The exarch entry array: comment, question, decision, edit, reply, resolve, accept, reject, save, lead, attach, open. An edit is current wording the moment it applies, tracked and reversible, not a suggestion awaiting acceptance; the retired suggest verb is refused. Accept and reject apply only to a proposal stored before proposals moved to chat. Open, {"verb":"open","document":"/absolute/file.md"} alone, groups the document with your chat without attaching it. Each entry may add readId naming the exarch_document or exarch_resolve read its block id came from. Example: {"verb":"edit","anchor":{"document":"/absolute/file.md","block":"b1234abcd"},"match":"exact text","replace":"new text","readId":"r_…"}',
+      'The exarch entry array: comment, question, decision, edit, reply, resolve, accept, reject, save, lead, attach, open. An edit is current wording the moment it applies, tracked and reversible, not a suggestion awaiting acceptance; the retired suggest verb is refused. Accept and reject apply only to a proposal stored before proposals moved to chat. Open, {"verb":"open","document":"/absolute/file.md"} alone, groups the document with your chat without attaching it; add "group":"<group id from exarch_session>" to place it in another group the user asked for. Its outcome reports the actual placement: the group it landed in and whether it opened beside the chat or as a background tab. Each entry may add readId naming the exarch_document or exarch_resolve read its block id came from. Example: {"verb":"edit","anchor":{"document":"/absolute/file.md","block":"b1234abcd"},"match":"exact text","replace":"new text","readId":"r_…"}',
   }),
 });
 export const ExarchRenderCheckInput = Schema.Struct({
@@ -363,6 +363,78 @@ const ExarchGuideTool = exarchTool(
     .annotate(Tool.Idempotent, true),
 );
 
+export const ExarchHtmlPrepareInput = Schema.Struct({
+  path: Schema.String.annotate({
+    description:
+      "Absolute path of a self-contained .html file in this agent's environment. Exarch saves an immutable copy as a new version.",
+  }),
+  title: Schema.optional(
+    Schema.String.annotate({
+      description: "Title shown on the saved card; defaults to the page title.",
+    }),
+  ),
+});
+
+const ExarchHtmlPrepareTool = exarchTool(
+  Tool.make("exarch_html_prepare", {
+    description:
+      "Save an HTML file as an immutable version in Exarch and open that saved version in an inspection browser tab. Returns versionId, tabId for the preview_* tools, and reference, the exact path to link or attach in your completed reply so the reader gets the same saved version. Inspect the tab, then deliver the reference; a revision is a new call and a new version, and earlier replies keep theirs.",
+    parameters: ExarchHtmlPrepareInput,
+    success: ExarchResult,
+    failure: ExarchToolError,
+    dependencies,
+  })
+    .annotate(Tool.Title, "Prepare a saved HTML version")
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, false),
+);
+
+export const ExarchLifecycleInput = Schema.Struct({
+  action: Schema.Literals(["settle", "unsettle", "snooze", "archive", "restore"]).annotate({
+    description: "The lifecycle action the user explicitly asked for.",
+  }),
+  scope: Schema.Literals(["chat", "group"]).annotate({
+    description:
+      "chat acts on one chat (threadId, or this chat when omitted); group acts on every chat in that chat's Exarch group.",
+  }),
+  threadId: Schema.optional(
+    Schema.String.annotate({ description: "Target chat id; omit for the calling chat." }),
+  ),
+  until: Schema.optional(
+    Schema.String.annotate({ description: "For snooze: ISO 8601 time the chat returns." }),
+  ),
+});
+
+const ExarchLifecycleTool = exarchTool(
+  Tool.make("exarch_lifecycle", {
+    description:
+      "Settle, unsettle, snooze, archive, or restore a chat or every chat in its Exarch group, only on the user's explicit request. Returns one outcome per chat: applied, queued (the calling chat while its own turn is active; Exarch applies it when the turn ends, after rechecking eligibility), refused with the reason, or failed. Never infer settlement from finished work.",
+    parameters: ExarchLifecycleInput,
+    success: ExarchResult,
+    failure: ExarchToolError,
+    dependencies,
+  })
+    .annotate(Tool.Title, "Change chat lifecycle")
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, true)
+    .annotate(Tool.Idempotent, true),
+);
+
+const ExarchSessionTool = exarchTool(
+  Tool.make("exarch_session", {
+    description:
+      "Authoritative facts about this chat's session in Exarch: the project and whether it is vault-backed, the inference route (ordinary, zero-retention, or tinfoil) and whether it is private, where new files are stored (ordinary or vault), the chat's Exarch group with its member chats and open resources, and the app version. Read it instead of inferring privacy from model or folder names.",
+    success: ExarchResult,
+    failure: ExarchToolError,
+    dependencies,
+  })
+    .annotate(Tool.Title, "Read this chat's Exarch session facts")
+    .annotate(Tool.Readonly, true)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true),
+);
+
 /**
  * The writer takes its raw JSON Schema, the closed object the reference tool
  * advertises, so the handler validates the call itself: an Effect struct would
@@ -415,4 +487,7 @@ export const ExarchToolkit = Toolkit.make(
   ExarchProgressCardTool,
   ExarchProgressCardReadTool,
   ExarchGuideTool,
+  ExarchHtmlPrepareTool,
+  ExarchLifecycleTool,
+  ExarchSessionTool,
 );

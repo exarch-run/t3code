@@ -129,7 +129,7 @@ export const layerFromProjectRepository: Layer.Layer<
           : undefined;
         const helperInstructions = helperPolicy?.enabled
           ? [
-              "Available helper task types. Call delegate_task with the exact taskType and a self-contained task brief; the owner's policy selects the model.",
+              "Available helper task types. Call delegate_task with the exact taskType and a self-contained task brief; the owner's policy selects the model. orchestrator_capabilities shows each task type's resolved model and family, or the reason it cannot run.",
               ...helperPolicy.taskTypes.map((row) => `${row.name}: ${row.whenToUse}`),
             ].join("\n")
           : undefined;

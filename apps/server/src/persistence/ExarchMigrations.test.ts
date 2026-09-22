@@ -24,6 +24,7 @@ layer("Exarch migration ledger", (it) => {
       assert.equal(columns.filter((column) => column.name === "session_files_json").length, 1);
       const taskColumns = yield* sql<{ readonly name: string }>`PRAGMA table_info(scheduled_tasks)`;
       assert.equal(taskColumns.filter((column) => column.name === "start_clean").length, 1);
+      assert.equal(taskColumns.filter((column) => column.name === "last_outcome_kind").length, 1);
       yield* runExarchMigrations;
       assert.deepEqual(yield* sql`SELECT * FROM exarch_v2_sql_migrations`, before);
     }),

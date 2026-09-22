@@ -1,6 +1,11 @@
-import { DEFAULT_HELPER_POLICY, helperPolicyForProject } from "@t3tools/contracts";
+import {
+  allowedFamiliesForDrivers,
+  DEFAULT_HELPER_POLICY,
+  helperPolicyForProject,
+  modelFamilyFor,
+} from "@t3tools/contracts";
 import { ServerSettingsService } from "../serverSettings.ts";
-import { resolveHelperTask } from "./HelperPolicy.ts";
+import { explainHelperTask, HELPERS_OFF_REASON, resolveHelperTask } from "./HelperPolicy.ts";
 import {
   CommandId,
   isProviderAvailable,
@@ -209,9 +214,12 @@ function scheduledTaskSummary(task: ScheduledTask): OrchestratorMcpScheduledTask
     enabled: task.enabled,
     projectId: task.projectId,
     boundThreadId: task.threadId,
+    startClean: task.startClean ?? false,
     schedule: task.schedule,
     nextRunAt: task.nextRunAt,
+    lastRunAt: task.lastRunAt,
     lastRunStatus: task.lastRunStatus,
+    ...(task.lastOutcome === undefined ? {} : { lastOutcome: task.lastOutcome }),
   };
 }
 
@@ -1233,11 +1241,42 @@ const make = Effect.gen(function* () {
         const parent = yield* loadProjection(scope.threadId);
         const providers = yield* loadProviders;
         const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
-        const policy = helperPolicyForProject(yield* readHelperPolicy, parent.thread.projectId);
+        // Read on every call so a Settings change shows without a session restart.
+        const fullPolicy = yield* readHelperPolicy;
+        const policy = helperPolicyForProject(fullPolicy, parent.thread.projectId);
         return {
           taskTypes: policy.enabled
-            ? policy.taskTypes.map(({ name, whenToUse }) => ({ name, whenToUse }))
+            ? policy.taskTypes.map((row) => {
+                const resolution = explainHelperTask({
+                  policy: fullPolicy,
+                  parent,
+                  providers,
+                  availableInstanceIds: orchestrationCapableInstanceIds,
+                  taskType: row.name,
+                });
+                return {
+                  name: row.name,
+                  whenToUse: row.whenToUse,
+                  familyRule: {
+                    differentFromParent: row.familyRule.differentFromParent,
+                    allowedDrivers: row.familyRule.allowedDrivers,
+                    allowedFamilies: allowedFamiliesForDrivers(row.familyRule.allowedDrivers),
+                  },
+                  resolvedModel: resolution.ok
+                    ? {
+                        providerInstanceId: resolution.modelSelection.instanceId,
+                        model: resolution.modelSelection.model,
+                        family: resolution.family,
+                      }
+                    : null,
+                  unavailableReason: resolution.ok ? null : resolution.reason,
+                };
+              })
             : [],
+          helperTasks: {
+            enabled: policy.enabled,
+            unavailableReason: policy.enabled ? null : HELPERS_OFF_REASON,
+          },
           parentThreadId: scope.threadId,
           inheritedProviderInstanceId: parent.thread.modelSelection.instanceId,
           inheritedModel: parent.thread.modelSelection.model,
@@ -1248,28 +1287,47 @@ const make = Effect.gen(function* () {
               provider,
               orchestrationCapableInstanceIds.has(provider.instanceId),
             );
+            const models = provider.models
+              .filter((model) =>
+                policy.visibleModels.some(
+                  (visible) =>
+                    visible.instanceId === provider.instanceId && visible.model === model.slug,
+                ),
+              )
+              .map((model) => {
+                const { family, labFamily } = modelFamilyFor({
+                  driver: provider.driver,
+                  instanceId: provider.instanceId,
+                  model: model.slug,
+                });
+                return {
+                  id: model.slug,
+                  label: model.name ?? null,
+                  ...(model.capabilities?.optionDescriptors === undefined
+                    ? {}
+                    : { options: model.capabilities.optionDescriptors }),
+                  family,
+                  ...(family === "private" && labFamily !== "other" ? { labFamily } : {}),
+                };
+              });
+            const families = new Set(models.map((model) => model.family));
+            const unavailableReason = !policy.enabled
+              ? HELPERS_OFF_REASON
+              : constraints.length > 0
+                ? constraints.join(" ")
+                : models.length === 0
+                  ? `No model on provider '${provider.instanceId}' is visible to helpers in Settings.`
+                  : null;
             return {
               providerInstanceId: provider.instanceId,
               driverKind: provider.driver,
-              displayName: provider?.displayName ?? null,
-              models:
-                provider?.models
-                  .filter((model) =>
-                    policy.visibleModels.some(
-                      (visible) =>
-                        visible.instanceId === provider.instanceId && visible.model === model.slug,
-                    ),
-                  )
-                  .map((model) => ({
-                    id: model.slug,
-                    label: model.name ?? null,
-                    ...(model.capabilities?.optionDescriptors === undefined
-                      ? {}
-                      : { options: model.capabilities.optionDescriptors }),
-                  })) ?? [],
-              canRunChildTask: policy.enabled && constraints.length === 0,
-              canRunCrossProviderChildTask: policy.enabled && constraints.length === 0,
+              displayName: provider.displayName ?? null,
+              family: families.size === 1 ? [...families][0]! : null,
+              models,
+              canRunChildTask: unavailableReason === null,
+              canRunCrossProviderChildTask: unavailableReason === null,
               constraints: [...constraints],
+              unavailableReason,
             };
           }),
           features: {

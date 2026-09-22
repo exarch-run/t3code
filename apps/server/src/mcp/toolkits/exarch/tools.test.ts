@@ -58,8 +58,10 @@ it("lists the Exarch tools with described object parameters", () => {
     "exarch_components",
     "exarch_document",
     "exarch_guide",
+    "exarch_html_prepare",
     "exarch_items",
     "exarch_library",
+    "exarch_lifecycle",
     "exarch_open_documents",
     "exarch_personal_setup",
     "exarch_plugins",
@@ -68,6 +70,7 @@ it("lists the Exarch tools with described object parameters", () => {
     "exarch_remote_investigation",
     "exarch_render_check",
     "exarch_resolve",
+    "exarch_session",
   ]);
   for (const tool of Object.values(ExarchToolkit.tools)) {
     const schema = Tool.getJsonSchema(tool) as {

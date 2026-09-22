@@ -39,9 +39,9 @@ const threadMetadataDependencies = [
   ThreadMetadataMcpService,
 ];
 
-const OrchestratorCapabilitiesTool = Tool.make("orchestrator_capabilities", {
+export const OrchestratorCapabilitiesTool = Tool.make("orchestrator_capabilities", {
   description:
-    "List the V2 provider instances, models, inherited runtime settings, and app-owned orchestration features available to this T3 thread. For a separate top-level thread in a new or existing worktree, use t3_thread_launch with workspaceStrategy.",
+    "List the V2 provider instances, models, inherited runtime settings, and app-owned orchestration features available to this T3 thread. Every model reports its family (claude, gpt, grok, gemini, private, other) from the model itself, not the driver, and every provider and task type that cannot run a helper reports the reason in unavailableReason: helper tasks off in Settings, provider not signed in or unavailable, no visible model, or a family rule with no match. Each task type shows the model delegate_task would run now. Reads live Settings on every call, so a change shows on the next call without a session restart. Do not infer family from the driver or helpers-off from a missing tool. For a separate top-level thread in a new or existing worktree, use t3_thread_launch with workspaceStrategy.",
   success: OrchestratorMcpCapabilitiesResult,
   failure: OrchestratorMcpFailure,
   failureMode: "return",
@@ -93,7 +93,7 @@ const TaskCancelTool = Tool.make("task_cancel", {
 
 export const ScheduleTaskTool = Tool.make("schedule_task", {
   description:
-    "Create persistent recurring work in the app scheduler, which runs even when no turn is active. Pass schedule as a STRUCTURED OBJECT, never JSON text: {type:'interval', everyMs:3600000} means hourly; {type:'fixed_time', timeOfDay:'09:00', weekdays:[1,2,3,4,5]} means weekday mornings. By default (bindToCurrentThread=true) each run posts into THIS thread; use false only when the user wants a fresh top-level thread per run. Provider, model, and runtime settings inherit from this thread. Report the returned schedule and nextRunAt after success.",
+    "Create persistent recurring work in the app scheduler, which runs even when no turn is active. Pass schedule as a STRUCTURED OBJECT, never JSON text: {type:'interval', everyMs:3600000} means hourly; {type:'fixed_time', timeOfDay:'09:00', weekdays:[1,2,3,4,5]} means weekday mornings. A fixed_time is read in the schedule's timeZone; omit it to record the engine computer's zone, and confirm the zone from the returned schedule. By default (bindToCurrentThread=true) each run posts into THIS thread; use false only when the user wants a fresh top-level thread per run. startClean starts each run in a fresh provider session without creating a new thread. Provider, model, and access level inherit from this thread and cannot be raised here. Enforced rules: runs of one task never overlap (a run due while the previous is active is skipped and recorded, not queued); a fixed-time run missed by more than ten minutes while the engine was off is skipped and recorded, not replayed; an overdue interval task runs once; a failed run is recorded with its error and not retried. Repeating a call with the same clientRequestId returns the existing task. Report the returned schedule, its timeZone, boundThreadId, and nextRunAt after success.",
   parameters: OrchestratorMcpScheduleTaskInput,
   success: OrchestratorMcpScheduleTaskResult,
   failure: OrchestratorMcpFailure,
@@ -106,7 +106,7 @@ export const ScheduleTaskTool = Tool.make("schedule_task", {
 
 const ListScheduledTasksTool = Tool.make("list_scheduled_tasks", {
   description:
-    "List the recurring scheduled tasks in the calling thread's project, including their id, schedule, prompt, enabled state, bound thread, next run time, and last run status. Use the returned scheduledTaskId with update_scheduled_task or delete_scheduled_task.",
+    "List the recurring scheduled tasks in the calling thread's project, including their id, schedule with timeZone, prompt, enabled state, bound thread, startClean, next run time, last run time, and lastOutcome (ran, skipped_overlap, skipped_missed, or failed with its message and time). Report a skipped or failed outcome to the user; nothing retries it. Use the returned scheduledTaskId with update_scheduled_task or delete_scheduled_task.",
   success: OrchestratorMcpListScheduledTasksResult,
   failure: OrchestratorMcpFailure,
   failureMode: "return",
@@ -119,7 +119,7 @@ const ListScheduledTasksTool = Tool.make("list_scheduled_tasks", {
 
 const UpdateScheduledTaskTool = Tool.make("update_scheduled_task", {
   description:
-    "Update an existing scheduled task by scheduledTaskId (from list_scheduled_tasks). Only the provided fields change; omit a field to leave it as-is. Use enabled=false to pause a task without deleting it. Set bindToCurrentThread to move the task between posting into this thread and launching a fresh thread per run.",
+    "Update an existing scheduled task in place by scheduledTaskId (from list_scheduled_tasks); this never creates a second task. Only the provided fields change; omit a field to leave it as-is. A new schedule or timeZone recomputes nextRunAt; other edits keep the pending run. enabled=false pauses future runs only: a run already dispatched into its thread keeps going, and interrupting that thread is a separate action. Set bindToCurrentThread to move future runs between this thread and a fresh thread per run.",
   parameters: OrchestratorMcpUpdateScheduledTaskInput,
   success: OrchestratorMcpScheduleTaskResult,
   failure: OrchestratorMcpFailure,
@@ -131,7 +131,7 @@ const UpdateScheduledTaskTool = Tool.make("update_scheduled_task", {
 
 const DeleteScheduledTaskTool = Tool.make("delete_scheduled_task", {
   description:
-    "Permanently delete a scheduled task by scheduledTaskId (from list_scheduled_tasks). The task stops running immediately. To keep it but stop runs, use update_scheduled_task with enabled=false instead.",
+    "Permanently delete a scheduled task by scheduledTaskId (from list_scheduled_tasks). No further runs are scheduled; a run already dispatched into its thread keeps going and its history stays in that thread. To keep the task but pause future runs, use update_scheduled_task with enabled=false instead.",
   parameters: OrchestratorMcpDeleteScheduledTaskInput,
   success: OrchestratorMcpDeleteScheduledTaskResult,
   failure: OrchestratorMcpFailure,

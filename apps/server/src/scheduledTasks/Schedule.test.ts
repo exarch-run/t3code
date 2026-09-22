@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
+import * as Option from "effect/Option";
 
 import {
   isMissedFixedTimeRun,
@@ -51,6 +52,28 @@ describe("scheduled task schedule calculation", () => {
     expect(parts?.weekDay).toBe(1);
     expect(parts?.hour).toBe(9);
     expect(parts?.minute).toBe(0);
+  });
+
+  it("reads a fixed time in the schedule's own zone, whatever zone the instant carries", () => {
+    // 1 July 12:00 UTC seen from Los Angeles (05:00 local). 09:00 in Tokyo
+    // already passed today, so the next occurrence is 2 July 00:00 UTC.
+    const from = DateTime.setZoneNamed(
+      DateTime.makeUnsafe("2026-07-01T12:00:00.000Z"),
+      "America/Los_Angeles",
+    ).pipe(Option.getOrThrow);
+    const tokyo = nextScheduledRunAt(
+      { type: "fixed_time", timeOfDay: "09:00", timeZone: "Asia/Tokyo" },
+      from,
+    );
+    expect(tokyo ? DateTime.formatIso(DateTime.toUtc(tokyo)) : null).toBe(
+      "2026-07-02T00:00:00.000Z",
+    );
+    // Without a stored zone the instant's own zone applies: 09:00 Los Angeles
+    // is later the same day.
+    const local = nextScheduledRunAt({ type: "fixed_time", timeOfDay: "09:00" }, from);
+    expect(local ? DateTime.formatIso(DateTime.toUtc(local)) : null).toBe(
+      "2026-07-01T16:00:00.000Z",
+    );
   });
 
   it("skips fixed-time runs missed by more than the grace window", () => {
@@ -111,6 +134,13 @@ describe("scheduled task schedule calculation", () => {
       isSameSchedule(
         { type: "fixed_time", timeOfDay: "09:00" },
         { type: "fixed_time", timeOfDay: "09:30" },
+      ),
+    ).toBe(false);
+    // The same wall-clock time in another zone fires at a different instant.
+    expect(
+      isSameSchedule(
+        { type: "fixed_time", timeOfDay: "09:00", timeZone: "Asia/Tokyo" },
+        { type: "fixed_time", timeOfDay: "09:00", timeZone: "Europe/London" },
       ),
     ).toBe(false);
     expect(

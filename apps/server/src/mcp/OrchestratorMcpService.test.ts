@@ -603,22 +603,25 @@ describe("OrchestratorMcpService provider resolution", () => {
             ProviderInstanceId.make("claudeAgent"),
             ProviderInstanceId.make("pi"),
             ProviderInstanceId.make("acpRegistry"),
-            antigravityInstanceId,
           ]) {
             const entry = byId.get(instanceId);
             assert.isDefined(entry);
-            assert.isTrue(
-              entry!.canRunChildTask,
-              `expected ${instanceId} to advertise canRunChildTask`,
-            );
-            assert.isTrue(entry!.canRunCrossProviderChildTask);
-            assert.deepEqual(entry!.constraints, []);
+            assert.deepEqual(entry!.constraints, [], `expected no constraint on ${instanceId}`);
+            // Registered adapter, healthy provider, but the owner made no model visible.
+            assert.isFalse(entry!.canRunChildTask);
+            assert.include(entry!.unavailableReason ?? "", "visible to helpers");
           }
+          const antigravity = byId.get(antigravityInstanceId);
+          assert.isDefined(antigravity);
+          assert.isTrue(antigravity!.canRunChildTask);
+          assert.isTrue(antigravity!.canRunCrossProviderChildTask);
+          assert.isNull(antigravity!.unavailableReason);
 
           const disabled = byId.get(disabledAntigravityInstanceId);
           assert.isDefined(disabled);
           assert.isFalse(disabled!.canRunChildTask);
           assert.deepEqual(disabled!.constraints, ["Provider instance is disabled."]);
+          assert.equal(disabled!.unavailableReason, "Provider instance is disabled.");
 
           const fork = byId.get(forkOnlyInstanceId);
           assert.isDefined(fork);

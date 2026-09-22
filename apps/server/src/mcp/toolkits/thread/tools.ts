@@ -236,7 +236,7 @@ const ThreadSearchTool = Tool.make("t3_thread_search", {
 const ScheduledTaskRunTool = Tool.make("run_scheduled_task_now", {
   ...commandTool,
   description:
-    "Run a scheduled task in the calling project now through the existing scheduler. Requires a full-access/default caller. Each call is a new manual run; completion means dispatch/bookkeeping completed, not that the provider turn finished.",
+    "Run a scheduled task in the calling project now through the existing scheduler. Requires a full-access/default caller. Each call is a new manual run; completion means dispatch/bookkeeping completed, not that the provider turn finished. Refused while the task's previous run is still active in its thread, so runs never overlap.",
   parameters: Schema.Struct({ taskId: ScheduledTaskId }),
   success: Schema.Struct({
     taskId: ScheduledTaskId,

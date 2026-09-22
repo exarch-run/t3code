@@ -12,8 +12,10 @@ import {
   type ScheduledTaskMutationResult,
   type ScheduledTaskRunNowInput,
   type ScheduledTaskRunNowResult,
+  type ScheduledTaskRunOutcome,
   type ScheduledTaskSetEnabledInput,
   type ScheduledTaskUpsertInput,
+  type ScheduledTaskUpsertSchedule,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -32,7 +34,13 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
-import { isMissedFixedTimeRun, isSameSchedule, nextScheduledRunAt } from "./Schedule.ts";
+import {
+  isKnownTimeZone,
+  isMissedFixedTimeRun,
+  isSameSchedule,
+  localTimeZoneName,
+  nextScheduledRunAt,
+} from "./Schedule.ts";
 
 const decodeTask = Schema.decodeUnknownEffect(ScheduledTask);
 const decodeTaskId = Schema.decodeUnknownOption(ScheduledTaskId);
@@ -69,6 +77,11 @@ interface ScheduledTaskRow {
   readonly last_run_status: string;
   readonly last_run_error: string | null;
   readonly run_count: number;
+  readonly last_outcome_kind: string | null;
+  readonly last_outcome_at: string | null;
+  readonly last_outcome_message: string | null;
+  /** Chat the last dispatched run landed in; the overlap check reads its activity. */
+  readonly last_run_thread_id: string | null;
 }
 
 export class ScheduledTaskService extends Context.Service<
@@ -158,6 +171,15 @@ const decodeRow = (row: ScheduledTaskRow) =>
       lastRunStatus: row.last_run_status,
       lastRunError: row.last_run_error,
       runCount: row.run_count,
+      ...(row.last_outcome_kind === null || row.last_outcome_at === null
+        ? {}
+        : {
+            lastOutcome: {
+              kind: row.last_outcome_kind,
+              at: row.last_outcome_at,
+              message: row.last_outcome_message,
+            },
+          }),
     });
   }).pipe(
     Effect.mapError((cause) => {
@@ -244,7 +266,11 @@ export const layer = Layer.effect(
         last_run_at,
         last_run_status,
         last_run_error,
-        run_count
+        run_count,
+        last_outcome_kind,
+        last_outcome_at,
+        last_outcome_message,
+        last_run_thread_id
       FROM scheduled_tasks
       ORDER BY updated_at DESC, task_id ASC
     `;
@@ -278,7 +304,11 @@ export const layer = Layer.effect(
         last_run_at,
         last_run_status,
         last_run_error,
-        run_count
+        run_count,
+        last_outcome_kind,
+        last_outcome_at,
+        last_outcome_message,
+        last_run_thread_id
       FROM scheduled_tasks
       WHERE task_id = ${id}
     `;
@@ -419,6 +449,7 @@ export const layer = Layer.effect(
       readonly status: "succeeded" | "failed";
       readonly error: string | null;
       readonly startedAtIso: string;
+      readonly ranThreadId: string | null;
     }) =>
       sql`
         UPDATE scheduled_tasks
@@ -426,7 +457,11 @@ export const layer = Layer.effect(
             next_run_at = ${input.nextRunAtIso},
             last_run_status = ${input.status},
             last_run_error = ${input.error},
-            run_count = run_count + 1
+            run_count = run_count + 1,
+            last_outcome_kind = ${input.status === "succeeded" ? "ran" : "failed"},
+            last_outcome_at = ${input.completedAtIso},
+            last_outcome_message = ${input.error},
+            last_run_thread_id = COALESCE(${input.ranThreadId}, last_run_thread_id)
         WHERE task_id = ${input.id}
           AND last_run_status = 'running'
           AND last_run_at = ${input.startedAtIso}
@@ -456,7 +491,10 @@ export const layer = Layer.effect(
               last_run_error = ${message},
               next_run_at = ${nextRunAt(source, now)},
               updated_at = ${iso(now)},
-              run_count = run_count + 1
+              run_count = run_count + 1,
+              last_outcome_kind = 'failed',
+              last_outcome_at = ${iso(now)},
+              last_outcome_message = ${message}
           WHERE task_id = ${task.id} AND last_run_status = 'running'
         `;
         yield* notifyChanged;
@@ -468,6 +506,78 @@ export const layer = Layer.effect(
           }),
         ),
       );
+
+    /**
+     * A due run that must not fire is aimed at its next occurrence and the
+     * reason is written to the task, so the list and the UI can show it. Skips
+     * are not runs: run_count and last_run_* stay as they were.
+     */
+    const recordSkip = Effect.fn("ScheduledTaskService.recordSkip")(function* (
+      task: ScheduledTask,
+      kind: Extract<ScheduledTaskRunOutcome["kind"], "skipped_overlap" | "skipped_missed">,
+      message: string,
+      now: DateTime.DateTime,
+    ) {
+      const next = nextRunAt(task, now);
+      const nowIso = iso(now);
+      yield* Effect.logInfo("Skipping schedule task run", {
+        taskId: task.id,
+        kind,
+        dueAt: task.nextRunAt,
+        rescheduledTo: next,
+      });
+      yield* sql`
+        UPDATE scheduled_tasks
+        SET next_run_at = ${next},
+            updated_at = ${nowIso},
+            last_outcome_kind = ${kind},
+            last_outcome_at = ${nowIso},
+            last_outcome_message = ${message}
+        WHERE task_id = ${task.id}
+      `.pipe(
+        Effect.mapError((cause) =>
+          taskError("Could not record the skipped schedule task run.", { taskId: task.id, cause }),
+        ),
+      );
+      yield* notifyChanged;
+      const skipped: ScheduledTask = {
+        ...task,
+        nextRunAt: next,
+        updatedAt: nowIso,
+        lastOutcome: { kind, at: nowIso, message },
+      };
+      return skipped;
+    });
+
+    /**
+     * The chat still working on this task's previous run, or null. A bound
+     * task watches its own chat; a fresh-chat task watches the chat its last
+     * run launched. Plugin runs are awaited in-process, so the activeRuns set
+     * already covers them. A chat that cannot be read counts as idle: the
+     * dispatch itself will surface a missing bound chat as a failed run.
+     */
+    const previousRunChat = Effect.fn("ScheduledTaskService.previousRunChat")(function* (
+      task: ScheduledTask,
+    ) {
+      if (task.pluginId) return null;
+      const lastRun = task.threadId
+        ? []
+        : yield* sql<{ last_run_thread_id: string | null }>`
+            SELECT last_run_thread_id FROM scheduled_tasks WHERE task_id = ${task.id}
+          `.pipe(
+            Effect.mapError((cause) =>
+              taskError("Could not load schedule task.", { taskId: task.id, cause }),
+            ),
+          );
+      const threadId = task.threadId ?? lastRun[0]?.last_run_thread_id ?? null;
+      if (threadId === null) return null;
+      const shell = yield* Effect.exit(
+        Effect.suspend(() => threadManagement.getThreadShell(ThreadId.make(threadId))),
+      );
+      return shell._tag === "Success" && shell.value !== null && shell.value.activeRunId !== null
+        ? threadId
+        : null;
+    });
 
     const runTask = Effect.fn("ScheduledTaskService.runTask")(function* (
       task: ScheduledTask,
@@ -515,6 +625,26 @@ export const layer = Layer.effect(
           return active;
         }
 
+        // No two runs of one task overlap: a due run finding the previous
+        // run's chat still busy is skipped and recorded, never steered into
+        // or queued behind that turn. A manual run is refused instead so the
+        // caller can wait or interrupt.
+        const busyChat = yield* previousRunChat(active);
+        if (busyChat !== null) {
+          if (trigger === "manual") {
+            return yield* taskError(
+              `The previous run of this task is still active in chat ${busyChat}. Wait for it to finish or interrupt it before running the task again.`,
+              { taskId: task.id },
+            );
+          }
+          return yield* recordSkip(
+            active,
+            "skipped_overlap",
+            `Skipped the run due at ${active.nextRunAt}: the previous run is still active in chat ${busyChat}.`,
+            startedAt,
+          );
+        }
+
         yield* markRunning(active.id, startedAtIso);
         yield* notifyChanged;
 
@@ -527,7 +657,8 @@ export const layer = Layer.effect(
 
         // Effect.exit (not Effect.result) so defects and interruptions in the
         // dispatch are also captured and recorded as a failed run instead of
-        // aborting before markCompleted.
+        // aborting before markCompleted. Each branch yields the chat the run
+        // landed in, which the next due run's overlap check reads.
         const result = active.pluginId
           ? yield* Effect.exit(
               Effect.tryPromise({
@@ -537,51 +668,56 @@ export const layer = Layer.effect(
                     `Plugin ${active.pluginId} could not complete its scheduled run. Check its status in Library.`,
                     { taskId: active.id },
                   ),
-              }),
+              }).pipe(Effect.as(null)),
             )
           : active.threadId === null
             ? yield* Effect.exit(
-                threadLaunch.launch({
-                  commandId,
-                  projectId: active.projectId,
-                  title: active.title,
-                  modelSelection: active.modelSelection,
-                  runtimeMode: active.runtimeMode,
-                  interactionMode: active.interactionMode,
-                  workspaceStrategy: active.workspaceStrategy,
-                  startClean: active.startClean ?? false,
-                  initialMessage: {
+                threadLaunch
+                  .launch({
+                    commandId,
+                    projectId: active.projectId,
+                    title: active.title,
+                    modelSelection: active.modelSelection,
+                    runtimeMode: active.runtimeMode,
+                    interactionMode: active.interactionMode,
+                    workspaceStrategy: active.workspaceStrategy,
+                    startClean: active.startClean ?? false,
+                    initialMessage: {
+                      messageId,
+                      scheduledTaskId: active.id,
+                      text: prompt,
+                      startClean: active.startClean ?? false,
+                      attachments: [],
+                    },
+                    createdBy: active.createdBy,
+                    creationSource: active.creationSource,
+                  })
+                  .pipe(Effect.map((launched) => launched.threadId)),
+              )
+            : yield* Effect.exit(
+                threadManagement
+                  .sendToThread({
+                    projectId: active.projectId,
+                    commandId,
+                    threadId: ThreadId.make(active.threadId),
                     messageId,
                     scheduledTaskId: active.id,
                     text: prompt,
                     startClean: active.startClean ?? false,
                     attachments: [],
-                  },
-                  createdBy: active.createdBy,
-                  creationSource: active.creationSource,
-                }),
-              )
-            : yield* Effect.exit(
-                threadManagement.sendToThread({
-                  projectId: active.projectId,
-                  commandId,
-                  threadId: ThreadId.make(active.threadId),
-                  messageId,
-                  scheduledTaskId: active.id,
-                  text: prompt,
-                  startClean: active.startClean ?? false,
-                  attachments: [],
-                  modelSelection: active.modelSelection,
-                  runtimeMode: active.runtimeMode,
-                  interactionMode: active.interactionMode,
-                  mode: "auto",
-                  createdBy: active.createdBy,
-                  creationSource: active.creationSource,
-                }),
+                    modelSelection: active.modelSelection,
+                    runtimeMode: active.runtimeMode,
+                    interactionMode: active.interactionMode,
+                    mode: "auto",
+                    createdBy: active.createdBy,
+                    creationSource: active.creationSource,
+                  })
+                  .pipe(Effect.as(ThreadId.make(active.threadId))),
               );
 
         const completedAt = yield* localNow;
         const runSucceeded = result._tag === "Success";
+        const ranThreadId = runSucceeded ? result.value : null;
         const lastRunStatus = runSucceeded ? ("succeeded" as const) : ("failed" as const);
         const lastRunError = runSucceeded ? null : errorMessage(result.cause);
         // Re-read the task so the next run is computed from the schedule as it
@@ -596,6 +732,11 @@ export const layer = Layer.effect(
           lastRunStatus,
           lastRunError,
           runCount: scheduleSource.runCount + 1,
+          lastOutcome: {
+            kind: runSucceeded ? "ran" : "failed",
+            at: iso(completedAt),
+            message: lastRunError,
+          },
         };
         if (current !== null) {
           // startedAtIso in the guard ensures this writes only to the row this
@@ -608,6 +749,7 @@ export const layer = Layer.effect(
             status: lastRunStatus,
             error: lastRunError,
             startedAtIso,
+            ranThreadId,
           });
           yield* notifyChanged;
         }
@@ -626,28 +768,13 @@ export const layer = Layer.effect(
 
     // A due fixed-time run that is long past its slot (server was off or
     // asleep) is skipped and re-aimed at its next occurrence, not fired late.
-    const rescheduleMissedRun = Effect.fn("ScheduledTaskService.rescheduleMissedRun")(function* (
-      task: ScheduledTask,
-      now: DateTime.DateTime,
-    ) {
-      const next = nextRunAt(task, now);
-      yield* Effect.logInfo("Skipping missed schedule task run", {
-        taskId: task.id,
-        missedRunAt: task.nextRunAt,
-        rescheduledTo: next,
-      });
-      yield* sql`
-        UPDATE scheduled_tasks
-        SET next_run_at = ${next},
-            updated_at = ${iso(now)}
-        WHERE task_id = ${task.id}
-      `.pipe(
-        Effect.mapError((cause) =>
-          taskError("Could not reschedule missed schedule task run.", { taskId: task.id, cause }),
-        ),
+    const rescheduleMissedRun = (task: ScheduledTask, now: DateTime.DateTime) =>
+      recordSkip(
+        task,
+        "skipped_missed",
+        `Skipped the run due at ${task.nextRunAt}: the engine was off or asleep for more than ten minutes past it.`,
+        now,
       );
-      yield* notifyChanged;
-    });
 
     const runDueTasks = Effect.fn("ScheduledTaskService.runDueTasks")(function* () {
       const now = yield* localNow;
@@ -696,7 +823,10 @@ export const layer = Layer.effect(
                     last_run_error = 'Run was interrupted by a server restart.',
                     next_run_at = ${nextRunAt(decoded.success, now)},
                     updated_at = ${iso(now)},
-                    run_count = run_count + 1
+                    run_count = run_count + 1,
+                    last_outcome_kind = 'failed',
+                    last_outcome_at = ${iso(now)},
+                    last_outcome_message = 'Run was interrupted by a server restart.'
                 WHERE task_id IS ${row.task_id} AND last_run_status = 'running'
               `;
               return;
@@ -713,7 +843,10 @@ export const layer = Layer.effect(
               SET last_run_status = 'failed',
                   last_run_error = 'Run was interrupted by a server restart.',
                   updated_at = ${iso(now)},
-                  run_count = run_count + 1
+                  run_count = run_count + 1,
+                  last_outcome_kind = 'failed',
+                  last_outcome_at = ${iso(now)},
+                  last_outcome_message = 'Run was interrupted by a server restart.'
               WHERE task_id IS ${row.task_id} AND last_run_status = 'running'
             `;
           }),
@@ -752,6 +885,28 @@ export const layer = Layer.effect(
         }),
       );
 
+    /**
+     * A fixed-time schedule always carries the IANA zone its wall-clock time
+     * is read in: the caller's, else the zone already stored on the task, else
+     * the engine computer's at save time. Recording it keeps the run where it
+     * was when the machine's own zone changes, and lets the saved task confirm
+     * the zone to whoever scheduled it.
+     */
+    const withTimeZone = (
+      schedule: ScheduledTaskUpsertSchedule,
+      existing: ScheduledTask | null,
+    ): Effect.Effect<ScheduledTaskUpsertSchedule, ScheduledTaskError> => {
+      if (schedule.type !== "fixed_time") return Effect.succeed(schedule);
+      const timeZone =
+        schedule.timeZone ??
+        (existing?.schedule.type === "fixed_time" ? existing.schedule.timeZone : undefined) ??
+        localTimeZoneName();
+      if (!isKnownTimeZone(timeZone)) {
+        return taskError(`Time zone ${timeZone} is not a known IANA zone name.`);
+      }
+      return Effect.succeed({ ...schedule, timeZone });
+    };
+
     const upsert: ScheduledTaskService["Service"]["upsert"] = (input) =>
       Effect.gen(function* () {
         if (
@@ -777,13 +932,14 @@ export const layer = Layer.effect(
         // keep their run history, and so real load failures propagate instead
         // of silently resetting an existing row.
         const existingTask = yield* findTask(id);
+        const schedule = yield* withTimeZone(input.schedule, existingTask);
         // Keep the existing next_run_at when the schedule itself is untouched:
         // editing a title or prompt must not postpone (or resurrect) a due
         // run — only schedule/enabled changes restart the clock.
         const scheduleUnchanged =
           existingTask !== null &&
           existingTask.enabled === input.enabled &&
-          isSameSchedule(existingTask.schedule, input.schedule);
+          isSameSchedule(existingTask.schedule, schedule);
         const task: ScheduledTask = {
           id,
           title: input.title,
@@ -791,7 +947,7 @@ export const layer = Layer.effect(
           ...(input.pluginId ? { pluginId: input.pluginId } : {}),
           enabled: input.enabled,
           startClean: input.startClean ?? existingTask?.startClean ?? false,
-          schedule: input.schedule,
+          schedule,
           projectId: input.projectId,
           threadId: input.threadId ?? null,
           workspaceStrategy: input.workspaceStrategy,
@@ -804,11 +960,14 @@ export const layer = Layer.effect(
           updatedAt: iso(now),
           nextRunAt: scheduleUnchanged
             ? existingTask.nextRunAt
-            : nextRunAt({ enabled: input.enabled, schedule: input.schedule }, now),
+            : nextRunAt({ enabled: input.enabled, schedule }, now),
           lastRunAt: existingTask?.lastRunAt ?? null,
           lastRunStatus: existingTask?.lastRunStatus ?? "never",
           lastRunError: existingTask?.lastRunError ?? null,
           runCount: existingTask?.runCount ?? 0,
+          ...(existingTask?.lastOutcome === undefined
+            ? {}
+            : { lastOutcome: existingTask.lastOutcome }),
         };
         yield* saveTask(task, input.requireExisting === true);
         yield* notifyChanged;
@@ -850,11 +1009,9 @@ export const layer = Layer.effect(
     const runNow: ScheduledTaskService["Service"]["runNow"] = (input: ScheduledTaskRunNowInput) =>
       Effect.gen(function* () {
         const task = yield* loadTask(input.id);
-        const next = yield* runTask(task, "manual").pipe(
-          Effect.mapError((cause) =>
-            taskError("Could not run schedule task.", { taskId: input.id, cause }),
-          ),
-        );
+        // Refusals ("already running", "previous run still active in chat X")
+        // are the caller's answer; wrapping them would hide the reason.
+        const next = yield* runTask(task, "manual");
         return { task: next };
       });
 

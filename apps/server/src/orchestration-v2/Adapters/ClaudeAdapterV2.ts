@@ -891,6 +891,7 @@ export const CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS: ReadonlyArray<string> = [
   "mcp__t3-code__exarch_render_check",
   "mcp__t3-code__exarch_library",
   "mcp__t3-code__exarch_progress_card_read",
+  "mcp__t3-code__exarch_session",
 ];
 
 // The SDK's `allowedTools` only pre-approves tool calls; availability is the

@@ -17,6 +17,7 @@ import {
   TurnItemId,
 } from "./baseSchemas.ts";
 import {
+  ScheduledTaskRunOutcome,
   ScheduledTaskRunStatus,
   ScheduledTaskSchedule,
   ScheduledTaskUpsertSchedule,
@@ -35,6 +36,7 @@ import {
   ProviderOptionSelectionValue,
 } from "./model.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
+import { LabFamily, ModelFamily } from "./helperPolicy.ts";
 
 const OrchestratorMcpPrompt = TrimmedNonEmptyString.check(Schema.isMaxLength(120_000)).annotate({
   description: "Complete task or message text for the target agent.",
@@ -63,7 +65,7 @@ const OrchestratorMcpSchedule = Schema.Union([
   OrchestratorMcpScheduleFromJsonString,
 ]).annotate({
   description:
-    "Recurring schedule object: {type:'interval', everyMs} or {type:'fixed_time', timeOfDay, weekdays?}. Never stringify it unless the provider requires the compatibility form.",
+    "Recurring schedule object: {type:'interval', everyMs} or {type:'fixed_time', timeOfDay, weekdays?, timeZone?}. timeOfDay is read in timeZone (IANA name); omit timeZone to keep the task's stored zone, or the engine computer's zone for a new task. Never stringify it unless the provider requires the compatibility form.",
 });
 
 /**
@@ -451,28 +453,61 @@ export const OrchestratorMcpThreadInterruptResult = Schema.Struct({
 });
 export type OrchestratorMcpThreadInterruptResult = typeof OrchestratorMcpThreadInterruptResult.Type;
 
+export const OrchestratorMcpModelCapability = Schema.Struct({
+  id: Schema.String,
+  label: Schema.NullOr(Schema.String),
+  /** Model options a target may select (for example reasoning effort). */
+  options: Schema.optional(Schema.Array(ProviderOptionDescriptor)),
+  /** The family this model routes as; "private" for an Exarch private route. */
+  family: ModelFamily,
+  /** For a private route, the lab behind it when the driver or model id reveals one. */
+  labFamily: Schema.optional(LabFamily),
+});
+export type OrchestratorMcpModelCapability = typeof OrchestratorMcpModelCapability.Type;
+
 export const OrchestratorMcpProviderCapability = Schema.Struct({
   providerInstanceId: ProviderInstanceId,
   driverKind: ProviderDriverKind,
   displayName: Schema.NullOr(Schema.String),
-  models: Schema.Array(
-    Schema.Struct({
-      id: Schema.String,
-      label: Schema.NullOr(Schema.String),
-      /** Model options a target may select (for example reasoning effort). */
-      options: Schema.optional(Schema.Array(ProviderOptionDescriptor)),
-    }),
-  ),
+  /** Set when every listed model shares one family; null for a mixed or empty list. */
+  family: Schema.NullOr(ModelFamily),
+  models: Schema.Array(OrchestratorMcpModelCapability),
   canRunChildTask: Schema.Boolean,
   canRunCrossProviderChildTask: Schema.Boolean,
   constraints: Schema.Array(Schema.String),
+  /** Plain-words reason canRunChildTask is false; null when a helper can run here. */
+  unavailableReason: Schema.NullOr(Schema.String),
 });
 export type OrchestratorMcpProviderCapability = typeof OrchestratorMcpProviderCapability.Type;
 
-export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
-  taskTypes: Schema.optional(
-    Schema.Array(Schema.Struct({ name: TrimmedNonEmptyString, whenToUse: TrimmedNonEmptyString })),
+export const OrchestratorMcpTaskTypeCapability = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  whenToUse: TrimmedNonEmptyString,
+  familyRule: Schema.Struct({
+    differentFromParent: Schema.Boolean,
+    allowedDrivers: Schema.Array(ProviderDriverKind),
+    /** Families the allowed drivers name; empty means any family. */
+    allowedFamilies: Schema.Array(LabFamily),
+  }),
+  /** What delegate_task would run right now, or null with unavailableReason. */
+  resolvedModel: Schema.NullOr(
+    Schema.Struct({
+      providerInstanceId: ProviderInstanceId,
+      model: Schema.String,
+      family: ModelFamily,
+    }),
   ),
+  unavailableReason: Schema.NullOr(Schema.String),
+});
+export type OrchestratorMcpTaskTypeCapability = typeof OrchestratorMcpTaskTypeCapability.Type;
+
+export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
+  /** Empty while helper tasks are off; helperTasks.unavailableReason says so. */
+  taskTypes: Schema.optional(Schema.Array(OrchestratorMcpTaskTypeCapability)),
+  helperTasks: Schema.Struct({
+    enabled: Schema.Boolean,
+    unavailableReason: Schema.NullOr(Schema.String),
+  }),
   parentThreadId: ThreadId,
   inheritedProviderInstanceId: ProviderInstanceId,
   inheritedModel: Schema.String,
@@ -515,10 +550,15 @@ export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
   bindToCurrentThread: Schema.optional(
     Schema.Boolean.annotate({
       description:
-        "True (default) posts each run into this thread; false creates a fresh top-level thread per run.",
+        "True (default) posts each run into this thread; false creates a fresh top-level thread per run. Either way a run that comes due while this task's previous run is still active is skipped and recorded, never queued.",
     }),
   ),
-  clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
+  clientRequestId: Schema.optional(
+    OrchestratorMcpClientRequestId.annotate({
+      description:
+        "Stable key for this request. Repeating a call with the same key returns the task it already created instead of a duplicate.",
+    }),
+  ),
 });
 export type OrchestratorMcpScheduleTaskInput = typeof OrchestratorMcpScheduleTaskInput.Type;
 
@@ -529,10 +569,23 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
   prompt: Schema.String,
   enabled: Schema.Boolean,
   projectId: ProjectId,
-  boundThreadId: Schema.NullOr(ThreadId),
-  schedule: ScheduledTaskSchedule,
-  nextRunAt: Schema.NullOr(IsoDateTime),
+  boundThreadId: Schema.NullOr(ThreadId).annotate({
+    description: "Thread each run posts into; null when every run launches a fresh thread.",
+  }),
+  startClean: Schema.Boolean.annotate({
+    description: "Each run starts a fresh provider session inside its thread.",
+  }),
+  schedule: ScheduledTaskSchedule.annotate({
+    description: "The saved schedule. A fixed_time schedule reports the timeZone in use.",
+  }),
+  nextRunAt: Schema.NullOr(IsoDateTime).annotate({
+    description: "Next due time in UTC; null while the task is paused.",
+  }),
+  lastRunAt: Schema.NullOr(IsoDateTime).annotate({
+    description: "When the last run was dispatched; null before the first run.",
+  }),
   lastRunStatus: ScheduledTaskRunStatus,
+  lastOutcome: Schema.optional(ScheduledTaskRunOutcome),
 });
 export type OrchestratorMcpScheduledTask = typeof OrchestratorMcpScheduledTask.Type;
 
@@ -555,9 +608,24 @@ export const OrchestratorMcpUpdateScheduledTaskInput = Schema.Struct({
   scheduledTaskId: ScheduledTaskId,
   prompt: Schema.optional(OrchestratorMcpPrompt),
   title: Schema.optional(OrchestratorMcpTitle),
-  schedule: Schema.optional(OrchestratorMcpSchedule),
-  enabled: Schema.optional(Schema.Boolean),
-  bindToCurrentThread: Schema.optional(Schema.Boolean),
+  schedule: Schema.optional(
+    OrchestratorMcpSchedule.annotate({
+      description:
+        "Replacement schedule. Changing the cadence, time, weekdays, or timeZone recomputes nextRunAt; omitting it keeps the current schedule and the pending run.",
+    }),
+  ),
+  enabled: Schema.optional(
+    Schema.Boolean.annotate({
+      description:
+        "False pauses future runs and clears nextRunAt; a run already dispatched keeps going. True resumes from the next occurrence.",
+    }),
+  ),
+  bindToCurrentThread: Schema.optional(
+    Schema.Boolean.annotate({
+      description:
+        "True moves future runs into this thread; false makes each future run launch a fresh thread.",
+    }),
+  ),
 });
 export type OrchestratorMcpUpdateScheduledTaskInput =
   typeof OrchestratorMcpUpdateScheduledTaskInput.Type;

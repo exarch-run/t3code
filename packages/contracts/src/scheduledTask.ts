@@ -36,9 +36,15 @@ const ScheduledTaskIntervalSchedule = Schema.Struct({
   description: "Run repeatedly after a fixed number of milliseconds.",
 });
 
+/** IANA zone name. Validated against the runtime's zone database on the server. */
+const ScheduledTaskTimeZone = TrimmedNonEmptyString.annotate({
+  description:
+    "IANA time zone name such as America/Chicago in which timeOfDay is read. Omit to keep the zone already stored on this task, or to record the engine computer's zone for a new task. The saved task always reports the zone in use.",
+});
+
 const ScheduledTaskFixedTimeSchedule = Schema.Struct({
   type: Schema.Literal("fixed_time").annotate({
-    description: "Select a fixed local wall-clock time.",
+    description: "Select a fixed wall-clock time in the schedule's time zone.",
   }),
   timeOfDay: TimeOfDay,
   weekdays: Schema.optional(
@@ -50,8 +56,10 @@ const ScheduledTaskFixedTimeSchedule = Schema.Struct({
       description: "Optional weekdays; omit to run every day.",
     }),
   ),
+  timeZone: Schema.optional(ScheduledTaskTimeZone),
 }).annotate({
-  description: "Run at a fixed local wall-clock time on selected weekdays.",
+  description:
+    "Run at a fixed wall-clock time on selected weekdays, in the stored time zone. A run missed by more than ten minutes (engine off or asleep) is skipped and recorded, never replayed.",
 });
 
 /**
@@ -90,6 +98,33 @@ export type ScheduledTaskUpsertSchedule = typeof ScheduledTaskUpsertSchedule.Typ
 export const ScheduledTaskRunStatus = Schema.Literals(["never", "running", "succeeded", "failed"]);
 export type ScheduledTaskRunStatus = typeof ScheduledTaskRunStatus.Type;
 
+/**
+ * What happened the last time the task came due. `ran` means the prompt was
+ * dispatched into its chat (the provider turn may still be in progress);
+ * `skipped_overlap` means the previous run was still active; `skipped_missed`
+ * means a fixed-time slot passed while the engine was off; `failed` carries
+ * the dispatch error. Skips do not count toward runCount.
+ */
+export const ScheduledTaskRunOutcomeKind = Schema.Literals([
+  "ran",
+  "skipped_overlap",
+  "skipped_missed",
+  "failed",
+]);
+export type ScheduledTaskRunOutcomeKind = typeof ScheduledTaskRunOutcomeKind.Type;
+
+export const ScheduledTaskRunOutcome = Schema.Struct({
+  kind: ScheduledTaskRunOutcomeKind,
+  at: IsoDateTime.annotate({ description: "When the outcome was recorded." }),
+  message: Schema.NullOr(Schema.String).annotate({
+    description: "Why the run was skipped or failed; null when it ran.",
+  }),
+}).annotate({
+  description:
+    "Last outcome for the task: ran (dispatched into its chat), skipped_overlap (previous run still active, nothing queued), skipped_missed (fixed-time slot passed while the engine was off, not replayed), or failed (dispatch error, no automatic retry).",
+});
+export type ScheduledTaskRunOutcome = typeof ScheduledTaskRunOutcome.Type;
+
 export const ScheduledTask = Schema.Struct({
   id: ScheduledTaskId,
   title: TrimmedNonEmptyString,
@@ -113,6 +148,8 @@ export const ScheduledTask = Schema.Struct({
   lastRunStatus: ScheduledTaskRunStatus,
   lastRunError: Schema.NullOr(Schema.String),
   runCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  /** Absent until the task first comes due. */
+  lastOutcome: Schema.optional(ScheduledTaskRunOutcome),
 });
 export type ScheduledTask = typeof ScheduledTask.Type;
 
