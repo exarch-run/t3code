@@ -13,15 +13,42 @@ const schemaHasDescription = (schema: unknown): boolean => {
     .some((members) => members.some(schemaHasDescription));
 };
 
-it("keeps only the card tools out of Claude tool search", () => {
+it("keeps only the card tools and the guide out of Claude tool search", () => {
   for (const tool of Object.values(ExarchToolkit.tools)) {
     const meta = Context.getOrUndefined(tool.annotations, Tool.Meta);
-    expect(meta?.["anthropic/alwaysLoad"]).toBe(
-      tool.name === "exarch_progress_card" || tool.name === "exarch_progress_card_read"
+    expect(meta?.["anthropic/alwaysLoad"], tool.name).toBe(
+      tool.name === "exarch_progress_card" ||
+        tool.name === "exarch_progress_card_read" ||
+        tool.name === "exarch_guide"
         ? true
         : undefined,
     );
   }
+});
+
+it("offers one guide per fixed topic and nothing else", () => {
+  const guide = ExarchToolkit.tools.exarch_guide;
+  expect(Context.getOrUndefined(guide.annotations, Tool.Readonly)).toBe(true);
+  const schema = Tool.getJsonSchema(guide) as {
+    readonly properties?: Record<string, { readonly enum?: ReadonlyArray<string> }>;
+    readonly required?: ReadonlyArray<string>;
+  };
+  expect(schema.required).toEqual(["topic"]);
+  expect(schema.properties?.topic?.enum).toEqual([
+    "browser",
+    "rendering",
+    "documents",
+    "layout",
+    "delegation",
+    "chats",
+    "workspaces",
+    "schedules",
+    "skills",
+    "plugins",
+    "private",
+    "devices",
+  ]);
+  expect(guide.description).toContain("does not authorize");
 });
 
 it("lists the Exarch tools with described object parameters", () => {
@@ -30,6 +57,7 @@ it("lists the Exarch tools with described object parameters", () => {
     "exarch_changes",
     "exarch_components",
     "exarch_document",
+    "exarch_guide",
     "exarch_items",
     "exarch_library",
     "exarch_open_documents",
@@ -77,6 +105,28 @@ it("tells the agent what it must know at session start", () => {
   expect(ExarchToolkit.tools.exarch_open_documents.description).toContain(
     "Nothing else about them is available",
   );
+});
+
+it("teaches the current document verbs, not retired ones", () => {
+  const actSchema = Tool.getJsonSchema(ExarchToolkit.tools.exarch_act) as {
+    readonly properties?: Record<string, { readonly description?: string }>;
+  };
+  const entries = actSchema.properties?.entries?.description ?? "";
+  expect(entries).toContain("attach, open");
+  expect(entries).not.toMatch(/\bsuggest,/);
+  expect(entries).toContain("retired suggest verb is refused");
+  expect(entries).toContain("not a suggestion awaiting acceptance");
+  const items = ExarchToolkit.tools.exarch_items.description ?? "";
+  expect(items).toContain("your edits are never items");
+  expect(items).not.toContain("suggestions");
+  const changes = ExarchToolkit.tools.exarch_changes.description ?? "";
+  expect(changes).toContain("An applied edit is current wording");
+  expect(changes).not.toContain("kept or reverted");
+  expect(ExarchToolkit.tools.exarch_library.description).toContain("exarch_guide");
+  for (const tool of Object.values(ExarchToolkit.tools)) {
+    const title = Context.getOrUndefined(tool.annotations, Tool.Title) ?? "";
+    expect(title, `${tool.name} title`).not.toContain("a Exarch");
+  }
 });
 
 it("tells every model how the task card works", () => {

@@ -55,6 +55,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/unstable/process";
@@ -69,6 +70,7 @@ import {
   type PiCompactCommand,
 } from "../../provider/PiCommands.ts";
 import { mergeProviderInstanceEnvironment } from "../../provider/ProviderInstanceEnvironment.ts";
+import { buildRuntimeInstructions } from "../../provider/RuntimeInstructions.ts";
 import { IdAllocatorV2 } from "../IdAllocator.ts";
 import {
   ProviderAdapterEnsureThreadError,
@@ -113,6 +115,7 @@ import {
 import {
   buildPiRpcLaunch,
   materializePiT3McpExtension,
+  piInstructionsPath,
   resolvePiLaunchArgs,
 } from "./piT3McpInjection.ts";
 import { PI_FILE_CHANGE_TOOLS } from "./piT3McpExtensionSource.ts";
@@ -424,13 +427,41 @@ export function makePiAdapterV2(options: PiAdapterV2Options): ProviderAdapterV2S
       if (!resolvedLaunchArgs.ok) {
         return yield* protocolError(resolvedLaunchArgs.message);
       }
+      // Pi has no system-prompt field T3 can set from the outside, so the
+      // runtime block reaches the extension through a per-session file the
+      // extension reads at every agent start. A file rather than an env
+      // value: session files can approach the per-argument size limit.
+      const instructionsPath = piInstructionsPath(
+        options.serverConfig.providerStatusCacheDir,
+        input.providerSessionId,
+      );
       const launch = buildPiRpcLaunch({
         launchArgs: resolvedLaunchArgs.args,
         environment: options.environment,
         mcpSession,
         extensionPath,
+        instructionsPath,
         runtimeMode: input.runtimePolicy.runtimeMode,
       });
+      yield* provideCacheFs(
+        options.fileSystem.writeFileString(
+          instructionsPath,
+          buildRuntimeInstructions({
+            harness: "Pi",
+            model: input.modelSelection.model,
+            sessionContext: input.runtimePolicy.sessionContext,
+            capabilities: {
+              t3Mcp: launch.hasT3Mcp,
+              browser: mcpSession?.browserToolsAvailable ?? true,
+              device: mcpSession?.capabilities?.has("device") ?? false,
+            },
+          }),
+        ),
+      );
+      yield* Scope.addFinalizer(
+        scope,
+        options.fileSystem.remove(instructionsPath).pipe(Effect.ignore),
+      );
       const connection: PiRpcConnection = yield* makePiRpcConnection({
         command: options.settings.binaryPath || "pi",
         args: launch.args,

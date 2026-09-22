@@ -22,17 +22,74 @@ import {
 const isCursorAgentSdkRunnerError = Schema.is(CursorAgentSdkRunnerError);
 const isCursorReplayFrameMismatchError = Schema.is(CursorReplayFrameMismatchError);
 
+const briefedMessage = (userText: string, instructions: string) =>
+  `<t3_code_instructions>\n${instructions}\n</t3_code_instructions>\n\n<user_request>\n${userText}\n</user_request>`;
+
 describe("CursorAdapterV2 replay testkit", () => {
   const runtimeInstructions = buildRuntimeInstructions({
     harness: "Cursor",
     model: "composer-2.5",
   });
+
+  it("wraps the first run after each agent open and leaves later runs bare", () => {
+    const run = (message: string) => ({
+      type: "expect_outbound" as const,
+      frame: { type: "run.start", message, options: {} },
+    });
+    const materialized = materializeReplayTranscriptRuntimeInstructions(
+      {
+        provider: CURSOR_PROVIDER,
+        protocol: CURSOR_AGENT_SDK_PROTOCOL,
+        version: "test",
+        scenario: "runtime-instructions-once-per-open",
+        entries: [
+          {
+            type: "expect_outbound",
+            frame: { type: "agent.open", operation: "create", options: {} },
+          },
+          { type: "emit_inbound", frame: { type: "agent.opened", agentId: "agent-once" } },
+          run("/compress"),
+          run("hello"),
+          run("again"),
+          {
+            type: "expect_outbound",
+            frame: { type: "agent.open", operation: "resume", agentId: "agent-once", options: {} },
+          },
+          { type: "emit_inbound", frame: { type: "agent.opened", agentId: "agent-once" } },
+          run("after restart"),
+          run("still resumed"),
+        ],
+      },
+      { driver: CURSOR_PROVIDER, model: "composer-2.5" },
+    );
+    const messages = materialized.entries.flatMap((entry) =>
+      entry.type === "expect_outbound" &&
+      typeof entry.frame === "object" &&
+      entry.frame !== null &&
+      "message" in entry.frame
+        ? [entry.frame.message]
+        : [],
+    );
+
+    assert.deepEqual(messages, [
+      "/compress",
+      briefedMessage("hello", runtimeInstructions),
+      "again",
+      briefedMessage("after restart", runtimeInstructions),
+      "still resumed",
+    ]);
+  });
+
   for (const [name, message] of [
-    ["changed user text", `different prompt\n\n${runtimeInstructions}`],
+    ["changed user text", briefedMessage("different prompt", runtimeInstructions)],
     [
       "changed runtime context",
-      `hello\n\n${buildRuntimeInstructions({ harness: "Cursor", model: "different-model" })}`,
+      briefedMessage(
+        "hello",
+        buildRuntimeInstructions({ harness: "Cursor", model: "different-model" }),
+      ),
     ],
+    ["missing runtime context", "hello"],
   ] as const) {
     it.effect(`rejects ${name} after materializing runtime instructions`, () =>
       Effect.gen(function* () {
@@ -77,7 +134,7 @@ describe("CursorAdapterV2 replay testkit", () => {
             assert.equal(error.cause.cursor, 2);
             assert.deepEqual(error.cause.expected, {
               type: "run.start",
-              message: `hello\n\n${runtimeInstructions}`,
+              message: briefedMessage("hello", runtimeInstructions),
               options: {},
             });
             assert.deepEqual(error.cause.actual, { type: "run.start", message, options: {} });

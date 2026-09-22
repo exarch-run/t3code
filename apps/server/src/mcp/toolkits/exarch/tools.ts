@@ -67,7 +67,7 @@ export const ExarchActInput = Schema.Struct({
   }),
   entries: Schema.Array(Schema.Record(Schema.String, Schema.Unknown)).annotate({
     description:
-      'The exarch entry array: comment, question, decision, suggest, edit, reply, resolve, accept, reject, save, lead, attach. Each entry may add readId naming the exarch_document or exarch_resolve read its block id came from. Example: {"verb":"edit","anchor":{"document":"/absolute/file.md","block":"b1234abcd"},"match":"exact text","replace":"new text","readId":"r_…"}',
+      'The exarch entry array: comment, question, decision, edit, reply, resolve, accept, reject, save, lead, attach, open. An edit is current wording the moment it applies, tracked and reversible, not a suggestion awaiting acceptance; the retired suggest verb is refused. Accept and reject apply only to a proposal stored before proposals moved to chat. Open, {"verb":"open","document":"/absolute/file.md"} alone, groups the document with your chat without attaching it. Each entry may add readId naming the exarch_document or exarch_resolve read its block id came from. Example: {"verb":"edit","anchor":{"document":"/absolute/file.md","block":"b1234abcd"},"match":"exact text","replace":"new text","readId":"r_…"}',
   }),
 });
 export const ExarchRenderCheckInput = Schema.Struct({
@@ -86,7 +86,7 @@ const ExarchDocumentTool = exarchTool(
     failure: ExarchToolError,
     dependencies,
   })
-    .annotate(Tool.Title, "Read a Exarch document")
+    .annotate(Tool.Title, "Read an Exarch document")
     .annotate(Tool.Readonly, true)
     .annotate(Tool.Destructive, false)
     .annotate(Tool.Idempotent, true),
@@ -109,7 +109,7 @@ const ExarchOpenDocumentsTool = exarchTool(
 const ExarchItemsTool = exarchTool(
   Tool.make("exarch_items", {
     description:
-      "The open questions, decisions, suggestions, and edits on an attached document, with their ids and states. Item ids are what reply, resolve, accept, and reject entries anchor to.",
+      "The open questions, decisions, and comments on an attached document, with their ids and states; your edits are never items. Item ids are what reply and resolve entries anchor to, and accept or reject for a proposal stored before proposals moved to chat.",
     parameters: ExarchItemsInput,
     success: ExarchResult,
     failure: ExarchToolError,
@@ -124,7 +124,7 @@ const ExarchItemsTool = exarchTool(
 const ExarchChangesTool = exarchTool(
   Tool.make("exarch_changes", {
     description:
-      "Pending changes on an attached document with who made them, and the changes since a delivery when since names one. A change you made and the owner has not kept or reverted is still pending.",
+      "Tracked changes on an attached document with who made them, and the changes since a delivery when since names one. An applied edit is current wording; it stays listed until the owner reverts it or your next editing pass refreshes the comparison. Nothing waits for the owner to keep it.",
     parameters: ExarchChangesInput,
     success: ExarchResult,
     failure: ExarchToolError,
@@ -145,7 +145,7 @@ const ExarchResolveTool = exarchTool(
     failure: ExarchToolError,
     dependencies,
   })
-    .annotate(Tool.Title, "Resolve a quote to a Exarch block")
+    .annotate(Tool.Title, "Resolve a quote to an Exarch block")
     .annotate(Tool.Readonly, true)
     .annotate(Tool.Destructive, false)
     .annotate(Tool.Idempotent, true),
@@ -159,7 +159,7 @@ const ExarchActTool = exarchTool(
     failure: ExarchToolError,
     dependencies,
   })
-    .annotate(Tool.Title, "Act in a Exarch document")
+    .annotate(Tool.Title, "Act in an Exarch document")
     .annotate(Tool.Readonly, false)
     .annotate(Tool.Destructive, false)
     .annotate(Tool.Idempotent, true),
@@ -294,7 +294,7 @@ const ExarchPluginsTool = exarchTool(
 const ExarchLibraryTool = exarchTool(
   Tool.make("exarch_library", {
     description:
-      "Read the Library on the computer running Exarch: skills, discovered tool availability, link problems, shared instructions, and memory. Returns the same inventory and statuses the owner sees. Takes no arguments and changes no library files. File reads are reported separately from skill invocations. Use the central-library skill for owner-authorized file changes.",
+      "Read the Library on the computer running Exarch: skills, discovered tool availability, link problems, shared instructions, and memory. Returns the same inventory and statuses the owner sees. Takes no arguments and changes no library files. File reads are reported separately from skill invocations. Read the skills or plugins guide from exarch_guide before owner-authorized changes.",
     success: ExarchResult,
     failure: ExarchToolError,
     dependencies,
@@ -314,6 +314,50 @@ const ExarchComponentsTool = exarchTool(
     dependencies,
   })
     .annotate(Tool.Title, "Exarch component reference")
+    .annotate(Tool.Readonly, true)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true),
+);
+
+/** The fixed guide topics; Exarch serves one tracked file per topic and refuses any other name. */
+export const EXARCH_GUIDE_TOPICS = [
+  "browser",
+  "rendering",
+  "documents",
+  "layout",
+  "delegation",
+  "chats",
+  "workspaces",
+  "schedules",
+  "skills",
+  "plugins",
+  "private",
+  "devices",
+] as const;
+
+export const ExarchGuideInput = Schema.Struct({
+  topic: Schema.Literals(EXARCH_GUIDE_TOPICS).annotate({
+    description:
+      "The workflow to read about: browser, rendering, documents, layout, delegation, chats, workspaces, schedules, skills, plugins, private, or devices.",
+  }),
+});
+
+/**
+ * Always loaded so a fresh Claude session sees it without a tool search; the
+ * standing instructions name it before any Exarch workflow. Bodies stay on
+ * demand: one topic per call, served by Exarch from its tracked guide files.
+ */
+const ExarchGuideTool = exarchTool(
+  Tool.make("exarch_guide", {
+    description:
+      "Read Exarch's guide for one workflow before using it: the rules, limits, and recovery steps for that topic in this app version. Returns topic, markdown, and the app version. Reading a guide does not authorize the operations it describes.",
+    parameters: ExarchGuideInput,
+    success: ExarchResult,
+    failure: ExarchToolError,
+    dependencies,
+  })
+    .annotate(Tool.Title, "Read an Exarch workflow guide")
+    .annotate(Tool.Meta, { "anthropic/alwaysLoad": true })
     .annotate(Tool.Readonly, true)
     .annotate(Tool.Destructive, false)
     .annotate(Tool.Idempotent, true),
@@ -370,4 +414,5 @@ export const ExarchToolkit = Toolkit.make(
   ExarchPluginsTool,
   ExarchProgressCardTool,
   ExarchProgressCardReadTool,
+  ExarchGuideTool,
 );

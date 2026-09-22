@@ -595,11 +595,13 @@ describe("AcpAdapterV2", () => {
         idAllocator,
         serverConfig,
       });
+      const sessionFile = "Instruction transition fixture session file.";
       const policy = (interactionMode: "default" | "plan") =>
         ProviderAdapterV2RuntimePolicy.make({
           runtimeMode: "full-access",
           interactionMode,
           cwd: process.cwd(),
+          sessionContext: `# Session files\n\n${sessionFile}`,
         });
       const defaultPolicy = policy("default");
       const modelSelection = { instanceId, model: "default" } as const;
@@ -651,25 +653,40 @@ describe("AcpAdapterV2", () => {
       const command = yield* runTurn(0, defaultPolicy, "/compact");
       assert.isTrue(command.prompt.startsWith("/compact"));
       assert.notInclude(command.prompt, "<t3_code_instructions>");
+      const occurrences = (haystack: string, needle: string) => haystack.split(needle).length - 1;
       const firstDefault = yield* runTurn(1, defaultPolicy, "First default request.");
       assert.include(firstDefault.prompt, "T3 Code interaction mode: Default");
-      assert.include(firstDefault.prompt, "T3 Code collaborative browser");
-      assert.include(firstDefault.prompt, "T3 Code orchestration");
+      assert.include(firstDefault.prompt, "<runtime_info>");
+      assert.include(firstDefault.prompt, "<exarch_instructions>");
+      assert.include(firstDefault.prompt, "## ACP tool fallback");
+      assert.notInclude(
+        firstDefault.prompt,
+        "Interactive browser work",
+        "Browser access is withheld for this thread",
+      );
+      assert.equal(occurrences(firstDefault.prompt, sessionFile), 1);
+      assert.include(
+        firstDefault.prompt,
+        "<user_request>\nFirst default request.\n</user_request>",
+      );
       assert.notInclude(
         firstDefault.methods,
         "session/set_config_option",
         "Build should preserve the agent's advertised mode default",
       );
-      assert.include(
+      assert.equal(
         (yield* runTurn(2, defaultPolicy, "Second default request.")).prompt,
         "Second default request.",
+        "An unchanged session sends the bare user text with no runtime or session-file part",
       );
 
       const planPolicy = policy("plan");
       const firstPlan = yield* runTurn(3, planPolicy, "Plan this change.");
       assert.include(firstPlan.prompt, "T3 Code interaction mode: Plan");
+      assert.include(firstPlan.prompt, "<exarch_instructions>");
+      assert.equal(occurrences(firstPlan.prompt, sessionFile), 1);
       assert.include(firstPlan.methods, "session/set_config_option");
-      assert.include(
+      assert.equal(
         (yield* runTurn(4, planPolicy, "Continue planning.")).prompt,
         "Continue planning.",
       );

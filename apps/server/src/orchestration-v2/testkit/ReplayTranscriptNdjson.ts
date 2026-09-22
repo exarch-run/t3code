@@ -93,69 +93,50 @@ export function materializeReplayTranscriptWorkspace(
   };
 }
 
-/** Adds current runtime context to legacy prompt expectations, keeping outbound matching exact. */
+/**
+ * Adds the current runtime block to legacy Cursor prompt expectations, keeping
+ * outbound matching exact. The Cursor adapter briefs a native agent once per
+ * open, so the first non-slash `run.start` after each `agent.open` is wrapped
+ * the way `CursorAdapterV2.resolveUserMessage` wraps it and every later run
+ * stays the bare user text. ACP transcripts record the first prompt's block as
+ * `<any>` and later prompts bare, so they need no materialization.
+ */
 export function materializeReplayTranscriptRuntimeInstructions(
   transcript: ProviderReplayTranscript,
   runtime: { readonly driver: ProviderDriverKind; readonly model: string },
 ): ProviderReplayTranscript {
-  const harness =
-    runtime.driver === "cursor"
-      ? "Cursor"
-      : runtime.driver === "grok"
-        ? "Grok"
-        : runtime.driver === "acpRegistry"
-          ? "acpRegistry"
-          : undefined;
-  if (harness === undefined) return transcript;
-  const instructions = buildRuntimeInstructions({ harness, model: runtime.model });
+  if (runtime.driver !== "cursor") return transcript;
+  const instructions = buildRuntimeInstructions({ harness: "Cursor", model: runtime.model });
+  let awaitingBriefing = false;
 
   return {
     ...transcript,
     entries: transcript.entries.map((entry) => {
       if (entry.type !== "expect_outbound") return entry;
       const frame = entry.frame;
-      if (typeof frame !== "object" || frame === null) return entry;
-      if (
-        runtime.driver === "cursor" &&
-        "type" in frame &&
-        frame.type === "run.start" &&
-        "message" in frame &&
-        typeof frame.message === "string"
-      ) {
-        return frame.message.endsWith(instructions)
-          ? entry
-          : { ...entry, frame: { ...frame, message: `${frame.message}\n\n${instructions}` } };
+      if (typeof frame !== "object" || frame === null || !("type" in frame)) return entry;
+      if (frame.type === "agent.open") {
+        awaitingBriefing = true;
+        return entry;
       }
       if (
-        "method" in frame &&
-        frame.method === "session/prompt" &&
-        "params" in frame &&
-        typeof frame.params === "object" &&
-        frame.params !== null &&
-        "prompt" in frame.params &&
-        Array.isArray(frame.params.prompt)
+        frame.type !== "run.start" ||
+        !awaitingBriefing ||
+        !("message" in frame) ||
+        typeof frame.message !== "string" ||
+        frame.message.trimStart().startsWith("/")
       ) {
-        const prompt: ReadonlyArray<unknown> = frame.params.prompt;
-        const lastPart = prompt.at(-1);
-        if (
-          typeof lastPart === "object" &&
-          lastPart !== null &&
-          "type" in lastPart &&
-          lastPart.type === "text" &&
-          "text" in lastPart &&
-          lastPart.text === instructions
-        ) {
-          return entry;
-        }
-        return {
-          ...entry,
-          frame: {
-            ...frame,
-            params: { ...frame.params, prompt: [...prompt, { type: "text", text: instructions }] },
-          },
-        };
+        return entry;
       }
-      return entry;
+      awaitingBriefing = false;
+      if (frame.message.startsWith("<t3_code_instructions>")) return entry;
+      return {
+        ...entry,
+        frame: {
+          ...frame,
+          message: `<t3_code_instructions>\n${instructions}\n</t3_code_instructions>\n\n<user_request>\n${frame.message}\n</user_request>`,
+        },
+      };
     }),
   };
 }

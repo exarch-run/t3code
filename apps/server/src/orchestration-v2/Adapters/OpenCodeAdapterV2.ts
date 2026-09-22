@@ -64,7 +64,6 @@ import {
   summarizeNativeProtocolPayload,
 } from "../../provider/NativeProtocolLogging.ts";
 import { mergeProviderInstanceEnvironment } from "../../provider/ProviderInstanceEnvironment.ts";
-import { t3OrchestrationSystemPrompt } from "../../provider/T3OrchestrationInstructions.ts";
 import { buildRuntimeInstructions } from "../../provider/RuntimeInstructions.ts";
 import {
   OpenCodeRuntime,
@@ -1014,7 +1013,12 @@ export function makeOpenCodeAdapterV2(options: OpenCodeAdapterV2Options): Provid
 
         const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
         const hasT3Mcp = mcpSession !== undefined && !connection.external;
-        const orchestrationSystemPrompt = t3OrchestrationSystemPrompt(hasT3Mcp);
+        // Read once with the credential the MCP server was attached under.
+        const exarchCapabilities = {
+          t3Mcp: hasT3Mcp,
+          browser: mcpSession?.browserToolsAvailable ?? true,
+          device: mcpSession?.capabilities?.has("device") ?? false,
+        };
         if (hasT3Mcp) {
           yield* runOpenCodeSdk("mcp.add", () =>
             client.mcp.add({
@@ -3324,16 +3328,12 @@ export function makeOpenCodeAdapterV2(options: OpenCodeAdapterV2Options): Provid
                 );
                 return;
               }
-              const systemPrompt = [
-                orchestrationSystemPrompt,
-                buildRuntimeInstructions({
-                  harness: "OpenCode",
-                  model: turnInput.modelSelection.model,
-                  sessionContext: turnInput.runtimePolicy.sessionContext,
-                }),
-              ]
-                .filter(Boolean)
-                .join("\n\n");
+              const systemPrompt = buildRuntimeInstructions({
+                harness: "OpenCode",
+                model: turnInput.modelSelection.model,
+                sessionContext: turnInput.runtimePolicy.sessionContext,
+                capabilities: exarchCapabilities,
+              });
               const agent =
                 getModelSelectionStringOptionValue(turnInput.modelSelection, "agent") ??
                 (turnInput.runtimePolicy.interactionMode === "plan" ? "plan" : undefined);

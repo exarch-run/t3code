@@ -1,14 +1,87 @@
+// @effect-diagnostics globalConsole:off -- the section-size printout is the project's instruction size measurement and must reach the test runner's stdout.
 import { describe, expect, it } from "vite-plus/test";
-import { buildRuntimeInstructions } from "./RuntimeInstructions.ts";
+import { buildRuntimeInstructions, runtimeInstructionSections } from "./RuntimeInstructions.ts";
 import { setProgressInstructionsEnabled } from "../exarch/TaskProgressRuntime.ts";
 
+const ALL_TOOLS = { t3Mcp: true, browser: true, device: true } as const;
+const BROWSER_BULLET = "- Interactive browser work: Use Exarch's `preview_*` tools";
+const DEVICE_BULLET = "- Device work: Use Exarch's `device_*` discovery";
+
+const count = (haystack: string, needle: string): number => haystack.split(needle).length - 1;
+
 describe("buildRuntimeInstructions", () => {
-  it("requires explicit registration of every PR and stack layer", () => {
-    const instructions = buildRuntimeInstructions({ harness: "Codex" });
-    expect(instructions).toContain("When the t3-code MCP server exposes link_pull_request");
-    expect(instructions).toContain("with the full PR URL immediately after creating a PR");
-    expect(instructions).toContain("For a stack, call it for every layer");
-    expect(instructions).toContain("call list_thread_pull_requests and link any PR");
+  it("adds the standing Exarch block when the t3-code MCP server is attached", () => {
+    const instructions = buildRuntimeInstructions({ harness: "Codex", capabilities: ALL_TOOLS });
+    expect(count(instructions, "<exarch_instructions>")).toBe(1);
+    expect(count(instructions, "</exarch_instructions>")).toBe(1);
+    expect(instructions).toContain("Read the named workflow guide with `exarch_guide`");
+    expect(instructions).toContain(
+      "For PRs you create or work on, immediately register each with `link_pull_request`",
+    );
+    expect(instructions).toContain("use `list_thread_pull_requests` and register missing ones");
+    expect(instructions).toContain("Markdown absolute paths embed images/video");
+  });
+
+  it("gates the browser and device rules on the attached tool families", () => {
+    const both = buildRuntimeInstructions({ harness: "Codex", capabilities: ALL_TOOLS });
+    expect(both).toContain(BROWSER_BULLET);
+    expect(both).toContain(DEVICE_BULLET);
+    expect(both.indexOf(BROWSER_BULLET)).toBeLessThan(both.indexOf(DEVICE_BULLET));
+
+    const browserOnly = buildRuntimeInstructions({
+      harness: "Codex",
+      capabilities: { t3Mcp: true, browser: true, device: false },
+    });
+    expect(browserOnly).toContain(BROWSER_BULLET);
+    expect(browserOnly).not.toContain(DEVICE_BULLET);
+
+    const deviceOnly = buildRuntimeInstructions({
+      harness: "Codex",
+      capabilities: { t3Mcp: true, browser: false, device: true },
+    });
+    expect(deviceOnly).not.toContain(BROWSER_BULLET);
+    expect(deviceOnly).toContain(DEVICE_BULLET);
+
+    const neither = buildRuntimeInstructions({
+      harness: "Codex",
+      capabilities: { t3Mcp: true, browser: false, device: false },
+    });
+    expect(neither).toContain("<exarch_instructions>");
+    expect(neither).not.toContain("preview_*");
+    expect(neither).not.toContain("device_*");
+  });
+
+  it("leaves the standing block out without the t3-code MCP server", () => {
+    for (const instructions of [
+      buildRuntimeInstructions({ harness: "Codex" }),
+      buildRuntimeInstructions({
+        harness: "Codex",
+        capabilities: { t3Mcp: false, browser: true, device: true },
+      }),
+    ]) {
+      expect(instructions).not.toContain("exarch_instructions");
+      expect(instructions).not.toContain("link_pull_request");
+      expect(instructions).not.toContain("exarch_guide");
+      expect(instructions).not.toContain("preview_*");
+      expect(instructions).toContain("<runtime_info>");
+    }
+  });
+
+  it("orders the sections runtime info, standing block, task card, session files", () => {
+    const block = "<session_files>\n## SOUL.md\n\nBe plain.\n</session_files>";
+    const instructions = buildRuntimeInstructions({
+      harness: "Claude Code",
+      capabilities: ALL_TOOLS,
+      sessionContext: block,
+    });
+    const positions = [
+      instructions.indexOf("<runtime_info>"),
+      instructions.indexOf("<exarch_instructions>"),
+      instructions.indexOf("<task_progress>"),
+      instructions.indexOf("<session_files>"),
+    ];
+    expect(positions.every((position) => position >= 0)).toBe(true);
+    expect([...positions].sort((left, right) => left - right)).toEqual(positions);
   });
 
   it.each(["Codex", "Claude Code", "Cursor", "Grok", "OpenCode", "Antigravity"])(
@@ -23,7 +96,7 @@ describe("buildRuntimeInstructions", () => {
       );
       expect(instructions).toContain("Update or clear existing cards as needed");
       expect(instructions).not.toContain("write it when you start");
-      expect(instructions.indexOf("<pull_request_linking>")).toBeLessThan(
+      expect(instructions.indexOf("<runtime_info>")).toBeLessThan(
         instructions.indexOf("<task_progress>"),
       );
     },
@@ -58,36 +131,53 @@ describe("buildRuntimeInstructions", () => {
   });
 
   it("keeps known model and effort metadata on one line", () => {
-    expect(
-      buildRuntimeInstructions({
-        harness: "Codex",
-        model: "  custom\nmodel  ",
-        reasoningEffort: " high\n",
-      }),
-    ).toContain("through the Codex harness, as custom model with high reasoning effort.");
+    const instructions = buildRuntimeInstructions({
+      harness: "Codex",
+      model: "  custom\nmodel  ",
+      reasoningEffort: " high\n",
+    });
+    expect(instructions).toContain(
+      "you are running in Exarch through the Codex harness, as custom model with high reasoning effort.",
+    );
+    expect(instructions).not.toMatch(/<runtime_info>[^<]*\n/);
   });
 
   it.each([undefined, "", "auto", "default"])("omits unresolved model %s", (model) => {
     const instructions = buildRuntimeInstructions({ harness: "Cursor", model });
-    expect(instructions).toContain("through the Cursor harness.");
+    expect(instructions).toContain("running in Exarch through the Cursor harness.");
     expect(instructions).not.toContain("reasoning effort");
   });
 
-  it("appends the project's session files after the runtime block and nothing when there are none", () => {
+  it("appends the project's session files once after the runtime block and nothing when there are none", () => {
     const block = "<session_files>\n## SOUL.md\n\nBe plain.\n</session_files>";
     const instructions = buildRuntimeInstructions({
       harness: "Claude Code",
+      capabilities: ALL_TOOLS,
       sessionContext: block,
     });
     expect(instructions.endsWith(`\n\n${block}`)).toBe(true);
-    expect(instructions.indexOf("<runtime_info>")).toBeLessThan(
-      instructions.indexOf("<session_files>"),
-    );
+    expect(count(instructions, "<session_files>")).toBe(1);
     expect(
       buildRuntimeInstructions({ harness: "Claude Code", sessionContext: "  " }),
     ).not.toContain("session_files");
     expect(buildRuntimeInstructions({ harness: "Claude Code" })).toBe(
       buildRuntimeInstructions({ harness: "Claude Code", sessionContext: undefined }),
+    );
+  });
+
+  it("reports the size of each section for Claude Code with every tool family", () => {
+    const sections = runtimeInstructionSections({
+      harness: "Claude Code",
+      capabilities: ALL_TOOLS,
+      sessionContext: "<session_files>\n## SOUL.md\n\nBe plain.\n</session_files>",
+    });
+    expect(sections.runtimeInfo.length).toBeGreaterThan(0);
+    expect(sections.standing.length).toBeGreaterThan(0);
+    expect(sections.taskProgress.length).toBeGreaterThan(0);
+    expect(sections.sessionContext.length).toBeGreaterThan(0);
+    // The project's size measurement for the delivered instructions; keep the format stable.
+    console.info(
+      `runtime-instructions sizes: runtimeInfo=${sections.runtimeInfo.length} standing=${sections.standing.length} taskProgress=${sections.taskProgress.length} sessionContext=${sections.sessionContext.length}`,
     );
   });
 });

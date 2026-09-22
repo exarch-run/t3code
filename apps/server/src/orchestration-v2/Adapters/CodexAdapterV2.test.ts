@@ -486,14 +486,13 @@ describe("CodexAdapterV2 runtime policy", () => {
       });
 
       assert.equal(params.collaborationMode?.mode, "default");
-      assert.include(
-        params.collaborationMode?.settings.developer_instructions ?? "",
-        "Use `delegate_task`",
-      );
-      assert.include(
-        params.collaborationMode?.settings.developer_instructions ?? "",
-        "structured object, never as JSON text",
-      );
+      const instructions = params.collaborationMode?.settings.developer_instructions ?? "";
+      assert.include(instructions, "<exarch_instructions>");
+      assert.include(instructions, "link_pull_request");
+      // Browser tools default on, device tools default off for the credential.
+      assert.include(instructions, "Use Exarch's `preview_*` tools");
+      assert.notInclude(instructions, "Use Exarch's `device_*` discovery");
+      assert.notInclude(instructions, "T3 Code orchestration");
     }),
   );
 
@@ -557,14 +556,11 @@ describe("CodexAdapterV2 runtime policy", () => {
       });
 
       assert.equal(params.collaborationMode?.mode, "plan");
-      assert.include(
-        params.collaborationMode?.settings.developer_instructions ?? "",
-        "request_user_input",
-      );
-      assert.include(
-        params.collaborationMode?.settings.developer_instructions ?? "",
-        "preview_status",
-      );
+      const instructions = params.collaborationMode?.settings.developer_instructions ?? "";
+      assert.include(instructions, "request_user_input");
+      assert.include(instructions, "<exarch_instructions>");
+      assert.include(instructions, "Use Exarch's `preview_*` tools");
+      assert.notInclude(instructions, "T3 Code collaborative browser");
     }),
   );
 

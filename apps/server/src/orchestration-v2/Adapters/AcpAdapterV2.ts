@@ -6260,9 +6260,12 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
           sessionId: string,
         ) {
           const prompt: Array<EffectAcpSchema.ContentBlock> = [];
+          const mcpSession = McpProviderSession.readMcpProviderSession(turnInput.threadId);
           const instructionState = {
             interactionMode: turnInput.runtimePolicy.interactionMode,
             hasT3Mcp: acpMcpServers(turnInput.threadId).length > 0,
+            browser: mcpSession?.browserToolsAvailable ?? true,
+            device: mcpSession?.capabilities?.has("device") ?? false,
           } satisfies T3AcpInstructionState;
           const previousInstructionState = (yield* Ref.get(promptInstructionStates)).get(sessionId);
           const messageText = providerMessageTextWithAttachmentPaths({
@@ -6270,12 +6273,24 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
             attachments: turnInput.message.attachments,
             attachmentsDir: serverConfig.attachmentsDir,
           });
+          // Session files ride inside this block, so they reach the agent once
+          // per ACP session (and again on a mode or tool change), never per turn.
           const text = t3AcpPromptWithInstructions({
             prompt: messageText,
             state: instructionState,
             ...(previousInstructionState === undefined
               ? {}
               : { previousState: previousInstructionState }),
+            runtimeInstructions: buildRuntimeInstructions({
+              harness: flavor.runtimeHarness ?? driver,
+              model: turnInput.modelSelection.model,
+              sessionContext: turnInput.runtimePolicy.sessionContext,
+              capabilities: {
+                t3Mcp: instructionState.hasT3Mcp,
+                browser: instructionState.browser,
+                device: instructionState.device,
+              },
+            }),
           });
           if (text.length > 0) {
             prompt.push({ type: "text", text });
@@ -6322,14 +6337,6 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
               detail: "ACP turn requires non-empty text or attachments",
             });
           }
-          prompt.push({
-            type: "text",
-            text: buildRuntimeInstructions({
-              harness: flavor.runtimeHarness ?? driver,
-              model: turnInput.modelSelection.model,
-              sessionContext: turnInput.runtimePolicy.sessionContext,
-            }),
-          });
           return { prompt, instructionState: text === messageText ? undefined : instructionState };
         });
 

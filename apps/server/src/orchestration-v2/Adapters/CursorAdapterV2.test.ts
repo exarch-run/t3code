@@ -6,6 +6,7 @@ import {
   EnvironmentId,
   MessageId,
   NodeId,
+  type OrchestrationV2ProviderThread,
   ProjectId,
   ProviderInstanceId,
   ProviderSessionId,
@@ -25,7 +26,10 @@ import * as Stream from "effect/Stream";
 import { ServerConfig, layerTest as serverConfigLayerTest } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { IdAllocatorV2, layer as idAllocatorLayer } from "../IdAllocator.ts";
-import { ProviderAdapterV2RuntimePolicy } from "../ProviderAdapter.ts";
+import {
+  ProviderAdapterV2RuntimePolicy,
+  type ProviderAdapterV2SessionRuntime,
+} from "../ProviderAdapter.ts";
 import {
   CursorProviderCapabilitiesV2,
   cursorMcpServers,
@@ -40,7 +44,7 @@ import { isCursorCancellationError, loggedCursorAgentOptions } from "./CursorAge
 const decodeCursorSettings = Schema.decodeEffect(CursorSettings);
 
 describe("CursorAdapterV2", () => {
-  it.effect("sends discovered skills as native slash invocations with runtime instructions", () =>
+  it.effect("keeps a discovered skill's native slash invocation at the start of the message", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -155,10 +159,179 @@ describe("CursorAdapterV2", () => {
         Stream.filter((event) => event.type === "turn.terminal"),
         Stream.runHead,
       );
-      assert.lengthOf(sentMessages, 1);
-      assert.isTrue(sentMessages[0]!.startsWith("/review this with $HOME and $missing\n\n"));
-      assert.include(sentMessages[0]!, "Cursor");
-      assert.include(sentMessages[0]!, "T3 Code");
+      assert.deepEqual(sentMessages, ["/review this with $HOME and $missing"]);
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, idAllocatorLayer))),
+  );
+
+  it.effect("briefs each native agent once with the runtime block", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const workspace = yield* fileSystem.makeTempDirectoryScoped({ prefix: "cursor-v2-brief-" });
+      const sessionFile = "Briefing fixture session file.";
+      const sentMessages: Array<string> = [];
+      const opened: Array<string> = [];
+      let sendCalls = 0;
+      const instanceId = ProviderInstanceId.make("cursor");
+      const threadId = ThreadId.make("cursor-briefing-thread");
+      const modelSelection = { instanceId, model: "composer-2.5" };
+      const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd: workspace,
+        sessionContext: `# Session files\n\n${sessionFile}`,
+      });
+      McpProviderSession.setMcpProviderSession({
+        environmentId: EnvironmentId.make("environment-cursor-briefing"),
+        threadId,
+        providerSessionId: "mcp-session-cursor-briefing",
+        providerInstanceId: instanceId,
+        endpoint: "http://127.0.0.1:43123/mcp",
+        authorizationHeader: "Bearer cursor-briefing-token",
+        browserToolsAvailable: false,
+      });
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId)),
+      );
+      const adapter = makeCursorAdapterV2({
+        instanceId,
+        settings: yield* decodeCursorSettings({}),
+        environment: { HOME: workspace },
+        fileSystem,
+        path,
+        idAllocator: yield* IdAllocatorV2,
+        serverConfig: yield* ServerConfig.pipe(
+          Effect.provide(serverConfigLayerTest(workspace, { prefix: "cursor-v2-brief-config-" })),
+        ),
+        runner: {
+          assertComplete: Effect.void,
+          open: (openInput) =>
+            Effect.sync(() => {
+              opened.push(openInput.operation);
+              return {
+                agentId: "native-cursor-briefing",
+                listMessages: Effect.succeed([]),
+                close: Effect.void,
+                send: (sendInput) =>
+                  Effect.sync(() => {
+                    sendCalls += 1;
+                    sentMessages.push(
+                      typeof sendInput.message === "string"
+                        ? sendInput.message
+                        : sendInput.message.text,
+                    );
+                    const runId = `native-cursor-brief-run-${sendCalls}`;
+                    return {
+                      agentId: "native-cursor-briefing",
+                      runId,
+                      wait: Effect.succeed({
+                        id: runId,
+                        requestId: `native-request-${sendCalls}`,
+                        status: "finished" as const,
+                        model: { id: "composer-2.5" },
+                        durationMs: 1,
+                      }),
+                      cancel: Effect.void,
+                    };
+                  }),
+              };
+            }),
+        },
+      });
+      const now = yield* DateTime.now;
+      const runTurn = Effect.fnUntraced(function* (
+        runtime: ProviderAdapterV2SessionRuntime,
+        providerThread: OrchestrationV2ProviderThread,
+        ordinal: number,
+        text: string,
+      ) {
+        yield* runtime.startTurn({
+          threadId,
+          providerThread,
+          modelSelection,
+          runtimePolicy,
+          runId: RunId.make(`cursor-brief-run-${ordinal}`),
+          runOrdinal: ordinal,
+          providerTurnOrdinal: ordinal,
+          attemptId: RunAttemptId.make(`cursor-brief-attempt-${ordinal}`),
+          rootNodeId: NodeId.make(`cursor-brief-root-${ordinal}`),
+          appThread: {
+            id: threadId,
+            projectId: ProjectId.make("cursor-brief-project"),
+            createdBy: "user",
+            creationSource: "web",
+            title: "Cursor briefing",
+            providerInstanceId: instanceId,
+            modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            activeProviderThreadId: providerThread.id,
+            lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+            forkedFrom: null,
+            createdAt: now,
+            updatedAt: now,
+            archivedAt: null,
+            settledOverride: null,
+            settledAt: null,
+            lastVisitedAt: null,
+            deletedAt: null,
+          },
+          message: {
+            messageId: MessageId.make(`cursor-brief-message-${ordinal}`),
+            createdBy: "user",
+            creationSource: "web",
+            text,
+            attachments: [],
+          },
+        });
+        yield* runtime.events.pipe(
+          Stream.filter((event) => event.type === "turn.terminal"),
+          Stream.runHead,
+        );
+        return sentMessages[sentMessages.length - 1]!;
+      });
+      const occurrences = (haystack: string, needle: string) => haystack.split(needle).length - 1;
+
+      const runtime = yield* adapter.openSession({
+        threadId,
+        providerSessionId: ProviderSessionId.make("cursor-brief-session"),
+        modelSelection,
+        runtimePolicy,
+      });
+      const providerThread = yield* runtime.ensureThread({
+        threadId,
+        modelSelection,
+        runtimePolicy,
+      });
+
+      const creating = yield* runTurn(runtime, providerThread, 1, "hello");
+      assert.isTrue(creating.startsWith("<t3_code_instructions>\n<runtime_info>"));
+      assert.include(creating, "running in Exarch through the Cursor harness");
+      assert.include(creating, "<exarch_instructions>");
+      assert.notInclude(creating, "Interactive browser work");
+      assert.equal(occurrences(creating, sessionFile), 1);
+      assert.isTrue(
+        creating.endsWith("</t3_code_instructions>\n\n<user_request>\nhello\n</user_request>"),
+      );
+
+      assert.equal(yield* runTurn(runtime, providerThread, 2, "again"), "again");
+
+      // A fresh adapter session no longer remembers the agent, as after a restart.
+      const resumed = yield* adapter.openSession({
+        threadId,
+        providerSessionId: ProviderSessionId.make("cursor-brief-session-2"),
+        modelSelection,
+        runtimePolicy,
+      });
+      const resumedThread = yield* resumed.resumeThread({ providerThread });
+      const afterRestart = yield* runTurn(resumed, resumedThread, 3, "after restart");
+      assert.isTrue(afterRestart.startsWith("<t3_code_instructions>\n<runtime_info>"));
+      assert.equal(occurrences(afterRestart, sessionFile), 1);
+      assert.isTrue(afterRestart.endsWith("<user_request>\nafter restart\n</user_request>"));
+      assert.equal(yield* runTurn(resumed, resumedThread, 4, "still resumed"), "still resumed");
+      assert.deepEqual(opened, ["create", "resume"]);
     }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, idAllocatorLayer))),
   );
 

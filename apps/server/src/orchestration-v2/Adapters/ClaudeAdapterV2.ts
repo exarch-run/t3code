@@ -103,7 +103,6 @@ import {
 } from "../../provider/Layers/claudeUsageLimits.ts";
 import type { ServerProviderShape } from "../../provider/Services/ServerProvider.ts";
 import { mergeProviderInstanceEnvironment } from "../../provider/ProviderInstanceEnvironment.ts";
-import { T3_CODE_ORCHESTRATION_INSTRUCTIONS } from "../../provider/T3OrchestrationInstructions.ts";
 import { claudeTaskProgressHooks } from "../../exarch/TaskProgressClaude.ts";
 import { claudeTaskProgressOwnershipHooks } from "../../exarch/TaskProgressOwnership.ts";
 import { buildRuntimeInstructions } from "../../provider/RuntimeInstructions.ts";
@@ -733,6 +732,12 @@ export function makeClaudeQueryOptions(input: {
   readonly sdkSettings?: string | ClaudeSdkSettings;
   readonly environment?: NodeJS.ProcessEnv;
   readonly mcpServers?: ClaudeQueryOptions["mcpServers"];
+  /**
+   * Which `t3-code` tool families the attached MCP credential grants. Only
+   * read when `mcpServers` is set; the standing Exarch block describes no
+   * tool the turn cannot call.
+   */
+  readonly exarchTools?: { readonly browser: boolean; readonly device: boolean };
   readonly tools?: ClaudeAgentSdkQueryTools;
   readonly allowedTools?: ReadonlyArray<string>;
   readonly disallowedTools?: ReadonlyArray<string>;
@@ -827,9 +832,19 @@ export function makeClaudeQueryOptions(input: {
     systemPrompt: {
       type: "preset" as const,
       preset: "claude_code" as const,
-      append:
-        buildRuntimeInstructions({ harness: "Claude Code", sessionContext: input.sessionContext }) +
-        (input.mcpServers === undefined ? "" : T3_CODE_ORCHESTRATION_INSTRUCTIONS),
+      append: buildRuntimeInstructions({
+        harness: "Claude Code",
+        sessionContext: input.sessionContext,
+        ...(input.mcpServers === undefined
+          ? {}
+          : {
+              capabilities: {
+                t3Mcp: true,
+                browser: input.exarchTools?.browser ?? true,
+                device: input.exarchTools?.device ?? false,
+              },
+            }),
+      }),
     },
     ...(Object.keys(extraArgs).length === 0 ? {} : { extraArgs }),
   };
@@ -864,6 +879,18 @@ export const CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS: ReadonlyArray<string> = [
   "mcp__t3-code__t3_environment_read",
   "mcp__t3-code__t3_queue_list",
   "mcp__t3-code__t3_queue_read",
+  // Exarch's read-only tools: a Plan or read-only session still reads
+  // documents, the component reference, the Library, and the guides.
+  "mcp__t3-code__exarch_guide",
+  "mcp__t3-code__exarch_components",
+  "mcp__t3-code__exarch_document",
+  "mcp__t3-code__exarch_open_documents",
+  "mcp__t3-code__exarch_items",
+  "mcp__t3-code__exarch_changes",
+  "mcp__t3-code__exarch_resolve",
+  "mcp__t3-code__exarch_render_check",
+  "mcp__t3-code__exarch_library",
+  "mcp__t3-code__exarch_progress_card_read",
 ];
 
 // The SDK's `allowedTools` only pre-approves tool calls; availability is the
@@ -5686,6 +5713,7 @@ export function makeClaudeAdapterV2(
               : { allowedTools: queryPolicy.allowedTools }),
           });
           const queryPolicyKey = claudeEffectiveQueryPolicyKey(queryPolicy, mcpOverrides);
+          const mcpSession = McpProviderSession.readMcpProviderSession(turnInput.threadId);
           const compiledSelection = compileClaudeModelSelection(turnInput.modelSelection);
           const resumeSessionAt = yield* getNativeConversationHeadId(turnInput.providerThread);
           const existing = yield* Ref.get(queryContext);
@@ -5740,6 +5768,10 @@ export function makeClaudeAdapterV2(
                 environment: adapterOptions.environment,
                 tools: queryPolicy.tools ?? CLAUDE_CODE_PRESET_TOOLS,
                 ...mcpOverrides,
+                exarchTools: {
+                  browser: mcpSession?.browserToolsAvailable ?? true,
+                  device: mcpSession?.capabilities?.has("device") ?? false,
+                },
                 permissionMode: queryPolicy.permissionMode,
                 ...(queryPolicy.allowDangerouslySkipPermissions === undefined
                   ? {}

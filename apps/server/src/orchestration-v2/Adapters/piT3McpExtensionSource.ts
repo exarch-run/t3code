@@ -8,13 +8,17 @@
  * Do not import t3code modules from the string body. The Pi process resolves
  * `@earendil-works/pi-coding-agent` and `typebox` from the user's pi install.
  */
-import { T3_CODE_ORCHESTRATION_INSTRUCTIONS } from "../../provider/T3OrchestrationInstructions.ts";
-
 export const PI_T3_MCP_EXTENSION_FILENAME = "pi-t3-mcp-extension.ts";
 
 export const T3_MCP_URL_ENV = "T3_MCP_URL";
 export const T3_MCP_BEARER_ENV = "T3_MCP_BEARER_TOKEN";
 export const T3_PI_RUNTIME_MODE_ENV = "T3_PI_RUNTIME_MODE";
+/**
+ * Path of the per-session runtime instructions file the adapter writes at
+ * open. A file rather than an env value: session files can approach the
+ * per-argument size limit, and the extension reads it on every agent start.
+ */
+export const T3_PI_INSTRUCTIONS_PATH_ENV = "T3_PI_INSTRUCTIONS_PATH";
 
 /**
  * Pi tools whose confirmations the bridge raises as file-change approvals.
@@ -24,12 +28,13 @@ export const PI_FILE_CHANGE_TOOLS = ["edit", "write"] as const;
 
 export const PI_T3_MCP_EXTENSION_SOURCE = `\
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { readFileSync } from "node:fs";
 import { Type } from "typebox";
 
 const URL_ENV = ${JSON.stringify(T3_MCP_URL_ENV)};
 const TOKEN_ENV = ${JSON.stringify(T3_MCP_BEARER_ENV)};
 const RUNTIME_MODE_ENV = ${JSON.stringify(T3_PI_RUNTIME_MODE_ENV)};
-const ORCHESTRATION_INSTRUCTIONS = ${JSON.stringify(T3_CODE_ORCHESTRATION_INSTRUCTIONS.trim())};
+const INSTRUCTIONS_PATH_ENV = ${JSON.stringify(T3_PI_INSTRUCTIONS_PATH_ENV)};
 const PROTOCOL = "2025-06-18";
 const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls"]);
 const FILE_CHANGE_TOOLS = new Set(${JSON.stringify(PI_FILE_CHANGE_TOOLS)});
@@ -61,6 +66,20 @@ function runtimeMode(): RuntimeMode {
     value === "full-access"
     ? value
     : "full-access";
+}
+
+/**
+ * The runtime block T3 wrote for this session. Empty when T3 did not provide
+ * one or the file cannot be read; the agent must still start either way.
+ */
+function runtimeInstructions(): string {
+  const path = env(INSTRUCTIONS_PATH_ENV);
+  if (path === undefined) return "";
+  try {
+    return readFileSync(path, "utf8").trim();
+  } catch {
+    return "";
+  }
 }
 
 function toolInputSummary(input: unknown): string {
@@ -246,6 +265,15 @@ export default async function t3McpExtension(pi: ExtensionAPI) {
     }
   });
 
+  // Deliver T3's runtime block through pi's real system-prompt channel.
+  // Wrapping the first user message instead would stop it from starting
+  // with "/" and silently break slash-command expansion.
+  pi.on("before_agent_start", (event) => {
+    const instructions = runtimeInstructions();
+    if (instructions.length === 0) return;
+    return { systemPrompt: event.systemPrompt + "\\n\\n" + instructions };
+  });
+
   const endpoint = env(URL_ENV);
   const token = env(TOKEN_ENV);
   if (endpoint === undefined || token === undefined) {
@@ -317,12 +345,5 @@ export default async function t3McpExtension(pi: ExtensionAPI) {
       ctx.ui.notify(\`t3-code MCP unavailable: \${message}\`, "warning");
     }
   });
-
-  // Deliver orchestration guidance through pi's real system-prompt channel.
-  // Wrapping the first user message instead would stop it from starting
-  // with "/" and silently break slash-command expansion.
-  pi.on("before_agent_start", (event) => ({
-    systemPrompt: event.systemPrompt + "\\n\\n" + ORCHESTRATION_INSTRUCTIONS,
-  }));
 }
 `;

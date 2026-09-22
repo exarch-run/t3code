@@ -8,11 +8,13 @@ import {
   PI_T3_MCP_EXTENSION_FILENAME,
   T3_MCP_BEARER_ENV,
   T3_MCP_URL_ENV,
+  T3_PI_INSTRUCTIONS_PATH_ENV,
   T3_PI_RUNTIME_MODE_ENV,
 } from "./piT3McpExtensionSource.ts";
 import {
   buildPiRpcLaunch,
   materializePiT3McpExtension,
+  piInstructionsPath,
   resolvePiLaunchArgs,
 } from "./piT3McpInjection.ts";
 
@@ -40,6 +42,7 @@ describe("pi T3 MCP injection", () => {
       environment: { PATH: "/usr/bin" },
       mcpSession,
       extensionPath: "/tmp/cache/pi-t3-mcp-extension.ts",
+      instructionsPath: "/tmp/cache/pi-t3-instructions-session.md",
       runtimeMode: "approval-required",
     });
     assert.deepEqual(launch.args, [
@@ -65,12 +68,17 @@ describe("pi T3 MCP injection", () => {
     assert.equal(launch.env[T3_MCP_URL_ENV], "http://127.0.0.1:43123/mcp");
     assert.equal(launch.env[T3_MCP_BEARER_ENV], "secret-pi-token");
     assert.equal(launch.env[T3_PI_RUNTIME_MODE_ENV], "approval-required");
+    assert.equal(
+      launch.env[T3_PI_INSTRUCTIONS_PATH_ENV],
+      "/tmp/cache/pi-t3-instructions-session.md",
+    );
 
     const permissionOnly = buildPiRpcLaunch({
       launchArgs: [],
       environment: {
         [T3_MCP_URL_ENV]: "http://127.0.0.1:9999/stale",
         [T3_MCP_BEARER_ENV]: "stale-token",
+        [T3_PI_INSTRUCTIONS_PATH_ENV]: "/stale/instructions.md",
       },
       mcpSession: undefined,
       extensionPath: "/tmp/cache/pi-t3-mcp-extension.ts",
@@ -85,7 +93,19 @@ describe("pi T3 MCP injection", () => {
     assert.isFalse(permissionOnly.hasT3Mcp);
     assert.isUndefined(permissionOnly.env[T3_MCP_URL_ENV]);
     assert.isUndefined(permissionOnly.env[T3_MCP_BEARER_ENV]);
+    assert.isUndefined(permissionOnly.env[T3_PI_INSTRUCTIONS_PATH_ENV]);
     assert.equal(permissionOnly.env[T3_PI_RUNTIME_MODE_ENV], "auto-accept-edits");
+  });
+
+  it("keys the instructions file by provider session inside the cache dir", () => {
+    assert.equal(
+      piInstructionsPath("/tmp/cache", "provider-session/pi:1"),
+      "/tmp/cache/pi-t3-instructions-provider-session_pi_1.md",
+    );
+    assert.notEqual(
+      piInstructionsPath("/tmp/cache", "session-a"),
+      piInstructionsPath("/tmp/cache", "session-b"),
+    );
   });
 
   it("falls back to Pi's first supported mode for legacy auto threads", () => {
@@ -114,6 +134,7 @@ describe("pi T3 MCP injection", () => {
       environment: {},
       mcpSession,
       extensionPath: "/tmp/cache/pi-t3-mcp-extension.ts",
+      instructionsPath: "/tmp/cache/pi-t3-instructions-session.md",
       ephemeral: true,
       disableExtensions: true,
       disableTools: true,
@@ -128,6 +149,8 @@ describe("pi T3 MCP injection", () => {
       "--no-tools",
     ]);
     assert.isFalse(launch.hasT3Mcp);
+    // No extension means nothing would read the file; keep the env clean.
+    assert.isUndefined(launch.env[T3_PI_INSTRUCTIONS_PATH_ENV]);
     assert.deepInclude(resolvePiLaunchArgs("--mode text"), {
       ok: false,
       message: "Pi launch argument '--mode' is controlled by T3 Code and cannot be overridden.",

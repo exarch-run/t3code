@@ -50,8 +50,10 @@ import {
   rewriteCursorSkillMentions,
 } from "../../provider/Drivers/CursorSkills.ts";
 import { mergeProviderInstanceEnvironment } from "../../provider/ProviderInstanceEnvironment.ts";
-import { t3OrchestrationPromptForFirstRun } from "../../provider/T3OrchestrationInstructions.ts";
-import { buildRuntimeInstructions } from "../../provider/RuntimeInstructions.ts";
+import {
+  buildRuntimeInstructions,
+  type ExarchCapabilities,
+} from "../../provider/RuntimeInstructions.ts";
 import { IdAllocatorV2, type IdAllocatorV2Shape } from "../IdAllocator.ts";
 import { makeProviderFailure } from "../ProviderFailure.ts";
 import { turnScopedSelectionTransition } from "../ProviderSelectionTransition.ts";
@@ -238,6 +240,16 @@ export function cursorMcpServers(threadId: ThreadId): Record<string, McpServerCo
         Authorization: session.authorizationHeader,
       },
     },
+  };
+}
+
+/** Which Exarch tool families the attached `t3-code` server grants this thread. */
+function cursorExarchCapabilities(threadId: ThreadId): ExarchCapabilities {
+  const session = McpProviderSession.readMcpProviderSession(threadId);
+  return {
+    t3Mcp: cursorMcpServers(threadId) !== undefined,
+    browser: session?.browserToolsAvailable ?? true,
+    device: session?.capabilities?.has("device") ?? false,
   };
 }
 
@@ -850,6 +862,12 @@ interface ActiveCursorTurn {
 interface CursorLiveAgent {
   readonly nativeThreadId: string;
   readonly session: CursorAgentSdkSession;
+  /**
+   * Whether this adapter session has already delivered the runtime block to
+   * the native agent. Reset on every open, so an agent the adapter forgot
+   * (restart, worktree move) is briefed again on its next turn.
+   */
+  readonly instructed: boolean;
 }
 
 export interface CursorAdapterV2Options {
@@ -2054,18 +2072,27 @@ export function makeCursorAdapterV2(
           const next = {
             nativeThreadId: sdkSession.agentId,
             session: sdkSession,
+            instructed: false,
           } satisfies CursorLiveAgent;
           yield* Ref.set(liveAgent, next);
           return next;
         });
 
         let cursorSkillNames: ReadonlySet<string> | undefined;
+        /**
+         * The outbound user message. The runtime block rides inside the first
+         * non-slash message a native agent receives from this adapter session
+         * (`agent.instructed` false); every later turn is the bare user text.
+         * A native slash command stays at the start and keeps the block for
+         * the next ordinary turn.
+         */
         const resolveUserMessage = Effect.fnUntraced(function* (
           turnInput: ProviderAdapterV2TurnInput,
+          options: { readonly includeRuntimeInstructions: boolean },
         ) {
           const rawText = turnInput.message.text;
           if (rawText.trim() === "/compress" && turnInput.message.attachments.length === 0) {
-            return "/compress";
+            return { message: "/compress", carriesRuntimeInstructions: false };
           }
           if (hasCursorSkillMention(rawText) && cursorSkillNames === undefined) {
             const skills = yield* discoverCursorSkills(
@@ -2081,17 +2108,13 @@ export function makeCursorAdapterV2(
                 .map((skill) => skill.name),
             );
           }
-          const userText = t3OrchestrationPromptForFirstRun({
-            prompt: providerMessageTextWithAttachmentPaths({
-              text:
-                cursorSkillNames === undefined
-                  ? rawText
-                  : rewriteCursorSkillMentions(rawText, cursorSkillNames),
-              attachments: turnInput.message.attachments,
-              attachmentsDir: serverConfig.attachmentsDir,
-            }),
-            runOrdinal: turnInput.runOrdinal,
-            hasT3Mcp: cursorMcpServers(turnInput.threadId) !== undefined,
+          const userText = providerMessageTextWithAttachmentPaths({
+            text:
+              cursorSkillNames === undefined
+                ? rawText
+                : rewriteCursorSkillMentions(rawText, cursorSkillNames),
+            attachments: turnInput.message.attachments,
+            attachmentsDir: serverConfig.attachmentsDir,
           });
           const images = yield* Effect.forEach(
             turnInput.message.attachments.filter(isProviderNativeImageAttachment),
@@ -2130,13 +2153,24 @@ export function makeCursorAdapterV2(
               detail: "Cursor turn requires non-empty text or attachments.",
             });
           }
-          const text = `${userText}\n\n${buildRuntimeInstructions({ harness: "Cursor", model: turnInput.modelSelection.model, sessionContext: turnInput.runtimePolicy.sessionContext })}`;
-          return images.length === 0
-            ? text
-            : ({
-                text,
-                images,
-              } satisfies SDKUserMessage);
+          const carriesRuntimeInstructions =
+            options.includeRuntimeInstructions && !userText.trimStart().startsWith("/");
+          const text = carriesRuntimeInstructions
+            ? `<t3_code_instructions>\n${buildRuntimeInstructions({
+                harness: "Cursor",
+                model: turnInput.modelSelection.model,
+                sessionContext: turnInput.runtimePolicy.sessionContext,
+                capabilities: cursorExarchCapabilities(turnInput.threadId),
+              })}\n</t3_code_instructions>\n\n<user_request>\n${userText}\n</user_request>`
+            : userText;
+          const message =
+            images.length === 0
+              ? text
+              : ({
+                  text,
+                  images,
+                } satisfies SDKUserMessage);
+          return { message, carriesRuntimeInstructions };
         });
 
         const startTurn = Effect.fn("CursorAdapterV2.startTurn")(
@@ -2156,7 +2190,9 @@ export function makeCursorAdapterV2(
               modelSelection: turnInput.modelSelection,
               runtimePolicy: turnInput.runtimePolicy,
             });
-            const message = yield* resolveUserMessage(turnInput);
+            const { message, carriesRuntimeInstructions } = yield* resolveUserMessage(turnInput, {
+              includeRuntimeInstructions: !agent.instructed,
+            });
             const mcpServers = cursorMcpServers(turnInput.threadId);
             const pendingUpdates: Array<InteractionUpdate> = [];
             let context: ActiveCursorTurn | null = null;
@@ -2176,6 +2212,13 @@ export function makeCursorAdapterV2(
                 return handleInteractionUpdate(context, update);
               },
             });
+            if (carriesRuntimeInstructions) {
+              yield* Ref.update(liveAgent, (current) =>
+                current !== null && current.nativeThreadId === agent.nativeThreadId
+                  ? { ...current, instructed: true }
+                  : current,
+              );
+            }
             const startedAt = yield* DateTime.now;
             const completed = yield* Deferred.make<void, never>();
             const providerTurnId = idAllocator.derive.providerTurn({

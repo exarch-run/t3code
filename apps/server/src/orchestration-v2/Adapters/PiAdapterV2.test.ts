@@ -474,6 +474,71 @@ describe("PiAdapterV2", () => {
     ),
   );
 
+  it.effect("writes the runtime block to a per-session file the launch points at", () =>
+    Effect.gen(function* () {
+      McpProviderSession.setMcpProviderSession({
+        environmentId: EnvironmentId.make("environment-pi-mcp"),
+        threadId: THREAD_ID,
+        providerSessionId: "mcp-session-pi",
+        providerInstanceId: PI_INSTANCE_ID,
+        endpoint: "http://127.0.0.1:43123/mcp",
+        authorizationHeader: "Bearer secret-pi-token",
+        browserToolsAvailable: false,
+        capabilities: new Set(["device"]),
+      });
+      const fs = yield* FileSystem.FileSystem;
+      const serverConfig = yield* ServerConfig;
+      const fake = yield* makeFakePi;
+      const adapter = yield* makeAdapter(fake);
+      const sessionContext = "<session_files>\n# AGENTS.md\nProject rules.\n</session_files>";
+      const instructionsPath = yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* adapter.openSession({
+            threadId: THREAD_ID,
+            providerSessionId: SESSION_ID,
+            modelSelection: modelSelection("anthropic/claude-sonnet"),
+            runtimePolicy: ProviderAdapterV2RuntimePolicy.make({
+              ...runtimePolicy,
+              sessionContext,
+            }),
+          });
+          const path = fake.lastSpawn().env.T3_PI_INSTRUCTIONS_PATH;
+          assert.isDefined(path);
+          assert.isTrue(path!.startsWith(serverConfig.providerStatusCacheDir));
+          assert.include(path, SESSION_ID);
+          const text = yield* fs.readFileString(path!);
+          assert.include(text, "through the Pi harness, as anthropic/claude-sonnet");
+          assert.include(text, "<task_progress>");
+          // Capability-bound rules follow the credential, not a setting.
+          assert.include(text, "`device_*`");
+          assert.notInclude(text, "`preview_*`");
+          assert.equal(text.split("<exarch_instructions>").length - 1, 1);
+          assert.equal(text.split(sessionContext).length - 1, 1);
+          return path!;
+        }),
+      );
+      assert.isFalse(yield* fs.exists(instructionsPath));
+    }).pipe(
+      Effect.ensuring(Effect.sync(() => McpProviderSession.clearMcpProviderSession(THREAD_ID))),
+      Effect.scoped,
+      Effect.provide(testLayer),
+    ),
+  );
+
+  it.effect("keeps the runtime block but no standing rules without a t3-code credential", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const fake = yield* makeFakePi;
+      yield* openRuntime(fake);
+      const path = fake.lastSpawn().env.T3_PI_INSTRUCTIONS_PATH;
+      assert.isDefined(path);
+      const text = yield* fs.readFileString(path!);
+      assert.include(text, "<runtime_info>");
+      assert.include(text, "through the Pi harness.");
+      assert.notInclude(text, "<exarch_instructions>");
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
   it.effect("registers the thread from get_state and resumes via switch_session", () =>
     Effect.gen(function* () {
       const fake = yield* makeFakePi;

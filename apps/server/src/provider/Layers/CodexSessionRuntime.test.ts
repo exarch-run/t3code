@@ -564,12 +564,12 @@ describe("buildCodexDeveloperInstructions", () => {
     });
 
     NodeAssert.match(instructions, /^<collaboration_mode># Collaboration Mode: Default/);
-    NodeAssert.match(instructions, /T3 Code/);
+    NodeAssert.match(instructions, /<exarch_instructions>/);
     NodeAssert.match(instructions, /Codex harness/);
     NodeAssert.match(instructions, /as gpt-5\.3-codex with high reasoning effort/);
   });
 
-  it("describes Markdown media support in the runtime context in both modes", () => {
+  it("describes Markdown media support in the standing block in both modes", () => {
     for (const mode of ["default", "plan"] as const) {
       const instructions = buildCodexDeveloperInstructions(mode, {
         model: "gpt-5.3-codex",
@@ -577,8 +577,9 @@ describe("buildCodexDeveloperInstructions", () => {
       });
       NodeAssert.match(
         instructions,
-        /<runtime_info>.*embed images and videos.*Markdown.*<\/runtime_info>/,
+        /<exarch_instructions>[\s\S]*Markdown absolute paths embed images\/video[\s\S]*<\/exarch_instructions>/,
       );
+      NodeAssert.doesNotMatch(instructions, /embed images and videos/);
     }
   });
 
@@ -618,38 +619,42 @@ describe("buildCodexDeveloperInstructions", () => {
 
 describe("T3 browser developer instructions", () => {
   const runtime = { model: "gpt-5.3-codex", reasoningEffort: "high" };
+  const browserRule = /Interactive browser work: Use Exarch's `preview_\*` tools/;
+  const deviceRule = /Device work: Use Exarch's `device_\*` discovery/;
 
-  it("prefers the product-native preview tools in both collaboration modes", () => {
+  it("names the product-native preview tools in both collaboration modes", () => {
     for (const mode of ["default", "plan"] as const) {
       const instructions = buildCodexDeveloperInstructions(mode, runtime, true);
-      NodeAssert.match(instructions, /t3-code/);
-      NodeAssert.match(instructions, /preview_status/);
-      NodeAssert.match(instructions, /preview_open/);
-      NodeAssert.match(instructions, /Do not switch to global browser skills/);
+      NodeAssert.match(instructions, browserRule);
+      NodeAssert.doesNotMatch(instructions, deviceRule);
+      NodeAssert.doesNotMatch(instructions, /T3 Code collaborative browser/);
     }
   });
 
-  it("omits the browser block entirely when the preview tools are not attached", () => {
+  it("omits the browser rule entirely when the preview tools are not attached", () => {
     for (const mode of ["default", "plan"] as const) {
       const instructions = buildCodexDeveloperInstructions(mode, runtime, false);
-      NodeAssert.doesNotMatch(instructions, /preview_status/);
-      NodeAssert.doesNotMatch(instructions, /preview_open/);
-      NodeAssert.doesNotMatch(instructions, /T3 Code collaborative browser/);
-      // Steering away from other browser automation must go with the tools;
-      // keeping it would leave the model talked out of its only option.
-      NodeAssert.doesNotMatch(instructions, /Do not switch to global browser skills/);
-      // The rest of the collaboration mode is untouched.
+      NodeAssert.doesNotMatch(instructions, browserRule);
+      NodeAssert.doesNotMatch(instructions, /preview_\*/);
+      // The rest of the collaboration mode and the standing block are untouched.
       NodeAssert.match(instructions, /<collaboration_mode>/);
       NodeAssert.match(instructions, /<\/collaboration_mode>/);
+      NodeAssert.match(instructions, /<exarch_instructions>/);
     }
   });
 
-  it("tracks the turn's MCP configuration rather than defaulting to on", () => {
-    NodeAssert.match(buildCodexDeveloperInstructions("default", runtime, true), /preview_open/);
+  it("tracks the turn's MCP capabilities rather than defaulting to on", () => {
+    NodeAssert.match(buildCodexDeveloperInstructions("default", runtime, true), browserRule);
     NodeAssert.doesNotMatch(
       buildCodexDeveloperInstructions("default", runtime, false),
-      /preview_open/,
+      browserRule,
     );
+    const withDevice = buildCodexDeveloperInstructions("default", runtime, {
+      browser: false,
+      device: true,
+    });
+    NodeAssert.doesNotMatch(withDevice, browserRule);
+    NodeAssert.match(withDevice, deviceRule);
   });
 });
 

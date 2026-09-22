@@ -493,7 +493,12 @@ export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
 export type OrchestratorMcpCapabilitiesResult = typeof OrchestratorMcpCapabilitiesResult.Type;
 
 export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
-  startClean: Schema.optional(Schema.Boolean),
+  startClean: Schema.optional(
+    Schema.Boolean.annotate({
+      description:
+        "True starts each run in a fresh provider session inside its destination thread, with no context from earlier turns; default false. Independent of bindToCurrentThread, which chooses the thread.",
+    }),
+  ),
   prompt: OrchestratorMcpPrompt.annotate({
     description: "Prompt executed on every scheduled run.",
   }),
@@ -541,7 +546,12 @@ export type OrchestratorMcpListScheduledTasksResult =
   typeof OrchestratorMcpListScheduledTasksResult.Type;
 
 export const OrchestratorMcpUpdateScheduledTaskInput = Schema.Struct({
-  startClean: Schema.optional(Schema.Boolean),
+  startClean: Schema.optional(
+    Schema.Boolean.annotate({
+      description:
+        "True starts each run in a fresh provider session inside its destination thread, with no context from earlier turns; default false. Independent of bindToCurrentThread, which chooses the thread.",
+    }),
+  ),
   scheduledTaskId: ScheduledTaskId,
   prompt: Schema.optional(OrchestratorMcpPrompt),
   title: Schema.optional(OrchestratorMcpTitle),

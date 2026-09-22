@@ -8,6 +8,7 @@ import {
   PI_T3_MCP_EXTENSION_SOURCE,
   T3_MCP_BEARER_ENV,
   T3_MCP_URL_ENV,
+  T3_PI_INSTRUCTIONS_PATH_ENV,
   T3_PI_RUNTIME_MODE_ENV,
 } from "./piT3McpExtensionSource.ts";
 
@@ -224,6 +225,16 @@ function piT3McpExtensionDestPath(cacheDir: string): string {
   return `${cacheDir.replace(/\\/g, "/")}/${PI_T3_MCP_EXTENSION_FILENAME}`;
 }
 
+/**
+ * Where the adapter writes one session's runtime instructions for the
+ * extension to read at every agent start. Keyed by provider session so
+ * concurrent Pi sessions never read each other's block.
+ */
+export function piInstructionsPath(cacheDir: string, providerSessionId: string): string {
+  const safeId = providerSessionId.replace(/[^A-Za-z0-9._-]/g, "_");
+  return `${cacheDir.replace(/\\/g, "/")}/pi-t3-instructions-${safeId}.md`;
+}
+
 export const materializePiT3McpExtension = Effect.fn("materializePiT3McpExtension")(function* (
   cacheDir: string,
 ) {
@@ -242,6 +253,8 @@ export function buildPiRpcLaunch(input: {
   readonly environment: NodeJS.ProcessEnv;
   readonly mcpSession: McpProviderSessionConfig | undefined;
   readonly extensionPath: string | undefined;
+  /** File holding this session's runtime block; read by the T3 extension. */
+  readonly instructionsPath?: string | undefined;
   readonly ephemeral?: boolean;
   readonly disableExtensions?: boolean;
   readonly disableTools?: boolean;
@@ -281,6 +294,7 @@ export function buildPiRpcLaunch(input: {
   // credentials inherited from the server or a parent provider process.
   delete environment[T3_MCP_URL_ENV];
   delete environment[T3_MCP_BEARER_ENV];
+  delete environment[T3_PI_INSTRUCTIONS_PATH_ENV];
 
   return {
     args,
@@ -291,6 +305,9 @@ export function buildPiRpcLaunch(input: {
             [T3_PI_RUNTIME_MODE_ENV]:
               input.runtimeMode === "auto" ? "approval-required" : input.runtimeMode,
           }
+        : {}),
+      ...(hasT3Extension && input.instructionsPath !== undefined
+        ? { [T3_PI_INSTRUCTIONS_PATH_ENV]: input.instructionsPath }
         : {}),
       ...(hasT3Mcp && input.mcpSession !== undefined
         ? {

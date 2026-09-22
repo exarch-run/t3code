@@ -3,6 +3,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import type { OpencodeClient, ToolPart } from "@opencode-ai/sdk/v2";
 import {
   CheckpointId,
+  EnvironmentId,
   NodeId,
   OpenCodeSettings,
   ProjectId,
@@ -31,6 +32,7 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import { ServerConfig } from "../../config.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import type { EventNdjsonLogger } from "../../provider/Layers/EventNdjsonLogger.ts";
 import type { OpenCodeRuntimeShape } from "../../provider/opencodeRuntime.ts";
 import { IdAllocatorV2, layer as idAllocatorLayer } from "../IdAllocator.ts";
@@ -146,6 +148,7 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
   suffix: string,
   nativeSessionId: string,
   client: object,
+  options: { readonly external?: boolean } = {},
 ) {
   const idAllocator = yield* IdAllocatorV2;
   const instanceId = ProviderInstanceId.make(`opencode-${suffix}`);
@@ -161,7 +164,12 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
     settings: OPEN_CODE_TEST_SETTINGS,
     environment: {},
     runtime: {
-      connectToOpenCodeServer: () => Effect.succeed({ url: "http://test.invalid", external: true }),
+      connectToOpenCodeServer: () =>
+        Effect.succeed({
+          url: "http://test.invalid",
+          external: options.external ?? true,
+          exitCode: null,
+        }),
       createOpenCodeSdkClient: () => client,
     } as unknown as OpenCodeRuntimeShape,
     idAllocator,
@@ -237,6 +245,70 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
 });
 
 describe("OpenCodeAdapterV2", () => {
+  it.effect("submits the standing Exarch block once when the T3 MCP server is attached", () =>
+    Effect.gen(function* () {
+      const systems: Array<string | undefined> = [];
+      const client = (nativeSessionId: string) => ({
+        event: { subscribe: async () => ({ stream: asyncEventStream().stream }) },
+        session: {
+          create: async () => ({
+            data: { id: nativeSessionId, time: { created: 1, updated: 1 } },
+          }),
+          promptAsync: async (input: { readonly system?: string }) => {
+            systems.push(input.system);
+            return { data: true };
+          },
+          abort: async () => ({ data: true }),
+          children: async () => ({ data: [] }),
+        },
+        mcp: { add: async () => ({ data: true }) },
+      });
+
+      const threadId = ThreadId.make("thread-opencode-system-prompt");
+      McpProviderSession.setMcpProviderSession({
+        environmentId: EnvironmentId.make("environment-opencode-system-prompt"),
+        threadId,
+        providerSessionId: "mcp-session-opencode",
+        providerInstanceId: ProviderInstanceId.make("opencode-system-prompt"),
+        endpoint: "http://127.0.0.1:43123/mcp",
+        authorizationHeader: "Bearer secret-opencode-token",
+        browserToolsAvailable: false,
+        capabilities: new Set(["device"]),
+      });
+      try {
+        const attached = yield* makeOpenCodeRuntimeHarness(
+          "system-prompt",
+          "native-system-prompt",
+          client("native-system-prompt"),
+          { external: false },
+        );
+        yield* attached.startTurn();
+      } finally {
+        McpProviderSession.clearMcpProviderSession(threadId);
+      }
+      const withMcp = systems[0] ?? "";
+      assert.include(withMcp, "running in Exarch through the OpenCode harness");
+      assert.equal(withMcp.split("<exarch_instructions>").length - 1, 1);
+      assert.include(withMcp, "link_pull_request");
+      assert.include(withMcp, "Use Exarch's `device_*` discovery");
+      assert.notInclude(withMcp, "Use Exarch's `preview_*` tools");
+      assert.notInclude(withMcp, "T3 Code orchestration");
+      assert.notInclude(withMcp, "delegate_task");
+
+      // An external server never gets the MCP server, so no standing block.
+      const detached = yield* makeOpenCodeRuntimeHarness(
+        "system-prompt-external",
+        "native-system-prompt-external",
+        client("native-system-prompt-external"),
+      );
+      yield* detached.startTurn();
+      const withoutMcp = systems[1] ?? "";
+      assert.include(withoutMcp, "<runtime_info>");
+      assert.notInclude(withoutMcp, "exarch_instructions");
+      assert.notInclude(withoutMcp, "link_pull_request");
+    }).pipe(Effect.provide(idAllocatorLayer), Effect.scoped),
+  );
+
   for (const ending of ["completed", "failed", "unresolved", "unavailable", "reconnect"] as const) {
     it.effect(`normalizes OpenCode step usage for ${ending} turns`, () =>
       Effect.gen(function* () {
