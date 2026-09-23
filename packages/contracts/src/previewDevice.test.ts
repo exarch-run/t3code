@@ -1,10 +1,10 @@
 import { Schema } from "effect";
 import { expect, it } from "vite-plus/test";
+import { PreviewDeviceSnapshot } from "./previewDevice.ts";
 import {
   PreviewAutomationEmulateInput,
   PreviewAutomationGestureInput,
-  PreviewDeviceSnapshot,
-} from "./previewDevice.ts";
+} from "./previewDeviceInput.ts";
 import {
   PreviewAutomationRecordingArtifact,
   PreviewAutomationStatus,
