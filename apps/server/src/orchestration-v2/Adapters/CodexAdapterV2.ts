@@ -1,9 +1,9 @@
 import { historyResponseItems } from "../ContextHandoffBudget.ts";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import {
-  CODEX_TASK_PROGRESS_TOOLS,
   codexToolFailure,
   handleCodexCardCall,
+  startCodexThreadWithCardTools,
 } from "../../exarch/TaskProgressCodexRoute.ts";
 import { SUBAGENT_WRITE_REFUSED } from "../../exarch/TaskProgressInput.ts";
 import { TaskProgress, type TaskProgressShape } from "../../exarch/TaskProgressRuntime.ts";
@@ -5214,29 +5214,14 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           ensureThread: (threadInput) =>
             ensureInitialized.pipe(
               Effect.andThen(
-                client.raw
-                  .request("thread/start", {
-                    ...codexThreadRuntimeParams({
-                      threadId: threadInput.threadId,
-                      modelSelection: threadInput.modelSelection,
-                      runtimePolicy: threadInput.runtimePolicy,
-                    }),
-                    dynamicTools: CODEX_TASK_PROGRESS_TOOLS,
-                  })
-                  .pipe(
-                    Effect.flatMap(
-                      Schema.decodeUnknownEffect(
-                        Schema.Struct({
-                          thread: Schema.Struct({
-                            id: Schema.String,
-                            createdAt: Schema.Number,
-                            updatedAt: Schema.Number,
-                            forkedFromId: Schema.optionalKey(Schema.NullOr(Schema.String)),
-                          }),
-                        }),
-                      ),
-                    ),
-                  ),
+                startCodexThreadWithCardTools(
+                  client.raw.request,
+                  codexThreadRuntimeParams({
+                    threadId: threadInput.threadId,
+                    modelSelection: threadInput.modelSelection,
+                    runtimePolicy: threadInput.runtimePolicy,
+                  }),
+                ),
               ),
               Effect.map((response): OrchestrationV2ProviderThread =>
                 providerThreadFromCodexThread({

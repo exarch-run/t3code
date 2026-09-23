@@ -9,6 +9,7 @@
  * stays open.
  */
 import type * as CodexRpc from "effect-codex-app-server/rpc";
+import * as CodexSchema from "effect-codex-app-server/schema";
 import type { ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -25,20 +26,43 @@ type DynamicToolCall = CodexRpc.ServerRequestParamsByMethod["item/tool/call"];
 type DynamicToolResult = CodexRpc.ServerRequestResponsesByMethod["item/tool/call"];
 
 /** What thread/start receives; the same closed schema and description the MCP tool advertises. */
-export const CODEX_TASK_PROGRESS_TOOLS = [
-  {
-    type: "function" as const,
-    name: TASK_PROGRESS_TOOL,
-    description: TASK_PROGRESS_TOOL_DESCRIPTION,
-    inputSchema: TASK_PROGRESS_TOOL_JSON_SCHEMA,
-  },
-  {
-    type: "function" as const,
-    name: TASK_PROGRESS_READ_TOOL,
-    description: TASK_PROGRESS_READ_TOOL_DESCRIPTION,
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
-  },
-];
+export const CODEX_TASK_PROGRESS_TOOLS: ReadonlyArray<CodexSchema.V2ThreadStartParams__DynamicToolSpec> =
+  [
+    {
+      type: "function",
+      name: TASK_PROGRESS_TOOL,
+      description: TASK_PROGRESS_TOOL_DESCRIPTION,
+      inputSchema: TASK_PROGRESS_TOOL_JSON_SCHEMA,
+    },
+    {
+      type: "function",
+      name: TASK_PROGRESS_READ_TOOL,
+      description: TASK_PROGRESS_READ_TOOL_DESCRIPTION,
+      inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    },
+  ];
+
+/**
+ * thread/start as the Codex app-server accepts it. The generated params omit
+ * the experimental `dynamicTools` field and the typed client encodes through
+ * them, so this extends the generated schema and sends the encoded result.
+ */
+const CodexThreadStartWithDynamicTools = Schema.Struct({
+  ...CodexSchema.V2ThreadStartParams.fields,
+  dynamicTools: Schema.Array(CodexSchema.V2ThreadStartParams__DynamicToolSpec),
+});
+const encodeThreadStart = Schema.encodeEffect(CodexThreadStartWithDynamicTools);
+const decodeThreadStarted = Schema.decodeUnknownEffect(CodexSchema.V2ThreadStartResponse);
+
+/** Starts a Codex thread that carries the card tools. */
+export const startCodexThreadWithCardTools = <E>(
+  request: (method: "thread/start", params: unknown) => Effect.Effect<unknown, E>,
+  params: CodexSchema.V2ThreadStartParams,
+) =>
+  encodeThreadStart({ ...params, dynamicTools: CODEX_TASK_PROGRESS_TOOLS }).pipe(
+    Effect.flatMap((encoded) => request("thread/start", encoded)),
+    Effect.flatMap(decodeThreadStarted),
+  );
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const text = (value: unknown): DynamicToolResult["contentItems"] => [
