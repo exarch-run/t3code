@@ -11,6 +11,44 @@ import {
 import { TASK_PROGRESS_TOOL_JSON_SCHEMA } from "./TaskProgressInput.ts";
 
 const threadId = ThreadId.make("chat-1");
+// The thread/start result recorded from Codex CLI 0.120.0 in
+// orchestration-v2/testkit/fixtures/simple/codex_transcript.ndjson.
+const recordedCli0120ThreadStart = {
+  thread: {
+    id: "019dadea-f49b-7012-aa03-534f1bfc3181",
+    forkedFromId: null,
+    preview: "",
+    ephemeral: false,
+    modelProvider: "openai",
+    createdAt: 1776739349,
+    updatedAt: 1776739349,
+    status: { type: "idle" },
+    path: "/Users/julius/.codex/sessions/2026/04/20/rollout-2026-04-20T19-42-29-019dadea-f49b-7012-aa03-534f1bfc3181.jsonl",
+    cwd: "/Users/julius/.t3/worktrees/codething-mvp/t3code-c1e5e1d1/packages/effect-codex-app-server",
+    cliVersion: "0.120.0",
+    source: "vscode",
+    agentNickname: null,
+    agentRole: null,
+    gitInfo: null,
+    name: null,
+    turns: [],
+  },
+  model: "gpt-5.4",
+  modelProvider: "openai",
+  serviceTier: "fast",
+  cwd: "/Users/julius/.t3/worktrees/codething-mvp/t3code-c1e5e1d1/packages/effect-codex-app-server",
+  approvalPolicy: "on-request",
+  approvalsReviewer: "user",
+  sandbox: {
+    type: "workspaceWrite",
+    writableRoots: ["/Users/julius/.codex/memories"],
+    readOnlyAccess: { type: "fullAccess" },
+    networkAccess: false,
+    excludeTmpdirEnvVar: false,
+    excludeSlashTmp: false,
+  },
+  reasoningEffort: "xhigh",
+};
 const call = (tool: string, args: unknown = {}) => ({
   tool,
   threadId: "root-thread",
@@ -100,6 +138,17 @@ describe("Codex task card route", () => {
       expect(sent).toEqual([
         { cwd: "/workspace", model: "gpt-5.4", dynamicTools: CODEX_TASK_PROGRESS_TOOLS },
       ]);
+      // Codex CLI 0.120.0 answers without thread.sessionId; the chat still starts.
+      const older = yield* startCodexThreadWithCardTools(
+        () => Effect.succeed(recordedCli0120ThreadStart),
+        { cwd: "/workspace" },
+      );
+      expect(older.thread).toMatchObject({
+        id: "019dadea-f49b-7012-aa03-534f1bfc3181",
+        createdAt: 1776739349,
+        updatedAt: 1776739349,
+        forkedFromId: null,
+      });
       // An answer that is not a started thread fails rather than passing through.
       yield* startCodexThreadWithCardTools(() => Effect.succeed({}), { cwd: "/workspace" }).pipe(
         Effect.flip,

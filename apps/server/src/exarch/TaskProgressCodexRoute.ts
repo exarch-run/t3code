@@ -52,7 +52,22 @@ const CodexThreadStartWithDynamicTools = Schema.Struct({
   dynamicTools: Schema.Array(CodexSchema.V2ThreadStartParams__DynamicToolSpec),
 });
 const encodeThreadStart = Schema.encodeEffect(CodexThreadStartWithDynamicTools);
-const decodeThreadStarted = Schema.decodeUnknownEffect(CodexSchema.V2ThreadStartResponse);
+/**
+ * The started thread, reduced to what the adapter reads. The full generated
+ * response requires fields older Codex CLIs never send (0.120.0 has no
+ * `thread.sessionId`), so decoding it would fail after Codex already made the
+ * thread.
+ */
+const decodeThreadStarted = Schema.decodeUnknownEffect(
+  Schema.Struct({
+    thread: Schema.Struct({
+      id: Schema.String,
+      createdAt: Schema.Finite,
+      updatedAt: Schema.Finite,
+      forkedFromId: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    }),
+  }),
+);
 
 /** Starts a Codex thread that carries the card tools. */
 export const startCodexThreadWithCardTools = <E>(
