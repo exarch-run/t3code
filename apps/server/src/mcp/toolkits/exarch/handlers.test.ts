@@ -165,22 +165,44 @@ describe("exarch toolkit handlers", () => {
     }),
   );
 
-  it.effect("unset variables and an unreachable host are one not-connected error", () =>
-    Effect.gen(function* () {
-      const unset = yield* makeHarness({});
-      const missing = yield* unset.call("exarch_items", {}).pipe(Effect.flip);
-      expect(missing).toMatchObject({ _tag: "ExarchNotConnectedError" });
-      expect(missing.message).toBe(ExarchHostClient.EXARCH_NOT_CONNECTED_MESSAGE);
+  it.effect(
+    "unset variables, a non-loopback address and an unreachable host are one not-connected error",
+    () =>
+      Effect.gen(function* () {
+        const unset = yield* makeHarness({});
+        const missing = yield* unset.call("exarch_items", {}).pipe(Effect.flip);
+        expect(missing).toMatchObject({ _tag: "ExarchNotConnectedError" });
+        expect(missing.message).toBe(ExarchHostClient.EXARCH_NOT_CONNECTED_MESSAGE);
 
-      const host = yield* Effect.promise(() =>
-        stubHost(() => ({ status: 200, body: { ok: true, result: {} } })),
-      );
-      yield* Effect.promise(host.close);
-      const gone = yield* makeHarness({ EXARCH_HOST_URL: host.url, EXARCH_HOST_TOKEN: "t" });
-      const unreachable = yield* gone.call("exarch_items", {}).pipe(Effect.flip);
-      expect(unreachable).toMatchObject({ _tag: "ExarchNotConnectedError" });
-      expect(unreachable.message).toBe(ExarchHostClient.EXARCH_NOT_CONNECTED_MESSAGE);
-    }),
+        const host = yield* Effect.promise(() =>
+          stubHost(() => ({ status: 200, body: { ok: true, result: {} } })),
+        );
+        yield* Effect.promise(host.close);
+        const gone = yield* makeHarness({ EXARCH_HOST_URL: host.url, EXARCH_HOST_TOKEN: "t" });
+        const unreachable = yield* gone.call("exarch_items", {}).pipe(Effect.flip);
+        expect(unreachable).toMatchObject({ _tag: "ExarchNotConnectedError" });
+        expect(unreachable.message).toBe(ExarchHostClient.EXARCH_NOT_CONNECTED_MESSAGE);
+
+        let fetched = 0;
+        for (const url of [
+          "http://exarch.example",
+          "https://127.0.0.1:1",
+          "http://user@127.0.0.1:1",
+        ]) {
+          const remote = yield* makeHarness(
+            { EXARCH_HOST_URL: url, EXARCH_HOST_TOKEN: "t" },
+            {
+              fetch: (async () => {
+                fetched++;
+                return new Response("{}");
+              }) as typeof globalThis.fetch,
+            },
+          );
+          const refused = yield* remote.call("exarch_items", {}).pipe(Effect.flip);
+          expect(refused).toMatchObject({ _tag: "ExarchNotConnectedError" });
+        }
+        expect(fetched).toBe(0);
+      }),
   );
 });
 
@@ -429,7 +451,7 @@ describe("uncertain document action outcomes", () => {
             { status: 200 },
           )) as typeof globalThis.fetch;
         const harness = yield* makeHarness(
-          { EXARCH_HOST_URL: "http://synthetic.invalid", EXARCH_HOST_TOKEN: "synthetic" },
+          { EXARCH_HOST_URL: "http://127.0.0.1:9", EXARCH_HOST_TOKEN: "synthetic" },
           { fetch },
         );
         const error = yield* harness
@@ -477,7 +499,7 @@ describe("uncertain document action outcomes", () => {
 
 it.effect("returns same-ID uncertainty advice in the actual MCP tool error result", () => {
   const host = ExarchHostClient.layer({
-    env: () => ({ EXARCH_HOST_URL: "http://synthetic.invalid", EXARCH_HOST_TOKEN: "synthetic" }),
+    env: () => ({ EXARCH_HOST_URL: "http://127.0.0.1:9", EXARCH_HOST_TOKEN: "synthetic" }),
     fetch: (async () => {
       throw new Error("reply lost");
     }) as typeof globalThis.fetch,

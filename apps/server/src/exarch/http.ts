@@ -7,6 +7,7 @@ import {
   HttpServerRequest,
   HttpServerResponse,
 } from "effect/unstable/http";
+import { readExarchHost } from "../mcp/ExarchHostClient.ts";
 
 /** The application owns the address and per-launch token. Never accept a target or identity from the phone. */
 export const forwardExarchRequest = Effect.fn("exarch.forward")(function* (
@@ -14,18 +15,11 @@ export const forwardExarchRequest = Effect.fn("exarch.forward")(function* (
   incoming: boolean,
 ) {
   const request = yield* HttpServerRequest.HttpServerRequest;
-  const origin = process.env.EXARCH_HOST_URL;
-  const token = process.env.EXARCH_HOST_TOKEN;
-  if (!origin || !token) return HttpServerResponse.empty({ status: 404 });
-  const target = new URL(origin);
-  if (
-    target.protocol !== "http:" ||
-    target.hostname !== "127.0.0.1" ||
-    target.username ||
-    target.password
-  ) {
-    return HttpServerResponse.empty({ status: 503 });
-  }
+  const host = readExarchHost();
+  if (host.status === "unset") return HttpServerResponse.empty({ status: 404 });
+  if (host.status === "invalid") return HttpServerResponse.empty({ status: 503 });
+  const { token } = host;
+  const target = new URL(host.origin);
   const source = new URL(request.url, "http://localhost");
   target.pathname = `/v1/${source.pathname.slice("/api/exarch/".length)}`;
   target.search = source.search;

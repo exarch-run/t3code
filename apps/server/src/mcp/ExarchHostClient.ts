@@ -17,6 +17,38 @@ export const EXARCH_HOST_TOKEN = "EXARCH_HOST_TOKEN";
 export const EXARCH_NOT_CONNECTED_MESSAGE = "Exarch is not connected. Connect Exarch and retry.";
 export const DEFAULT_EXARCH_REQUEST_TIMEOUT_MS = 30_000;
 
+/** Where Exarch listens and the token it issued, after the checks every path shares. */
+export type ExarchHostTarget =
+  | { readonly status: "ready"; readonly origin: URL; readonly token: string }
+  | { readonly status: "unset" }
+  | { readonly status: "invalid" };
+
+/**
+ * The one reading of Exarch's address for tools, phone forwarding and plugins.
+ * The per-launch token only ever travels to a plain-HTTP loopback address
+ * without userinfo, which is all Exarch ever hands the engine.
+ */
+export function readExarchHost(env: NodeJS.ProcessEnv = process.env): ExarchHostTarget {
+  const url = env[EXARCH_HOST_URL]?.trim();
+  const token = env[EXARCH_HOST_TOKEN]?.trim();
+  if (!url || !token) return { status: "unset" };
+  let origin: URL;
+  try {
+    origin = new URL(url);
+  } catch {
+    return { status: "invalid" };
+  }
+  if (
+    origin.protocol !== "http:" ||
+    origin.hostname !== "127.0.0.1" ||
+    origin.username ||
+    origin.password
+  ) {
+    return { status: "invalid" };
+  }
+  return { status: "ready", origin, token };
+}
+
 export class ExarchNotConnectedError extends Schema.TaggedError<ExarchNotConnectedError>()(
   "ExarchNotConnectedError",
   { reason: Schema.String },
@@ -99,11 +131,11 @@ export function makeExarchHostClient(options: ExarchHostClientOptions = {}): Exa
   const timeoutMs = options.timeoutMs ?? DEFAULT_EXARCH_REQUEST_TIMEOUT_MS;
   return {
     invoke: Effect.fn("ExarchHostClient.invoke")(function* (request) {
-      const variables = env();
-      const url = variables[EXARCH_HOST_URL]?.trim();
-      const token = variables[EXARCH_HOST_TOKEN]?.trim();
-      if (!url || !token) {
-        return yield* new ExarchNotConnectedError({ reason: "host variables unset" });
+      const host = readExarchHost(env());
+      if (host.status !== "ready") {
+        return yield* new ExarchNotConnectedError({
+          reason: host.status === "unset" ? "host variables unset" : "host address is not loopback",
+        });
       }
       const actionId =
         request.tool === "exarch_act" &&
@@ -121,10 +153,10 @@ export function makeExarchHostClient(options: ExarchHostClientOptions = {}): Exa
       };
       const response = yield* Effect.tryPromise({
         try: () =>
-          fetchImpl(`${url.replace(/\/+$/, "")}/tools/${request.tool}`, {
+          fetchImpl(new URL(`/tools/${request.tool}`, host.origin), {
             method: "POST",
             headers: {
-              authorization: `Bearer ${token}`,
+              authorization: `Bearer ${host.token}`,
               "content-type": "application/json",
             },
             body: encodeJsonText({
@@ -133,6 +165,7 @@ export function makeExarchHostClient(options: ExarchHostClientOptions = {}): Exa
               input: request.input ?? {},
             }),
             signal: AbortSignal.timeout(timeoutMs),
+            redirect: "error",
           }),
         catch: uncertain,
       });
