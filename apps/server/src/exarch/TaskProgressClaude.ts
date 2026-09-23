@@ -4,17 +4,11 @@ import * as Effect from "effect/Effect";
 import { claudeTaskProgressOwnershipHooks } from "./TaskProgressOwnership.ts";
 import type { TaskProgressShape } from "./TaskProgressRuntime.ts";
 
-/** The chat whose saved card a Claude session restores, and the service that holds it. */
-export interface ClaudeTaskCard {
-  readonly threadId: ThreadId;
-  readonly taskProgress: TaskProgressShape;
-}
-
-/** Restore application state through Claude's context hooks, without adding a user turn. */
-export function claudeTaskProgressHooks({
-  threadId,
-  taskProgress,
-}: ClaudeTaskCard): Partial<Record<HookEvent, HookCallbackMatcher[]>> {
+/** Restore the chat's saved card through Claude's context hooks, without adding a user turn. */
+export function claudeTaskProgressHooks(
+  threadId: ThreadId,
+  taskProgress: TaskProgressShape,
+): Partial<Record<HookEvent, HookCallbackMatcher[]>> {
   const restore: HookCallback = async (input, _toolUseId, { signal }) => {
     if (
       input.agent_id ||

@@ -103,7 +103,7 @@ import {
 } from "../../provider/Layers/claudeUsageLimits.ts";
 import type { ServerProviderShape } from "../../provider/Services/ServerProvider.ts";
 import { mergeProviderInstanceEnvironment } from "../../provider/ProviderInstanceEnvironment.ts";
-import { claudeTaskProgressHooks, type ClaudeTaskCard } from "../../exarch/TaskProgressClaude.ts";
+import { claudeTaskProgressHooks } from "../../exarch/TaskProgressClaude.ts";
 import { TaskProgress, type TaskProgressShape } from "../../exarch/TaskProgressRuntime.ts";
 import { claudeTaskProgressOwnershipHooks } from "../../exarch/TaskProgressOwnership.ts";
 import { buildRuntimeInstructions } from "../../provider/RuntimeInstructions.ts";
@@ -719,8 +719,8 @@ export function makeClaudeQueryOptions(input: {
   readonly nativeThreadId: string;
   /** Whether the owner's setting lets this session write the task card. */
   readonly taskProgress?: boolean | undefined;
-  /** The Exarch chat whose saved task card is restored into Claude's context. */
-  readonly taskCard?: ClaudeTaskCard;
+  /** Restores the Exarch chat's saved task card into Claude's context. */
+  readonly taskCardHooks?: ReturnType<typeof claudeTaskProgressHooks>;
   readonly resume: boolean;
   readonly resumeSessionAt?: string;
   readonly cwd: string | null;
@@ -828,10 +828,7 @@ export function makeClaudeQueryOptions(input: {
       : {}),
     ...(input.environment === undefined ? {} : { env: input.environment }),
     ...(input.mcpServers === undefined ? {} : { mcpServers: input.mcpServers }),
-    hooks:
-      input.taskCard === undefined
-        ? claudeTaskProgressOwnershipHooks()
-        : claudeTaskProgressHooks(input.taskCard),
+    hooks: input.taskCardHooks ?? claudeTaskProgressOwnershipHooks(),
     systemPrompt: {
       type: "preset" as const,
       preset: "claude_code" as const,
@@ -5769,7 +5766,7 @@ export function makeClaudeAdapterV2(
                 taskProgress: turnInput.runtimePolicy.taskProgress,
                 modelSelection: turnInput.modelSelection,
                 nativeThreadId,
-                taskCard: { threadId: turnInput.threadId, taskProgress },
+                taskCardHooks: claudeTaskProgressHooks(turnInput.threadId, taskProgress),
                 resume: shouldResume,
                 ...(resumeSessionAt === undefined ? {} : { resumeSessionAt }),
                 cwd: turnInput.runtimePolicy.cwd,

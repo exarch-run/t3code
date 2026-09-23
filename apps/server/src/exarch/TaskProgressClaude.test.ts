@@ -65,7 +65,7 @@ const prompt: HookInput = {
   prompt: "Continue, but check the other route.",
 };
 async function invoke(input: HookInput, signal = new AbortController().signal) {
-  const callback = claudeTaskProgressHooks({ threadId, taskProgress })[input.hook_event_name]?.[0]
+  const callback = claudeTaskProgressHooks(threadId, taskProgress)[input.hook_event_name]?.[0]
     ?.hooks[0];
   expect(callback).toBeDefined();
   return callback!(input, undefined, { signal });
