@@ -11,11 +11,21 @@ import * as Schema from "effect/Schema";
  * request is one JSON POST carrying the invocation's thread and environment
  * ids, so Exarch can refuse a call that does not belong to the engine it is
  * running. A lost write reply is uncertain: retries must retain the action ID.
+ *
+ * A plugin operation may run for Exarch's full ten-minute command limit, so
+ * it gets its own deadline, and a lost reply means "check its status", never
+ * "run it again". Every request asks Exarch to stop the work if this engine
+ * abandons the call (a cancelled tool call or a deadline). Exarch versions
+ * that predate the header ignore it and finish the work as before.
  */
 export const EXARCH_HOST_URL = "EXARCH_HOST_URL";
 export const EXARCH_HOST_TOKEN = "EXARCH_HOST_TOKEN";
 export const EXARCH_NOT_CONNECTED_MESSAGE = "Exarch is not connected. Connect Exarch and retry.";
 export const DEFAULT_EXARCH_REQUEST_TIMEOUT_MS = 30_000;
+/** Exarch stops a plugin command after ten minutes; this leaves it time to answer. */
+export const EXARCH_PLUGIN_TIMEOUT_MS = 610_000;
+/** Asks Exarch to cancel the operation when this request's connection closes before the reply. */
+export const EXARCH_CANCEL_ON_CLOSE_HEADER = "x-exarch-cancel-on-close";
 
 /** Where Exarch listens and the token it issued, after the checks every path shares. */
 export type ExarchHostTarget =
@@ -68,6 +78,16 @@ export class ExarchOutcomeUncertainError extends Schema.TaggedError<ExarchOutcom
   }
 }
 
+/** A plugin operation was sent, but its outcome never came back. Running it again could run it twice. */
+export class ExarchPluginOutcomeUncertainError extends Schema.TaggedError<ExarchPluginOutcomeUncertainError>()(
+  "ExarchPluginOutcomeUncertainError",
+  { action: Schema.String, pluginId: Schema.String, reason: Schema.String },
+) {
+  override get message(): string {
+    return `The outcome of exarch_plugins ${this.action} for plugin ${this.pluginId} is unknown. It may have finished or may still be running. Call exarch_plugins with action "status" for ${this.pluginId} before you ${this.action} it again.`;
+  }
+}
+
 /** Exarch answered and refused: the code names the rule (NOT_ATTACHED, NOT_LEAD, block changed, …). */
 export class ExarchToolFailedError extends Schema.TaggedError<ExarchToolFailedError>()(
   "ExarchToolFailedError",
@@ -82,6 +102,7 @@ export const ExarchHostError = Schema.Union([
   ExarchNotConnectedError,
   ExarchToolFailedError,
   ExarchOutcomeUncertainError,
+  ExarchPluginOutcomeUncertainError,
 ]);
 export type ExarchHostError = typeof ExarchHostError.Type;
 
@@ -105,6 +126,8 @@ export interface ExarchHostClientOptions {
   readonly env?: () => NodeJS.ProcessEnv;
   readonly fetch?: typeof globalThis.fetch;
   readonly timeoutMs?: number;
+  /** The deadline for a plugin operation other than list and status. */
+  readonly pluginTimeoutMs?: number;
 }
 
 interface ExarchHostReply {
@@ -114,6 +137,17 @@ interface ExarchHostReply {
 }
 
 const encodeJsonText = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+
+/** A plugin action that changes or runs something; list and status only read. */
+const pluginOperation = (request: ExarchHostRequest) => {
+  const input = request.input;
+  if (request.tool !== "exarch_plugins" || typeof input !== "object" || input === null) return null;
+  const action = "action" in input ? input.action : undefined;
+  const id = "id" in input ? input.id : undefined;
+  return typeof action === "string" && action !== "list" && action !== "status"
+    ? { action, pluginId: typeof id === "string" ? id : "(none)" }
+    : null;
+};
 
 const readReply = async (response: Response): Promise<ExarchHostReply> => {
   const text = await response.text();
@@ -129,6 +163,7 @@ export function makeExarchHostClient(options: ExarchHostClientOptions = {}): Exa
   const env = options.env ?? (() => process.env);
   const fetchImpl = options.fetch ?? globalThis.fetch;
   const timeoutMs = options.timeoutMs ?? DEFAULT_EXARCH_REQUEST_TIMEOUT_MS;
+  const pluginTimeoutMs = options.pluginTimeoutMs ?? EXARCH_PLUGIN_TIMEOUT_MS;
   return {
     invoke: Effect.fn("ExarchHostClient.invoke")(function* (request) {
       const host = readExarchHost(env());
@@ -145,37 +180,42 @@ export function makeExarchHostClient(options: ExarchHostClientOptions = {}): Exa
         typeof request.input.actionId === "string"
           ? request.input.actionId
           : null;
+      const plugin = pluginOperation(request);
       const uncertain = (cause: unknown) => {
         const reason = cause instanceof Error ? cause.message : String(cause);
-        return actionId === null
-          ? new ExarchNotConnectedError({ reason })
-          : new ExarchOutcomeUncertainError({ actionId, reason });
+        if (actionId !== null) return new ExarchOutcomeUncertainError({ actionId, reason });
+        if (plugin !== null) return new ExarchPluginOutcomeUncertainError({ ...plugin, reason });
+        return new ExarchNotConnectedError({ reason });
       };
-      const response = yield* Effect.tryPromise({
-        try: () =>
-          fetchImpl(new URL(`/tools/${request.tool}`, host.origin), {
+      // One signal covers the request and the reply body, so a cancelled tool
+      // call closes the connection and Exarch can stop the work.
+      const { response, reply } = yield* Effect.tryPromise({
+        try: async (interrupted) => {
+          const response = await fetchImpl(new URL(`/tools/${request.tool}`, host.origin), {
             method: "POST",
             headers: {
               authorization: `Bearer ${host.token}`,
               "content-type": "application/json",
+              [EXARCH_CANCEL_ON_CLOSE_HEADER]: "1",
             },
             body: encodeJsonText({
               threadId: request.threadId,
               environmentId: request.environmentId,
               input: request.input ?? {},
             }),
-            signal: AbortSignal.timeout(timeoutMs),
+            signal: AbortSignal.any([
+              interrupted,
+              AbortSignal.timeout(plugin === null ? timeoutMs : pluginTimeoutMs),
+            ]),
             redirect: "error",
-          }),
-        catch: uncertain,
-      });
-      const reply = yield* Effect.tryPromise({
-        try: () => readReply(response),
+          });
+          return { response, reply: await readReply(response) };
+        },
         catch: uncertain,
       });
       if (response.ok && reply.ok === true) return reply.result;
       if (
-        actionId !== null &&
+        (actionId !== null || plugin !== null) &&
         (response.ok || response.status >= 500) &&
         !(reply.ok === false && typeof reply.error?.code === "string")
       ) {

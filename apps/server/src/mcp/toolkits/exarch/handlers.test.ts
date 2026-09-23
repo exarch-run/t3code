@@ -206,6 +206,117 @@ describe("exarch toolkit handlers", () => {
   );
 });
 
+describe("plugin operations", () => {
+  /** A host that holds every reply until the test releases it, and reports connections closed before a reply. */
+  const heldHost = Effect.acquireRelease(
+    Effect.promise(async () => {
+      const seen: Array<{ action: unknown; cancelOnClose: unknown }> = [];
+      let admitted!: () => void;
+      const admission = new Promise<void>((resolve) => (admitted = resolve));
+      let abandon!: (action: unknown) => void;
+      const abandoned = new Promise<unknown>((resolve) => (abandon = resolve));
+      const held: Array<() => void> = [];
+      const server = NodeHttp.createServer((request, response) => {
+        const chunks: Buffer[] = [];
+        request.on("data", (chunk: Buffer) => chunks.push(chunk));
+        request.on("end", () => {
+          const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+          seen.push({
+            action: body.input.action,
+            cancelOnClose: request.headers[ExarchHostClient.EXARCH_CANCEL_ON_CLOSE_HEADER],
+          });
+          response.on("close", () => {
+            if (!response.writableFinished) abandon(body.input.action);
+          });
+          held.push(() => {
+            response.writeHead(200, { "content-type": "application/json" });
+            response.end(JSON.stringify({ ok: true, result: { ran: body.input.action } }));
+          });
+          admitted();
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("host did not bind");
+      const release = () => held.splice(0).forEach((reply) => reply());
+      return {
+        url: `http://127.0.0.1:${address.port}`,
+        seen,
+        admission,
+        abandoned,
+        release,
+        server,
+      };
+    }),
+    ({ server }) =>
+      Effect.promise(() => {
+        server.closeAllConnections();
+        return new Promise<void>((resolve) => server.close(() => resolve()));
+      }),
+  );
+
+  it.effect("waits for a plugin command past the ordinary deadline", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const host = yield* heldHost;
+        const harness = yield* makeHarness(
+          { EXARCH_HOST_URL: host.url, EXARCH_HOST_TOKEN: "t" },
+          { timeoutMs: 100, pluginTimeoutMs: 5_000 },
+        );
+        const run = yield* harness
+          .call("exarch_plugins", { action: "run", id: "example" })
+          .pipe(Effect.forkScoped);
+        yield* Effect.promise(() => host.admission);
+        // A read-only listing keeps the ordinary deadline, and the run outlives it.
+        const listed = yield* harness.call("exarch_plugins", { action: "list" }).pipe(Effect.flip);
+        expect(listed).toMatchObject({ _tag: "ExarchNotConnectedError" });
+        host.release();
+        expect(yield* Fiber.join(run)).toEqual({ ran: "run" });
+        expect(host.seen[0]).toEqual({ action: "run", cancelOnClose: "1" });
+      }),
+    ),
+  );
+
+  it.effect("reports a lost plugin reply as uncertain and never advises running it again", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const host = yield* heldHost;
+        const harness = yield* makeHarness(
+          { EXARCH_HOST_URL: host.url, EXARCH_HOST_TOKEN: "t" },
+          { pluginTimeoutMs: 100 },
+        );
+        const error = yield* harness
+          .call("exarch_plugins", { action: "run", id: "example" })
+          .pipe(Effect.flip);
+        expect(error).toMatchObject({
+          _tag: "ExarchPluginOutcomeUncertainError",
+          action: "run",
+          pluginId: "example",
+        });
+        expect(error.message).toContain('action "status" for example');
+        expect(error.message).not.toContain("retry");
+        // The deadline closed the connection, which is Exarch's signal to stop the command.
+        expect(yield* Effect.promise(() => host.abandoned)).toBe("run");
+      }),
+    ),
+  );
+
+  it.effect("a cancelled tool call closes the request so Exarch can stop the command", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const host = yield* heldHost;
+        const harness = yield* makeHarness({ EXARCH_HOST_URL: host.url, EXARCH_HOST_TOKEN: "t" });
+        const pending = yield* harness
+          .call("exarch_plugins", { action: "run", id: "example" })
+          .pipe(Effect.forkScoped);
+        yield* Effect.promise(() => host.admission);
+        yield* Fiber.interrupt(pending);
+        expect(yield* Effect.promise(() => host.abandoned)).toBe("run");
+      }),
+    ),
+  );
+});
+
 describe("task card handlers", () => {
   const card = {
     version: 2 as const,

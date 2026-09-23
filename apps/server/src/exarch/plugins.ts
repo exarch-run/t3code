@@ -1,4 +1,4 @@
-import { readExarchHost } from "../mcp/ExarchHostClient.ts";
+import { EXARCH_PLUGIN_TIMEOUT_MS, readExarchHost } from "../mcp/ExarchHostClient.ts";
 
 /** Direct-code schedules use the existing scheduler and the app-owned plugin process. */
 export async function runScheduledPlugin(
@@ -14,7 +14,7 @@ export async function runScheduledPlugin(
     method: "POST",
     headers: { authorization: `Bearer ${host.token}`, "content-type": "application/json" },
     body: JSON.stringify({ action: "run", id }),
-    signal: AbortSignal.timeout(610_000),
+    signal: AbortSignal.timeout(EXARCH_PLUGIN_TIMEOUT_MS),
     redirect: "error",
   });
   if (!response.ok) throw new Error(`Plugin ${id} failed.`);
