@@ -1154,7 +1154,9 @@ export function threadShellFromProjection(
     id: projection.thread.id,
     projectId: projection.thread.projectId,
     title: projection.thread.title,
-    ...(projection.thread.taskProgressV2 === undefined ? {} : { taskProgressV2: projection.thread.taskProgressV2 }),
+    ...(projection.thread.taskProgressV2 === undefined
+      ? {}
+      : { taskProgressV2: projection.thread.taskProgressV2 }),
     providerInstanceId: projection.thread.providerInstanceId,
     modelSelection: projection.thread.modelSelection,
     runtimeMode: projection.thread.runtimeMode,
@@ -1186,8 +1188,12 @@ export function threadShellFromProjection(
     activityRunStartedAt: activityRun?.startedAt ?? activityRun?.requestedAt ?? null,
     status: latestRun?.status ?? "idle",
     lastError: providerSession?.lastError ?? null,
-    hasPendingApprovals: projection.runtimeRequests.some(request => request.status === "pending" && request.kind !== "user_input"),
-    hasPendingUserInput: projection.runtimeRequests.some(request => request.status === "pending" && request.kind === "user_input"),
+    hasPendingApprovals: projection.runtimeRequests.some(
+      (request) => request.status === "pending" && request.kind !== "user_input",
+    ),
+    hasPendingUserInput: projection.runtimeRequests.some(
+      (request) => request.status === "pending" && request.kind === "user_input",
+    ),
     pendingRuntimeRequest:
       pendingRuntimeRequest === null
         ? null

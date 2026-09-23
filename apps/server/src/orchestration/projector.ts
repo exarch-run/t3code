@@ -389,7 +389,9 @@ export function projectEvent(
                     ? { projectIcon: payload.projectIcon }
                     : {}),
                   ...(payload.scripts !== undefined ? { scripts: payload.scripts } : {}),
-            ...(payload.sessionFiles === undefined ? {} : { sessionFiles: payload.sessionFiles }),
+                  ...(payload.sessionFiles === undefined
+                    ? {}
+                    : { sessionFiles: payload.sessionFiles }),
                   updatedAt: payload.updatedAt,
                 }
               : project,

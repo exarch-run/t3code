@@ -76,7 +76,7 @@ it.effect("preserves every project mutation field", () =>
         createWorkspaceRootIfMissing: true,
         defaultModelSelection: null,
         scripts: [],
-      sessionFiles: ["NOTES.md"],
+        sessionFiles: ["NOTES.md"],
       },
       {
         commandId: "command:update",
@@ -89,7 +89,7 @@ it.effect("preserves every project mutation field", () =>
         faviconPath: null,
         defaultThreadEnvMode: null,
         scripts: [],
-      sessionFiles: ["NOTES.md"],
+        sessionFiles: ["NOTES.md"],
       },
       { commandId: "command:delete", projectId, force: true },
     ]);

@@ -303,7 +303,9 @@ export const layer: Layer.Layer<
               message: {
                 messageId: message.id,
                 text: projectComposerContextForProvider({
-                  text: message.questionResponse ? formatQuestionResponseForProvider(message.questionResponse) : message.text,
+                  text: message.questionResponse
+                    ? formatQuestionResponseForProvider(message.questionResponse)
+                    : message.text,
                   records: message.context?.records ?? [],
                 }),
                 attachments: message.attachments,

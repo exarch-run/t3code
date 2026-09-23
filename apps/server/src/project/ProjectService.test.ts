@@ -125,7 +125,10 @@ it.layer(TestLayer)("ProjectService", (it) => {
         defaultThreadEnvMode: "worktree",
       });
       assert.deepEqual(updated.sessionFiles, []);
-      assert.deepEqual((yield* service.snapshot).projects.find(row => row.id === projectId)?.sessionFiles, []);
+      assert.deepEqual(
+        (yield* service.snapshot).projects.find((row) => row.id === projectId)?.sessionFiles,
+        [],
+      );
       assert.equal(updated.title, "Renamed");
       assert.equal(updated.createdAt, created.createdAt);
       assert.isTrue(updated.autoPull);

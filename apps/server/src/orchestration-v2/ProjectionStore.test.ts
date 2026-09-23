@@ -693,16 +693,31 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
           },
         });
         yield* projectionStore.apply({
-          id: EventId.make("event:bounded-node-history:question"), type: "runtime-request.updated", threadId, runId,
-          nodeId: requestNodeId, driver, occurredAt: now,
-          payload: { id: RuntimeRequestId.make("request:bounded-node-history:question"), nodeId: requestNodeId,
-            providerTurnId: null, nativeRequestRef: null, kind: "user_input", status: "pending",
-            responseCapability: { type: "message" }, createdAt: now, resolvedAt: null },
+          id: EventId.make("event:bounded-node-history:question"),
+          type: "runtime-request.updated",
+          threadId,
+          runId,
+          nodeId: requestNodeId,
+          driver,
+          occurredAt: now,
+          payload: {
+            id: RuntimeRequestId.make("request:bounded-node-history:question"),
+            nodeId: requestNodeId,
+            providerTurnId: null,
+            nativeRequestRef: null,
+            kind: "user_input",
+            status: "pending",
+            responseCapability: { type: "message" },
+            createdAt: now,
+            resolvedAt: null,
+          },
         });
         const shell = yield* projectionStore.getThreadShell(threadId);
         assert.isTrue(shell?.hasPendingApprovals);
         assert.isTrue(shell?.hasPendingUserInput);
-        const listed = (yield* projectionStore.getShellSnapshot()).threads.find(row => row.id === threadId);
+        const listed = (yield* projectionStore.getShellSnapshot()).threads.find(
+          (row) => row.id === threadId,
+        );
         assert.isTrue(listed?.hasPendingApprovals);
         assert.isTrue(listed?.hasPendingUserInput);
         const snapshot = yield* projectionStore.getThreadSnapshotWindow(threadId, { rowLimit: 75 });

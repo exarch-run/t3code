@@ -24,4 +24,3 @@ export function isProjectSessionFilePath(value: string): boolean {
   const segments = value.split(/[\\/]+/);
   return segments.every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
 }
-

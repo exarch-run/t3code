@@ -101,7 +101,6 @@ it.effect("search uses v2 visibility while legacy transcripts are still lazy", (
   }).pipe(Effect.provide(TestLayer)),
 );
 
-
 it.effect("project shell reads retain configured session files and explicit clears", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -114,7 +113,9 @@ it.effect("project shell reads retain configured session files and explicit clea
       ) VALUES ('project:instructions', 'Instructions', '/tmp/instructions', NULL,
         '[]', '["NOTES.md"]', ${now}, ${now}, NULL)
     `;
-    assert.deepEqual((yield* query.getProjectShellsWithoutEnrichment())[0]?.sessionFiles, ["NOTES.md"]);
+    assert.deepEqual((yield* query.getProjectShellsWithoutEnrichment())[0]?.sessionFiles, [
+      "NOTES.md",
+    ]);
     yield* sql`UPDATE projection_projects SET session_files_json = '[]' WHERE project_id = 'project:instructions'`;
     assert.deepEqual((yield* query.getProjectShellsWithoutEnrichment())[0]?.sessionFiles, []);
   }).pipe(Effect.provide(TestLayer)),
