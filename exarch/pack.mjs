@@ -2,12 +2,29 @@
 // Packs apps/server into the tarball Exarch bundles, the way upstream's
 // publish command does: a trimmed manifest (no dev dependencies, catalog
 // references resolved), the workspace LICENSE beside it, then `npm pack`.
+// It owns the list of platforms a release carries a resource monitor for and
+// the check that every asset is present. The package is assembled in a
+// temporary directory, so the tracked tree is never edited.
 // Usage: node exarch/pack.mjs --version 0.0.41-exarch.1 --out /path/to/dir
+//   [--target linux-x64] [--helpers /downloaded/resource-monitor]
+// --helpers installs monitors laid out as <dir>/resource-monitor-<platform>/,
+// the shape the release workflow's artifact download produces.
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { copyFile, mkdir, readFile, rm, writeFile, readdir } from "node:fs/promises";
+import {
+  chmod,
+  copyFile,
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+  readdir,
+} from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -22,19 +39,29 @@ const option = (name) => {
 const version = option("--version");
 const out = resolve(option("--out"));
 const target = args.includes("--target") ? option("--target") : null;
-const platforms = ["linux-x64", "darwin-x64", "darwin-arm64", "win32-x64"];
-if (target !== null && !platforms.includes(target)) throw new Error(`Unsupported target ${target}`);
+const helpers = args.includes("--helpers") ? resolve(option("--helpers")) : null;
+const PLATFORMS = ["linux-x64", "darwin-x64", "darwin-arm64", "win32-x64"];
+if (target !== null && !PLATFORMS.includes(target)) throw new Error(`Unsupported target ${target}`);
 if (!/^\d+\.\d+\.\d+-exarch\.\d+$/.test(version))
   throw new Error(`Version must look like 0.0.41-exarch.1, got ${version}`);
+const platforms = target ? [target] : PLATFORMS;
+const monitor = (platform) => `t3-resource-monitor${platform.startsWith("win32") ? ".exe" : ""}`;
+
+if (helpers !== null) {
+  await rm(join(serverDir, "dist/resource-monitor"), { recursive: true, force: true });
+  for (const platform of platforms) {
+    const destination = join(serverDir, "dist/resource-monitor", platform, monitor(platform));
+    await mkdir(dirname(destination), { recursive: true });
+    await copyFile(join(helpers, `resource-monitor-${platform}`, monitor(platform)), destination);
+    await chmod(destination, 0o755);
+  }
+}
 
 for (const asset of [
   "dist/bin.mjs",
   "dist/claude-history-worker.mjs",
   "dist/client/index.html",
-  ...(target ? [target] : platforms).map(
-    (platform) =>
-      `dist/resource-monitor/${platform}/t3-resource-monitor${platform.startsWith("win32") ? ".exe" : ""}`,
-  ),
+  ...platforms.map((platform) => `dist/resource-monitor/${platform}/${monitor(platform)}`),
 ]) {
   if (!existsSync(join(serverDir, asset))) throw new Error(`Missing build asset ${asset}`);
 }
@@ -91,14 +118,7 @@ for (const [selector, patchPath] of Object.entries(workspace.patchedDependencies
     files.push({ path, contents: await readFile(join(packageRoot, path), "utf8") });
   runtimePatches.push({ name, version: installed.version, source: patchPath, files });
 }
-await writeFile(
-  join(serverDir, "dist/runtime-patches.json"),
-  JSON.stringify(runtimePatches, null, 2) + "\n",
-);
-
-const manifestPath = join(serverDir, "package.json");
-const original = await readFile(manifestPath);
-const source = JSON.parse(original.toString("utf8"));
+const source = JSON.parse(await readFile(join(serverDir, "package.json"), "utf8"));
 const manifest = {
   name: source.name,
   ...(source.repository ? { repository: source.repository } : {}),
@@ -111,26 +131,29 @@ const manifest = {
   // Upstream also publishes pnpm workspace overrides. npm ignores a dependency's overrides and rejects pnpm's selector syntax, so they are omitted here.
 };
 if (manifest.name !== "t3") throw new Error(`Unexpected package name ${manifest.name}`);
-const licensePath = join(serverDir, "LICENSE");
-const hadLicense = existsSync(licensePath);
-const noticePath = join(serverDir, "NOTICE");
-const originalNotice = existsSync(noticePath) ? await readFile(noticePath) : null;
 await mkdir(out, { recursive: true });
+const stage = await mkdtemp(join(tmpdir(), "exarch-pack-"));
 try {
-  await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
-  if (!hadLicense) await copyFile(join(root, "LICENSE"), licensePath);
-  await copyFile(join(root, "exarch/THIRD_PARTY_NOTICES.md"), noticePath);
+  await cp(join(serverDir, "dist"), join(stage, "dist"), { recursive: true });
+  await writeFile(
+    join(stage, "dist/runtime-patches.json"),
+    JSON.stringify(runtimePatches, null, 2) + "\n",
+  );
+  await writeFile(join(stage, "package.json"), JSON.stringify(manifest, null, 2) + "\n");
+  // npm pack always includes the README and LICENSE beside the manifest.
+  if (existsSync(join(serverDir, "README.md")))
+    await copyFile(join(serverDir, "README.md"), join(stage, "README.md"));
+  const license = join(serverDir, "LICENSE");
+  await copyFile(existsSync(license) ? license : join(root, "LICENSE"), join(stage, "LICENSE"));
+  await copyFile(join(root, "exarch/THIRD_PARTY_NOTICES.md"), join(stage, "NOTICE"));
   const result = spawnSync("npm", ["pack", "--ignore-scripts", "--pack-destination", out], {
-    cwd: serverDir,
+    cwd: stage,
     stdio: ["ignore", "pipe", "inherit"],
     encoding: "utf8",
   });
   if (result.status !== 0) throw new Error(`npm pack exited ${result.status}`);
 } finally {
-  await writeFile(manifestPath, original);
-  if (!hadLicense) await rm(licensePath, { force: true });
-  if (originalNotice === null) await rm(noticePath, { force: true });
-  else await writeFile(noticePath, originalNotice);
+  await rm(stage, { recursive: true, force: true });
 }
 const file = join(out, `t3-${version}.tgz`);
 if (!existsSync(file))
@@ -138,4 +161,4 @@ if (!existsSync(file))
 const bytes = await readFile(file);
 const sha256 = createHash("sha256").update(bytes).digest("hex");
 await writeFile(`${file}.sha256`, `${sha256}  ${basename(file)}\n`);
-console.log(JSON.stringify({ file, sha256, bytes: bytes.length }));
+console.log(JSON.stringify({ file, sha256, bytes: bytes.length, platforms }));

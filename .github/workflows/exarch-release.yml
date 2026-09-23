@@ -4,6 +4,8 @@ name: Exarch engine release
 # release. Exarch's packaging installs the release package by URL with lockfile
 # integrity. The resource monitor is compiled here from native/resource-monitor
 # for every platform Exarch ships, so a release needs no other package.
+# exarch/pack.mjs owns that platform list and checks every asset; the helpers
+# matrix below must name the same platforms, or packing fails.
 
 on:
   push:
@@ -160,37 +162,8 @@ jobs:
           pattern: resource-monitor-*
           path: ${{ runner.temp }}/resource-monitor
 
-      - name: Add the resource monitors built by this run
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -rf apps/server/dist/resource-monitor
-          for key in linux-x64 darwin-x64 darwin-arm64 win32-x64; do
-            mkdir -p "apps/server/dist/resource-monitor/$key"
-            cp "$RUNNER_TEMP/resource-monitor/resource-monitor-$key/"t3-resource-monitor* "apps/server/dist/resource-monitor/$key/"
-          done
-          chmod +x apps/server/dist/resource-monitor/*/t3-resource-monitor
-          find apps/server/dist/resource-monitor -type f | sort
-
-      - name: Check the built package
-        shell: bash
-        env:
-          VERSION: ${{ steps.meta.outputs.version }}
-        run: |
-          set -euo pipefail
-          cd apps/server
-          for f in dist/bin.mjs dist/claude-history-worker.mjs dist/client/index.html \
-                   dist/resource-monitor/linux-x64/t3-resource-monitor \
-                   dist/resource-monitor/darwin-x64/t3-resource-monitor \
-                   dist/resource-monitor/darwin-arm64/t3-resource-monitor \
-                   dist/resource-monitor/win32-x64/t3-resource-monitor.exe; do
-            if [[ ! -f "$f" ]]; then echo "Missing build asset: $f" >&2; exit 1; fi
-          done
-          node -e '
-            const pkg = require("./package.json");
-            if (pkg.version !== process.env.VERSION) throw new Error(`package.json version is ${pkg.version}`);
-          '
-
+      # Installs the monitors built by this run, checks every asset and the
+      # stamped version, and packs from a temporary copy.
       - name: Pack
         id: pack
         shell: bash
@@ -199,11 +172,12 @@ jobs:
         run: |
           set -euo pipefail
           out="$RUNNER_TEMP/release"
-          result="$(node exarch/pack.mjs --version "$VERSION" --out "$out")"
+          result="$(node exarch/pack.mjs --version "$VERSION" --out "$out" --helpers "$RUNNER_TEMP/resource-monitor")"
           echo "$result"
           {
             echo "file=$(node -pe 'JSON.parse(process.argv[1]).file' "$result")"
             echo "sha256=$(node -pe 'JSON.parse(process.argv[1]).sha256' "$result")"
+            echo "platforms=$(node -pe 'JSON.stringify(JSON.parse(process.argv[1]).platforms)' "$result")"
             echo "dir=$out"
           } >> "$GITHUB_OUTPUT"
 
@@ -217,6 +191,7 @@ jobs:
           BASE_COMMIT: ${{ steps.meta.outputs.base_commit }}
           FILE: ${{ steps.pack.outputs.file }}
           SHA256: ${{ steps.pack.outputs.sha256 }}
+          PLATFORMS: ${{ steps.pack.outputs.platforms }}
           OUT: ${{ steps.pack.outputs.dir }}
         run: |
           set -euo pipefail
@@ -224,6 +199,8 @@ jobs:
           node -e '
             const fs = require("node:fs");
             const env = process.env;
+            const base = require("./exarch/base.json");
+            const platforms = JSON.parse(env.PLATFORMS);
             const commits = fs.readFileSync(`${env.OUT}/commits.tsv`, "utf8").split("\n").filter(Boolean).map((line) => {
               const [commit, ...subject] = line.split("\t");
               return { commit, subject: subject.join("\t") };
@@ -234,10 +211,10 @@ jobs:
               tag: env.TAG,
               forkRepository: `https://github.com/${env.GITHUB_REPOSITORY}`,
               forkCommit: env.SOURCE_COMMIT,
-              upstreamRepository: "https://github.com/pingdotgg/t3code",
+              upstreamRepository: base.upstreamRepository,
               upstreamBranch: env.BASE_BRANCH,
               upstreamCommit: env.BASE_COMMIT,
-              helperBinaries: { path: "dist/resource-monitor", targets: ["linux-x64", "darwin-x64", "darwin-arm64", "win32-x64"], source: "compiled by this workflow run from native/resource-monitor at the release commit" },
+              helperBinaries: { path: "dist/resource-monitor", targets: platforms, source: "compiled by this workflow run from native/resource-monitor at the release commit" },
               exarchCommits: commits,
               tarball: { name: require("node:path").basename(env.FILE), sha256: env.SHA256 },
               workflowRun: `https://github.com/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`,
@@ -250,7 +227,7 @@ jobs:
               "",
               `Source: ${env.TAG} (${env.SOURCE_COMMIT}).`,
               "",
-              `Built from upstream ${env.BASE_BRANCH} (${env.BASE_COMMIT}) plus ${commits.length} Exarch commit(s). The resource monitor is compiled by this run for Linux x64, macOS x64 and arm64, and Windows x64.`,
+              `Built from upstream ${env.BASE_BRANCH} (${env.BASE_COMMIT}) plus ${commits.length} Exarch commit(s). The resource monitor is compiled by this run for ${platforms.join(", ")}.`,
               "",
               `Package SHA-256: ${env.SHA256}`,
               "",

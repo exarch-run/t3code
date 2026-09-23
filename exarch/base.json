@@ -2,8 +2,6 @@
   "upstreamRepository": "https://github.com/pingdotgg/t3code",
   "upstreamBranch": "t3code/codex-turn-mapping",
   "upstreamCommit": "7ec43faddc733671d7a31328b39925f8234bc94e",
-  "npmPackage": "t3",
   "sourceVersion": "0.0.42",
-  "helperBinaries": "dist/resource-monitor",
   "releaseVersion": "0.0.42-exarch.2013"
 }
