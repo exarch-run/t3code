@@ -47,7 +47,10 @@ const asRecord = (value: unknown): Record<string, unknown> | null =>
 const TOP_LEVEL_FIELDS = new Set(["markdown", "plan", "writeId"]);
 const STEP_FIELDS = new Set(["step", "status", "text"]);
 
-/** Validates and normalizes the replace-on-write task card payload. */
+/**
+ * Reads the raw tool call into a card's content, then validates it. This is
+ * the one place the tool's `plan` becomes `steps`.
+ */
 export function normalizeTaskProgressInput(rawArgs: unknown): NormalizedTaskProgressInput {
   const input = rawArgs === undefined ? {} : asRecord(rawArgs);
   if (!input) throw new TaskProgressInputError("exarch_progress_card arguments must be an object");
@@ -61,49 +64,71 @@ export function normalizeTaskProgressInput(rawArgs: unknown): NormalizedTaskProg
   if (input.writeId !== undefined && typeof input.writeId !== "string") {
     throw new TaskProgressInputError("writeId is no longer needed; omit it");
   }
-
-  let markdown: string | undefined;
-  if (input.markdown !== undefined) {
-    if (typeof input.markdown !== "string") {
-      throw new TaskProgressInputError("markdown must be a string");
+  if (input.markdown !== undefined && typeof input.markdown !== "string") {
+    throw new TaskProgressInputError("markdown must be a string");
+  }
+  if (input.plan === undefined) return validateTaskProgressContent({ markdown: input.markdown });
+  if (!Array.isArray(input.plan)) {
+    throw new TaskProgressInputError("plan must be an array");
+  }
+  if (input.plan.length > TASK_PROGRESS_MAX_STEPS) {
+    throw new TaskProgressInputError(`plan can contain at most ${TASK_PROGRESS_MAX_STEPS} steps`);
+  }
+  const steps = input.plan.map((entry, index): TaskProgressStep => {
+    const record = asRecord(entry);
+    if (!record) {
+      throw new TaskProgressInputError(`plan[${index}] must be an object`);
     }
-    if (Buffer.byteLength(input.markdown, "utf8") > TASK_PROGRESS_MAX_MARKDOWN_UTF8_BYTES) {
+    for (const key of Object.keys(record)) {
+      if (!STEP_FIELDS.has(key)) {
+        throw new TaskProgressInputError(
+          `plan[${index}] has an unknown field "${key}"; each step is {step, status}`,
+        );
+      }
+    }
+    const step = record.step !== undefined ? record.step : record.text;
+    if (typeof step !== "string") {
+      throw new TaskProgressInputError(`plan[${index}].step must be a string`);
+    }
+    if (!isStepStatus(record.status)) {
+      throw new TaskProgressInputError(
+        `plan[${index}].status must be one of pending, in_progress, completed`,
+      );
+    }
+    return { step, status: record.status };
+  });
+  return validateTaskProgressContent({ markdown: input.markdown, steps });
+}
+
+/**
+ * The card's domain rules: sizes, one active step, no concealed text. The
+ * orchestrator applies them to every write command too, because public
+ * dispatch reaches it without passing through the tool. Messages name the
+ * tool's `plan`, the field an agent sent.
+ */
+export function validateTaskProgressContent(content: {
+  readonly markdown?: string | undefined;
+  readonly steps?: ReadonlyArray<TaskProgressStep> | undefined;
+}): NormalizedTaskProgressInput {
+  let markdown: string | undefined;
+  if (content.markdown !== undefined) {
+    if (Buffer.byteLength(content.markdown, "utf8") > TASK_PROGRESS_MAX_MARKDOWN_UTF8_BYTES) {
       throw new TaskProgressInputError(
         `progress card markdown exceeds ${TASK_PROGRESS_MAX_MARKDOWN_UTF8_BYTES} UTF-8 bytes`,
       );
     }
-    const sanitized = stripInvisibleUnicode(input.markdown);
+    const sanitized = stripInvisibleUnicode(content.markdown);
     if (sanitized.trim()) {
       markdown = sanitized;
     }
   }
 
   let steps: TaskProgressStep[] | undefined;
-  if (input.plan !== undefined) {
-    if (!Array.isArray(input.plan)) {
-      throw new TaskProgressInputError("plan must be an array");
-    }
-    if (input.plan.length > TASK_PROGRESS_MAX_STEPS) {
+  if (content.steps !== undefined) {
+    if (content.steps.length > TASK_PROGRESS_MAX_STEPS) {
       throw new TaskProgressInputError(`plan can contain at most ${TASK_PROGRESS_MAX_STEPS} steps`);
     }
-    const normalizedSteps: TaskProgressStep[] = [];
-    let inProgressCount = 0;
-    for (const [index, entry] of input.plan.entries()) {
-      const record = asRecord(entry);
-      if (!record) {
-        throw new TaskProgressInputError(`plan[${index}] must be an object`);
-      }
-      for (const key of Object.keys(record)) {
-        if (!STEP_FIELDS.has(key)) {
-          throw new TaskProgressInputError(
-            `plan[${index}] has an unknown field "${key}"; each step is {step, status}`,
-          );
-        }
-      }
-      const rawStep = record.step !== undefined ? record.step : record.text;
-      if (typeof rawStep !== "string") {
-        throw new TaskProgressInputError(`plan[${index}].step must be a string`);
-      }
+    const normalizedSteps = content.steps.map(({ step: rawStep, status }, index) => {
       if (Buffer.byteLength(rawStep, "utf8") > TASK_PROGRESS_MAX_STEP_UTF8_BYTES) {
         throw new TaskProgressInputError(
           `plan[${index}].step exceeds ${TASK_PROGRESS_MAX_STEP_UTF8_BYTES} UTF-8 bytes`,
@@ -113,17 +138,14 @@ export function normalizeTaskProgressInput(rawArgs: unknown): NormalizedTaskProg
       if (!step.trim()) {
         throw new TaskProgressInputError(`plan[${index}].step must not be empty`);
       }
-      if (!isStepStatus(record.status)) {
+      if (!isStepStatus(status)) {
         throw new TaskProgressInputError(
           `plan[${index}].status must be one of pending, in_progress, completed`,
         );
       }
-      if (record.status === "in_progress") {
-        inProgressCount += 1;
-      }
-      normalizedSteps.push({ step, status: record.status });
-    }
-    if (inProgressCount > 1) {
+      return { step, status };
+    });
+    if (normalizedSteps.filter((step) => step.status === "in_progress").length > 1) {
       throw new TaskProgressInputError("plan can contain at most one in_progress step");
     }
     if (normalizedSteps.length > 0) {

@@ -10,7 +10,6 @@ import type { OrchestratorV2Error } from "../orchestration-v2/Orchestrator.ts";
 import type { ProjectionStoreV2Error } from "../orchestration-v2/ProjectionStore.ts";
 import {
   normalizeTaskProgressInput,
-  TaskProgressInputError,
   type NormalizedTaskProgressInput,
 } from "./TaskProgressInput.ts";
 
@@ -106,7 +105,7 @@ export const publishProgress = (
     if (refusal) return yield* new TaskProgressRefusedError({ detail: refusal });
     const input = yield* Effect.try({
       try: () => normalizeTaskProgressInput(rawInput),
-      catch: (error) => (error instanceof TaskProgressInputError ? refused(error) : refused(error)),
+      catch: refused,
     });
     const record = yield* service.write({ threadId, input }).pipe(Effect.mapError(refused));
     return acknowledge(record?.card ?? null);

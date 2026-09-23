@@ -1,4 +1,4 @@
-import { CommandId, type TaskProgressRecordV2 } from "@t3tools/contracts";
+import { CommandId, type TaskProgressRecordV2, type TaskProgressStep } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -6,7 +6,7 @@ import * as Stream from "effect/Stream";
 import * as NodeCrypto from "node:crypto";
 import type { OrchestratorV2Shape } from "../orchestration-v2/Orchestrator.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
-import { normalizeTaskProgressInput } from "./TaskProgressInput.ts";
+import { validateTaskProgressContent } from "./TaskProgressInput.ts";
 import {
   installBridge,
   setProgressInstructionsEnabled,
@@ -18,9 +18,12 @@ export function nextTaskProgressRecord(input: {
   previous: TaskProgressRecordV2 | undefined;
   commandId: string;
   now: DateTime.Utc;
-  content: unknown;
+  content: {
+    readonly markdown?: string | undefined;
+    readonly steps?: ReadonlyArray<TaskProgressStep> | undefined;
+  };
 }): TaskProgressRecordV2 {
-  const content = normalizeTaskProgressInput(input.content);
+  const content = validateTaskProgressContent(input.content);
   const revision = (input.previous?.revision ?? 0) + 1;
   const updatedAt = DateTime.formatIso(input.now);
   return {
@@ -72,8 +75,7 @@ export const registerProgressBridge = Effect.fn("exarch.registerV2ProgressBridge
             type: "thread.task-progress.write",
             commandId: CommandId.make(`exarch-progress-${NodeCrypto.randomUUID()}`),
             threadId,
-            ...(input.markdown === undefined ? {} : { markdown: input.markdown }),
-            ...(input.steps === undefined ? {} : { plan: input.steps }),
+            ...input,
           });
           // A later concurrent write must not change this call's acknowledgement.
           for (const stored of result.storedEvents) {

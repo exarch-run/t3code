@@ -3111,7 +3111,7 @@ it.layer(Layer.merge(TestLayer, SqlitePersistenceMemory))("Exarch v2 task cards"
           type: "thread.task-progress.write",
           commandId: CommandId.make("exarch-v2-invalid-card"),
           threadId,
-          plan: [
+          steps: [
             { step: "One", status: "in_progress" },
             { step: "Two", status: "in_progress" },
           ],

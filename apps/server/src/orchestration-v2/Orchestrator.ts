@@ -2331,10 +2331,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                   previous: thread.taskProgressV2,
                   commandId: command.commandId,
                   now,
-                  content: {
-                    ...(command.markdown === undefined ? {} : { markdown: command.markdown }),
-                    ...(command.plan === undefined ? {} : { plan: command.plan }),
-                  },
+                  content: command,
                 }),
               catch: (cause) =>
                 new OrchestratorDispatchError({

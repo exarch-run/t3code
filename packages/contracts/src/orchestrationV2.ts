@@ -2235,7 +2235,7 @@ export const OrchestrationV2Command = Schema.Union([
     commandId: CommandId,
     threadId: ThreadId,
     markdown: Schema.optional(Schema.String),
-    plan: Schema.optional(Schema.Array(TaskProgressStep)),
+    steps: Schema.optional(Schema.Array(TaskProgressStep)),
   }),
   Schema.Struct({
     type: Schema.Literal("thread.create"),
