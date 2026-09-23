@@ -138,11 +138,6 @@ export function validateTaskProgressContent(content: {
       if (!step.trim()) {
         throw new TaskProgressInputError(`plan[${index}].step must not be empty`);
       }
-      if (!isStepStatus(status)) {
-        throw new TaskProgressInputError(
-          `plan[${index}].status must be one of pending, in_progress, completed`,
-        );
-      }
       return { step, status };
     });
     if (normalizedSteps.filter((step) => step.status === "in_progress").length > 1) {
