@@ -300,6 +300,25 @@ describe("plugin operations", () => {
     ),
   );
 
+  it.effect("a refused connection reports Exarch as not connected, not an unknown outcome", () =>
+    Effect.gen(function* () {
+      const host = yield* Effect.promise(() =>
+        stubHost(() => ({ status: 200, body: { ok: true, result: {} } })),
+      );
+      yield* Effect.promise(host.close);
+      const gone = yield* makeHarness({ EXARCH_HOST_URL: host.url, EXARCH_HOST_TOKEN: "t" });
+      const run = yield* gone
+        .call("exarch_plugins", { action: "run", id: "example" })
+        .pipe(Effect.flip);
+      expect(run).toMatchObject({ _tag: "ExarchNotConnectedError" });
+      expect(run.message).toBe(ExarchHostClient.EXARCH_NOT_CONNECTED_MESSAGE);
+      const act = yield* gone
+        .call("exarch_act", { actionId: "refused-connection", entries: [] })
+        .pipe(Effect.flip);
+      expect(act).toMatchObject({ _tag: "ExarchNotConnectedError" });
+    }),
+  );
+
   it.effect("a cancelled tool call closes the request so Exarch can stop the command", () =>
     Effect.scoped(
       Effect.gen(function* () {

@@ -149,6 +149,19 @@ const pluginOperation = (request: ExarchHostRequest) => {
     : null;
 };
 
+/**
+ * Whether the connection itself was refused or had no route, so the request
+ * never reached Exarch and nothing ran. Node's fetch nests the socket error
+ * under `cause`, sometimes inside an AggregateError.
+ */
+const neverConnected = (cause: unknown): boolean => {
+  if (typeof cause !== "object" || cause === null) return false;
+  const code = "code" in cause ? cause.code : undefined;
+  if (code === "ECONNREFUSED" || code === "EHOSTUNREACH" || code === "ENETUNREACH") return true;
+  if (cause instanceof AggregateError && cause.errors.some(neverConnected)) return true;
+  return "cause" in cause && neverConnected(cause.cause);
+};
+
 const readReply = async (response: Response): Promise<ExarchHostReply> => {
   const text = await response.text();
   try {
@@ -183,6 +196,7 @@ export function makeExarchHostClient(options: ExarchHostClientOptions = {}): Exa
       const plugin = pluginOperation(request);
       const uncertain = (cause: unknown) => {
         const reason = cause instanceof Error ? cause.message : String(cause);
+        if (neverConnected(cause)) return new ExarchNotConnectedError({ reason });
         if (actionId !== null) return new ExarchOutcomeUncertainError({ actionId, reason });
         if (plugin !== null) return new ExarchPluginOutcomeUncertainError({ ...plugin, reason });
         return new ExarchNotConnectedError({ reason });
