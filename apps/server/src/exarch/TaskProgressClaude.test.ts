@@ -1,9 +1,10 @@
 import { ThreadId, type TaskProgressCardV2 } from "@t3tools/contracts";
 import type { HookInput } from "@anthropic-ai/claude-agent-sdk";
 import * as Effect from "effect/Effect";
-import { afterEach, describe, expect, it } from "vite-plus/test";
+import { describe, expect, it } from "vite-plus/test";
+import { boundTaskProgress } from "./TaskProgress.testkit.ts";
 import { claudeTaskProgressHooks } from "./TaskProgressClaude.ts";
-import { installBridge } from "./TaskProgressRuntime.ts";
+import type { TaskProgressShape } from "./TaskProgressRuntime.ts";
 
 const threadId = ThreadId.make("claude-card");
 const card: TaskProgressCardV2 = {
@@ -16,30 +17,31 @@ const card: TaskProgressCardV2 = {
     { step: "Verify", status: "in_progress" },
   ],
 };
-let close = () => {};
-afterEach(() => close());
+let taskProgress: TaskProgressShape;
 
 function fixture() {
   const reads: ThreadId[] = [];
   let current: TaskProgressCardV2 | null = card;
   let enabled = true;
   let fail = false;
-  close = installBridge({
-    enabled: Effect.sync(() => enabled),
-    read: (id) =>
-      Effect.sync(() => {
-        reads.push(id);
-        if (fail) throw new Error("unreadable store");
-        return {
-          card: current,
-          revision: 3,
-          generation: "g",
-          updatedAt: card.updatedAt,
-          turnId: null,
-        };
-      }),
-    write: () => Effect.die("context restoration must not write"),
-  });
+  taskProgress = boundTaskProgress(
+    {
+      read: (id) =>
+        Effect.sync(() => {
+          reads.push(id);
+          if (fail) throw new Error("unreadable store");
+          return {
+            card: current,
+            revision: 3,
+            generation: "g",
+            updatedAt: card.updatedAt,
+            turnId: null,
+          };
+        }),
+      write: () => Effect.die("context restoration must not write"),
+    },
+    Effect.sync(() => enabled),
+  );
   return {
     reads,
     replace: (next: TaskProgressCardV2) => {
@@ -63,7 +65,8 @@ const prompt: HookInput = {
   prompt: "Continue, but check the other route.",
 };
 async function invoke(input: HookInput, signal = new AbortController().signal) {
-  const callback = claudeTaskProgressHooks(threadId)[input.hook_event_name]?.[0]?.hooks[0];
+  const callback = claudeTaskProgressHooks({ threadId, taskProgress })[input.hook_event_name]?.[0]
+    ?.hooks[0];
   expect(callback).toBeDefined();
   return callback!(input, undefined, { signal });
 }

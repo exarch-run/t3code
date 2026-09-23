@@ -160,6 +160,8 @@ export interface CodexRuntimeInfo {
   readonly reasoningEffort: string;
   /** Exarch's rendered session files for the project; appended after the runtime block. */
   readonly sessionContext?: string | undefined;
+  /** Whether the owner's setting lets this session write the task card. */
+  readonly taskProgress?: boolean | undefined;
 }
 
 /**

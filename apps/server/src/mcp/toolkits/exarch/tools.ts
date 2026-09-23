@@ -6,6 +6,9 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as ExarchHostClient from "../../ExarchHostClient.ts";
 import { TaskProgressRefusedError } from "../../../exarch/TaskProgressRuntime.ts";
 import {
+  TASK_PROGRESS_READ_TOOL,
+  TASK_PROGRESS_READ_TOOL_DESCRIPTION,
+  TASK_PROGRESS_TOOL,
   TASK_PROGRESS_TOOL_DESCRIPTION,
   TASK_PROGRESS_TOOL_JSON_SCHEMA,
 } from "../../../exarch/TaskProgressInput.ts";
@@ -443,7 +446,7 @@ const ExarchSessionTool = exarchTool(
  * progress_card (commit 11921d88, MIT; see exarch/THIRD_PARTY_NOTICES.md).
  */
 const ExarchProgressCardTool = exarchTool(
-  Tool.dynamic("exarch_progress_card", {
+  Tool.dynamic(TASK_PROGRESS_TOOL, {
     description: TASK_PROGRESS_TOOL_DESCRIPTION,
     parameters: TASK_PROGRESS_TOOL_JSON_SCHEMA,
     success: TaskProgressAcknowledgement,
@@ -457,9 +460,8 @@ const ExarchProgressCardTool = exarchTool(
 );
 
 const ExarchProgressCardReadTool = exarchTool(
-  Tool.make("exarch_progress_card_read", {
-    description:
-      "Read this chat's current Exarch task card, for example after a resume. Returns card with markdown, steps and revision, or null before any write and after a clear. Reading is optional; publishing never requires it.",
+  Tool.make(TASK_PROGRESS_READ_TOOL, {
+    description: TASK_PROGRESS_READ_TOOL_DESCRIPTION,
     success: ExarchResult,
     failure: TaskProgressRefusedError,
     dependencies: [McpInvocationContext.McpInvocationContext],

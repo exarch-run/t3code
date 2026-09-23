@@ -2,9 +2,11 @@ import { historyResponseItems } from "../ContextHandoffBudget.ts";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import {
   CODEX_TASK_PROGRESS_TOOLS,
-  CODEX_SUBAGENT_WRITE_REFUSED,
-  registerCodexRoute,
+  codexToolFailure,
+  handleCodexCardCall,
 } from "../../exarch/TaskProgressCodexRoute.ts";
+import { SUBAGENT_WRITE_REFUSED } from "../../exarch/TaskProgressInput.ts";
+import { TaskProgress, type TaskProgressShape } from "../../exarch/TaskProgressRuntime.ts";
 import {
   mcpToolPresentation,
   type McpToolPresentation,
@@ -729,6 +731,7 @@ export function buildCodexTurnStartParams(input: {
               model: input.modelSelection.model,
               reasoningEffort: effort ?? "medium",
               sessionContext: input.runtimePolicy.sessionContext,
+              taskProgress: input.runtimePolicy.taskProgress,
             },
             {
               browser: input.browserToolsAvailable ?? true,
@@ -1418,6 +1421,7 @@ export const createCodexAdapterV2 = (
       idAllocator,
       serverConfig,
       continuationRequests,
+      taskProgress: yield* TaskProgress,
       ...hooks,
     });
   });
@@ -1452,6 +1456,7 @@ const layer: Layer.Layer<
       idAllocator,
       serverConfig,
       continuationRequests,
+      taskProgress: yield* TaskProgress,
     });
   }),
 );
@@ -1473,10 +1478,13 @@ export interface CodexAdapterV2Options {
   readonly continuationRequests?: {
     readonly offer: (request: ProviderContinuationRequest) => Effect.Effect<void>;
   };
+  /** The chat's task card, written through the Codex dynamic tools. */
+  readonly taskProgress?: TaskProgressShape;
 }
 
 export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): ProviderAdapterV2Shape {
   const { clientFactory, fileSystem, idAllocator, serverConfig } = adapterOptions;
+  const taskProgress = adapterOptions.taskProgress ?? TaskProgress.defaultValue();
   const continuationRequests = adapterOptions.continuationRequests;
 
   return ProviderAdapterV2.of({
@@ -1494,28 +1502,24 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           settings: adapterOptions.settings,
           environment: adapterOptions.environment,
         });
-        const progressRoutes = new Map<string, ReturnType<typeof registerCodexRoute>>();
+        // Card tool calls are answered only for the chat's own Codex threads;
+        // a helper's thread id is not here, so its call is refused.
+        const cardThreads = new Map<string, { threadId: ThreadId; release: () => void }>();
         const registerProgressThread = (threadId: ThreadId, nativeId: string) => {
-          progressRoutes.get(nativeId)?.close();
-          progressRoutes.set(
-            nativeId,
-            registerCodexRoute({ threadId, root: Effect.succeed(nativeId) }),
-          );
+          cardThreads.get(nativeId)?.release();
+          cardThreads.set(nativeId, { threadId, release: taskProgress.claimWriter(threadId) });
         };
         yield* Effect.addFinalizer(() =>
           Effect.sync(() => {
-            for (const route of progressRoutes.values()) route.close();
-            progressRoutes.clear();
+            for (const card of cardThreads.values()) card.release();
+            cardThreads.clear();
           }),
         );
         yield* client.handleServerRequest("item/tool/call", (payload) => {
-          const route = progressRoutes.get(payload.threadId);
-          return route
-            ? route.handle(payload)
-            : Effect.succeed({
-                success: false,
-                contentItems: [{ type: "inputText" as const, text: CODEX_SUBAGENT_WRITE_REFUSED }],
-              });
+          const card = cardThreads.get(payload.threadId);
+          return card
+            ? handleCodexCardCall(taskProgress, card.threadId, payload)
+            : Effect.succeed(codexToolFailure(SUBAGENT_WRITE_REFUSED));
         });
         const initialized = yield* Ref.make(false);
         const ensureInitialized = Effect.gen(function* () {

@@ -14,6 +14,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
 import * as ProjectionProjects from "../persistence/Services/ProjectionProjects.ts";
+import { ServerSettingsService } from "../serverSettings.ts";
 import { layerFromProjectRepository, RuntimePolicyV2 } from "./RuntimePolicy.ts";
 
 const projectId = ProjectId.make("project:runtime-policy");
@@ -156,4 +157,15 @@ it.effect("excludes configured session files only for app-owned helpers", () =>
       }).pipe(Effect.provide(layerFromProjectRepository.pipe(Layer.provide(repository))));
     }),
   ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("carries the owner's task card setting into each resolved policy", () =>
+  Effect.gen(function* () {
+    const settings = yield* ServerSettingsService;
+    const policy = yield* RuntimePolicyV2;
+    const thread = makeThread({ now: yield* DateTime.now, worktreePath: "/project-worktree" });
+    assert.isTrue((yield* policy.resolve({ thread, modelSelection })).taskProgress);
+    yield* settings.updateSettings({ enableTaskProgress: false });
+    assert.isFalse((yield* policy.resolve({ thread, modelSelection })).taskProgress);
+  }).pipe(Effect.provide(TestLayer.pipe(Layer.provideMerge(ServerSettingsService.layerTest())))),
 );

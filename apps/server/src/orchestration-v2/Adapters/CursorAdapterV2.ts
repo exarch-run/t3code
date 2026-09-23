@@ -2160,6 +2160,7 @@ export function makeCursorAdapterV2(
                 harness: "Cursor",
                 model: turnInput.modelSelection.model,
                 sessionContext: turnInput.runtimePolicy.sessionContext,
+                taskProgress: turnInput.runtimePolicy.taskProgress,
                 capabilities: cursorExarchCapabilities(turnInput.threadId),
               })}\n</t3_code_instructions>\n\n<user_request>\n${userText}\n</user_request>`
             : userText;

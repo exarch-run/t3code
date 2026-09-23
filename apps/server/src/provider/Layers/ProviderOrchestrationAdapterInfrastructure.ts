@@ -14,6 +14,7 @@ import {
 } from "../../orchestration-v2/Adapters/CursorAgentSdk.ts";
 import { IdAllocatorV2, layer as idAllocatorLayer } from "../../orchestration-v2/IdAllocator.ts";
 import { layer as providerContinuationRequestsLayer } from "../../orchestration-v2/ProviderContinuationRequests.ts";
+import { layer as taskProgressLayer } from "../../exarch/TaskProgressRuntime.ts";
 
 export type ProviderOrchestrationAdapterInfrastructure =
   | ClaudeAgentSdkQueryRunner
@@ -25,7 +26,8 @@ export type ProviderOrchestrationAdapterInfrastructure =
  * Infrastructure shared by the V2 adapters materialized inside provider
  * instances. `providerContinuationRequestsLayer` must be the same layer
  * reference the orchestration runtime provides to its continuation worker so
- * Effect layer memoization yields one shared queue.
+ * Effect layer memoization yields one shared queue; `taskProgressLayer`
+ * likewise yields the orchestrator's task-progress service.
  */
 export const ProviderOrchestrationAdapterInfrastructureLive = Layer.mergeAll(
   claudeAgentSdkQueryRunnerLiveLayer,
@@ -33,4 +35,5 @@ export const ProviderOrchestrationAdapterInfrastructureLive = Layer.mergeAll(
   cursorAgentSdkRunnerLiveLayer,
   idAllocatorLayer,
   providerContinuationRequestsLayer,
+  taskProgressLayer,
 );

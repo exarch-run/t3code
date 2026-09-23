@@ -1,8 +1,5 @@
-import {
-  nextTaskProgressRecord,
-  registerProgressBridge,
-  taskProgressEnabled,
-} from "../exarch/TaskProgressV2.ts";
+import { bindTaskProgressCommands, nextTaskProgressRecord } from "../exarch/TaskProgressV2.ts";
+import { TaskProgress } from "../exarch/TaskProgressRuntime.ts";
 import { threadPullRequestsOf } from "@t3tools/shared/threadPullRequests";
 import {
   normalizeThreadPullRequestKey,
@@ -620,6 +617,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const fileSystem = yield* FileSystem.FileSystem;
   const providerAdapters = yield* ProviderAdapterRegistryV2;
   const continuationRequests = yield* ProviderContinuationRequests;
+  const taskProgress = yield* TaskProgress;
   const providerSessions = yield* ProviderSessionManagerV2;
   const providerSwitchService = yield* ProviderSwitchServiceV2;
   const runtimePolicy = yield* RuntimePolicyV2;
@@ -2319,7 +2317,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const taskProgressV2 =
       command.type === "thread.task-progress.write"
         ? yield* Effect.gen(function* () {
-            if (!(yield* taskProgressEnabled.pipe(mapDispatchError(command))))
+            if (!(yield* taskProgress.enabled))
               return yield* new OrchestratorDispatchError({
                 commandId: command.commandId,
                 commandType: command.type,
@@ -8900,7 +8898,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     ),
   );
 
-  yield* registerProgressBridge(dispatchWithReceipt, (threadId) =>
+  yield* bindTaskProgressCommands(taskProgress, dispatchWithReceipt, (threadId) =>
     projectionStore.getThread(threadId).pipe(Effect.map((thread) => thread.taskProgressV2 ?? null)),
   );
   return OrchestratorV2.of({

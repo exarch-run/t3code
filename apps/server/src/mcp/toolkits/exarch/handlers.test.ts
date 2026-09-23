@@ -1,10 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
-import {
-  EnvironmentId,
-  ProviderInstanceId,
-  ThreadId,
-  type TaskProgressCardV2,
-} from "@t3tools/contracts";
+import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -15,11 +10,9 @@ import * as Fiber from "effect/Fiber";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as ExarchHostClient from "../../ExarchHostClient.ts";
-import { installBridge } from "../../../exarch/TaskProgressRuntime.ts";
-import {
-  CODEX_MCP_WRITE_REFUSED,
-  registerCodexRoute,
-} from "../../../exarch/TaskProgressCodexRoute.ts";
+import { boundTaskProgress, memoryCards } from "../../../exarch/TaskProgress.testkit.ts";
+import { MCP_WRITE_REFUSED } from "../../../exarch/TaskProgressInput.ts";
+import { TaskProgress, type TaskProgressShape } from "../../../exarch/TaskProgressRuntime.ts";
 import { ExarchToolkitHandlersLive } from "./handlers.ts";
 import { ExarchToolkit } from "./tools.ts";
 
@@ -80,11 +73,17 @@ async function stubHost(
 const makeHarness = (
   env: NodeJS.ProcessEnv,
   options: Omit<ExarchHostClient.ExarchHostClientOptions, "env"> = {},
+  taskProgress: TaskProgressShape = TaskProgress.defaultValue(),
 ) =>
   Effect.gen(function* () {
     const client = ExarchHostClient.layer({ env: () => env, timeoutMs: 2_000, ...options });
     const toolkit = yield* ExarchToolkit.pipe(
-      Effect.provide(ExarchToolkitHandlersLive.pipe(Layer.provide(client))),
+      Effect.provide(
+        ExarchToolkitHandlersLive.pipe(
+          Layer.provide(client),
+          Layer.provide(Layer.succeed(TaskProgress, taskProgress)),
+        ),
+      ),
     );
     const call = <Name extends keyof typeof ExarchToolkit.tools>(
       name: Name,
@@ -325,157 +324,116 @@ describe("task card handlers", () => {
     markdown: "Halfway",
     steps: [{ step: "Read", status: "completed" as const }],
   };
-  const fakeBridge = () => {
-    const written: unknown[] = [];
-    let current: TaskProgressCardV2 | null = card;
-    const close = installBridge({
-      enabled: Effect.succeed(true),
-      write: (input) => {
-        written.push(input);
-        const empty = input.input.markdown === undefined && input.input.steps === undefined;
-        current = empty
-          ? null
-          : {
-              version: 2 as const,
-              revision: 2,
-              updatedAt: "2026-01-01T00:00:01.000Z",
-              ...(input.input.markdown !== undefined ? { markdown: input.input.markdown } : {}),
-              ...(input.input.steps !== undefined ? { steps: input.input.steps } : {}),
-            };
-        return Effect.succeed({
-          card: current,
-          revision: 2,
-          updatedAt: "2026-01-01T00:00:01.000Z",
-          generation: "g",
-          turnId: null,
-        });
-      },
-      read: () =>
-        Effect.succeed({
-          card: current,
-          revision: current ? current.revision : 2,
-          updatedAt: "2026-01-01T00:00:00.000Z",
-          generation: "g",
-          turnId: null,
-        }),
-    });
-    return { written, close };
+  const cardHarness = () => {
+    const cards = memoryCards(card);
+    const taskProgress = boundTaskProgress(cards.commands);
+    return makeHarness({}, {}, taskProgress).pipe(
+      Effect.map((harness) => ({ ...harness, written: cards.written, taskProgress })),
+    );
   };
 
   it.effect("writes the chat's card from the raw call and answers with the acknowledgement", () =>
     Effect.gen(function* () {
-      const bridge = fakeBridge();
-      try {
-        const harness = yield* makeHarness({});
-        expect(yield* harness.call("exarch_progress_card_read", {})).toEqual({ card });
-        const result = yield* harness.call("exarch_progress_card", {
-          markdown: "Halfway",
-          plan: [
-            { step: "Read", status: "completed" },
-            { step: "Patch", status: "in_progress" },
-          ],
-        });
-        expect(result).toEqual({
-          message: "Progress card updated (rev 2, 1/2 done)",
-          revision: 2,
-          steps: { completed: 1, total: 2 },
-        });
-        expect(bridge.written).toEqual([
-          {
-            threadId: "thread-1",
-            input: {
-              markdown: "Halfway",
-              steps: [
-                { step: "Read", status: "completed" },
-                { step: "Patch", status: "in_progress" },
-              ],
-            },
-          },
-        ]);
-        // The earlier Exarch field names still decode into the same write.
-        yield* harness.call("exarch_progress_card", {
-          writeId: "native-2",
-          plan: [{ text: "Legacy", status: "pending" }],
-        });
-        expect(bridge.written.at(-1)).toEqual({
+      const harness = yield* cardHarness();
+      expect(yield* harness.call("exarch_progress_card_read", {})).toEqual({ card });
+      const result = yield* harness.call("exarch_progress_card", {
+        markdown: "Halfway",
+        plan: [
+          { step: "Read", status: "completed" },
+          { step: "Patch", status: "in_progress" },
+        ],
+      });
+      expect(result).toEqual({
+        message: "Progress card updated (rev 2, 1/2 done)",
+        revision: 2,
+        steps: { completed: 1, total: 2 },
+      });
+      expect(harness.written).toEqual([
+        {
           threadId: "thread-1",
-          input: { steps: [{ step: "Legacy", status: "pending" }] },
-        });
-        expect(yield* harness.call("exarch_progress_card", {})).toEqual({
-          message: "Progress card cleared",
-          revision: null,
-          steps: null,
-        });
-        expect(yield* harness.call("exarch_progress_card_read", {})).toEqual({ card: null });
-      } finally {
-        bridge.close();
-      }
+          content: {
+            markdown: "Halfway",
+            steps: [
+              { step: "Read", status: "completed" },
+              { step: "Patch", status: "in_progress" },
+            ],
+          },
+        },
+      ]);
+      // The earlier Exarch field names still decode into the same write.
+      yield* harness.call("exarch_progress_card", {
+        writeId: "native-2",
+        plan: [{ text: "Legacy", status: "pending" }],
+      });
+      expect(harness.written.at(-1)).toEqual({
+        threadId: "thread-1",
+        content: { steps: [{ step: "Legacy", status: "pending" }] },
+      });
+      expect(yield* harness.call("exarch_progress_card", {})).toEqual({
+        message: "Progress card cleared",
+        revision: null,
+        steps: null,
+      });
+      expect(yield* harness.call("exarch_progress_card_read", {})).toEqual({ card: null });
     }),
   );
 
   it.effect(
-    "refuses the MCP writer for a chat whose card travels the Codex route, but still reads",
+    "refuses the MCP writer while a provider's own tool holds the chat's card, but still reads",
     () =>
       Effect.gen(function* () {
-        const bridge = fakeBridge();
-        const route = registerCodexRoute({ threadId: THREAD_ID, root: Effect.succeed("root") });
-        try {
-          const harness = yield* makeHarness({});
-          const refused = yield* harness
-            .call("exarch_progress_card", { markdown: "Through MCP" })
-            .pipe(Effect.flip);
-          expect(refused).toMatchObject({
-            _tag: "TaskProgressRefusedError",
-            detail: CODEX_MCP_WRITE_REFUSED,
-          });
-          expect(bridge.written).toEqual([]);
-          expect(yield* harness.call("exarch_progress_card_read", {})).toEqual({ card });
-        } finally {
-          route.close();
-          bridge.close();
-        }
+        const harness = yield* cardHarness();
+        const release = harness.taskProgress.claimWriter(THREAD_ID);
+        const refused = yield* harness
+          .call("exarch_progress_card", { markdown: "Through MCP" })
+          .pipe(Effect.flip);
+        expect(refused).toMatchObject({
+          _tag: "TaskProgressRefusedError",
+          detail: MCP_WRITE_REFUSED,
+        });
+        expect(harness.written).toEqual([]);
+        expect(yield* harness.call("exarch_progress_card_read", {})).toEqual({ card });
+        release();
+        expect(
+          (yield* harness.call("exarch_progress_card", { markdown: "After release" })).revision,
+        ).toBe(2);
       }),
   );
 
   it.effect("refuses a misnamed checklist before writing, so the previous card survives", () =>
     Effect.gen(function* () {
-      const bridge = fakeBridge();
-      try {
-        const harness = yield* makeHarness({});
-        // The September 12 review sent its steps under the wrong name; the
-        // decoder must not turn that into a note-only update.
-        const refused = yield* harness
-          .call("exarch_progress_card", {
-            markdown: "Reviewing",
-            steps: [{ step: "Read", status: "completed" }],
-          })
-          .pipe(Effect.flip);
-        expect(refused).toMatchObject({
-          _tag: "TaskProgressRefusedError",
-          detail: expect.stringContaining('unknown field "steps"'),
-        });
-        const wrongStep = yield* harness
-          .call("exarch_progress_card", { plan: [{ title: "Read", status: "completed" }] })
-          .pipe(Effect.flip);
-        expect(wrongStep).toMatchObject({
-          detail: expect.stringContaining('plan[0] has an unknown field "title"'),
-        });
-        const twoActive = yield* harness
-          .call("exarch_progress_card", {
-            plan: [
-              { step: "a", status: "in_progress" },
-              { step: "b", status: "in_progress" },
-            ],
-          })
-          .pipe(Effect.flip);
-        expect(twoActive).toMatchObject({
-          detail: expect.stringContaining("at most one in_progress"),
-        });
-        expect(bridge.written).toEqual([]);
-        expect(yield* harness.call("exarch_progress_card_read", {})).toEqual({ card });
-      } finally {
-        bridge.close();
-      }
+      const harness = yield* cardHarness();
+      // The September 12 review sent its steps under the wrong name; the
+      // decoder must not turn that into a note-only update.
+      const refused = yield* harness
+        .call("exarch_progress_card", {
+          markdown: "Reviewing",
+          steps: [{ step: "Read", status: "completed" }],
+        })
+        .pipe(Effect.flip);
+      expect(refused).toMatchObject({
+        _tag: "TaskProgressRefusedError",
+        detail: expect.stringContaining('unknown field "steps"'),
+      });
+      const wrongStep = yield* harness
+        .call("exarch_progress_card", { plan: [{ title: "Read", status: "completed" }] })
+        .pipe(Effect.flip);
+      expect(wrongStep).toMatchObject({
+        detail: expect.stringContaining('plan[0] has an unknown field "title"'),
+      });
+      const twoActive = yield* harness
+        .call("exarch_progress_card", {
+          plan: [
+            { step: "a", status: "in_progress" },
+            { step: "b", status: "in_progress" },
+          ],
+        })
+        .pipe(Effect.flip);
+      expect(twoActive).toMatchObject({
+        detail: expect.stringContaining("at most one in_progress"),
+      });
+      expect(harness.written).toEqual([]);
+      expect(yield* harness.call("exarch_progress_card_read", {})).toEqual({ card });
     }),
   );
 });

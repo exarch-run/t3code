@@ -3332,6 +3332,7 @@ export function makeOpenCodeAdapterV2(options: OpenCodeAdapterV2Options): Provid
                 harness: "OpenCode",
                 model: turnInput.modelSelection.model,
                 sessionContext: turnInput.runtimePolicy.sessionContext,
+                taskProgress: turnInput.runtimePolicy.taskProgress,
                 capabilities: exarchCapabilities,
               });
               const agent =

@@ -1,7 +1,7 @@
 // @effect-diagnostics globalConsole:off -- the section-size printout is the project's instruction size measurement and must reach the test runner's stdout.
 import { describe, expect, it } from "vite-plus/test";
 import { buildRuntimeInstructions, runtimeInstructionSections } from "./RuntimeInstructions.ts";
-import { setProgressInstructionsEnabled } from "../exarch/TaskProgressRuntime.ts";
+import { ProviderDriverKind } from "@t3tools/contracts";
 
 const ALL_TOOLS = { t3Mcp: true, browser: true, device: true } as const;
 const BROWSER_BULLET = "- Interactive browser work: Use Exarch's `preview_*` tools";
@@ -73,6 +73,7 @@ describe("buildRuntimeInstructions", () => {
       harness: "Claude Code",
       capabilities: ALL_TOOLS,
       sessionContext: block,
+      taskProgress: true,
     });
     const positions = [
       instructions.indexOf("<runtime_info>"),
@@ -87,7 +88,7 @@ describe("buildRuntimeInstructions", () => {
   it.each(["Codex", "Claude Code", "Cursor", "Grok", "OpenCode", "Antigravity"])(
     "tells the %s harness about the task card",
     (harness) => {
-      const instructions = buildRuntimeInstructions({ harness });
+      const instructions = buildRuntimeInstructions({ harness, taskProgress: true });
       expect(instructions).toContain("<task_progress>");
       expect(instructions).toContain("exarch_progress_card");
       expect(instructions).toContain("at least two meaningful sequential steps");
@@ -102,32 +103,37 @@ describe("buildRuntimeInstructions", () => {
     },
   );
 
-  it("leaves the task card out when publishing is disabled", () => {
+  it("leaves the task card out unless the caller says publishing is on", () => {
     expect(buildRuntimeInstructions({ harness: "Codex", taskProgress: false })).not.toContain(
       "task_progress",
     );
-    setProgressInstructionsEnabled(false);
-    try {
-      expect(buildRuntimeInstructions({ harness: "Claude Code" })).not.toContain("task_progress");
-      expect(buildRuntimeInstructions({ harness: "Claude Code", taskProgress: true })).toContain(
-        "<task_progress>",
-      );
-    } finally {
-      setProgressInstructionsEnabled(true);
-    }
-    expect(buildRuntimeInstructions({ harness: "Claude Code" })).toContain("<task_progress>");
+    expect(buildRuntimeInstructions({ harness: "Codex" })).not.toContain("task_progress");
+    expect(buildRuntimeInstructions({ harness: "Codex", taskProgress: true })).toContain(
+      "<task_progress>",
+    );
   });
 
-  it("gives Claude explicit card creation and upkeep points", () => {
-    const instructions = buildRuntimeInstructions({ harness: "Claude Code" });
+  it("gives the Claude driver explicit card creation and upkeep points", () => {
+    const claude = ProviderDriverKind.make("claudeAgent");
+    const instructions = buildRuntimeInstructions({
+      harness: "Claude Code",
+      driver: claude,
+      taskProgress: true,
+    });
     expect(instructions).toContain("before your first work tool call");
     expect(instructions).toContain("before reasoning about or starting that next phase");
     expect(instructions).toContain("the owner changes direction");
     expect(instructions).toContain("reconciling the card before replying");
     expect(instructions).toContain("Before your final answer");
-    expect(buildRuntimeInstructions({ harness: "Codex" })).not.toContain(
-      "before your first work tool call",
-    );
+    // The display name alone does not select the Claude text; the driver does.
+    for (const other of [
+      { harness: "Claude Code" },
+      { harness: "Codex", driver: ProviderDriverKind.make("codex") },
+    ]) {
+      expect(buildRuntimeInstructions({ ...other, taskProgress: true })).not.toContain(
+        "before your first work tool call",
+      );
+    }
   });
 
   it("keeps known model and effort metadata on one line", () => {
@@ -168,6 +174,8 @@ describe("buildRuntimeInstructions", () => {
   it("reports the size of each section for Claude Code with every tool family", () => {
     const sections = runtimeInstructionSections({
       harness: "Claude Code",
+      driver: ProviderDriverKind.make("claudeAgent"),
+      taskProgress: true,
       capabilities: ALL_TOOLS,
       sessionContext: "<session_files>\n## SOUL.md\n\nBe plain.\n</session_files>",
     });

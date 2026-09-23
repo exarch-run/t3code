@@ -5,9 +5,10 @@ import { McpServer } from "effect/unstable/ai";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as ExarchHostClient from "../../ExarchHostClient.ts";
+import { MCP_WRITE_REFUSED, TASK_PROGRESS_TOOL } from "../../../exarch/TaskProgressInput.ts";
 import {
-  publishProgress,
-  readProgressCard,
+  layer as taskProgressLayer,
+  TaskProgress,
   TaskProgressRefusedError,
 } from "../../../exarch/TaskProgressRuntime.ts";
 import { ExarchToolkit, type ExarchResult } from "./tools.ts";
@@ -21,10 +22,12 @@ import { ExarchToolkit, type ExarchResult } from "./tools.ts";
  * The task card tools never leave the server: the chat comes from the
  * invocation and the card is written inside the orchestration transaction,
  * so they work with the document host off. The writer receives the raw call
- * and validates it itself (see TaskProgressInput).
+ * and validates it itself (see TaskProgressInput), and refuses a chat whose
+ * card travels the provider's own tool (see TaskProgressOwnership).
  */
 const make = Effect.gen(function* () {
   const client = yield* ExarchHostClient.ExarchHostClient;
+  const taskProgress = yield* TaskProgress;
   const call = (tool: string) => (input: unknown) =>
     Effect.gen(function* () {
       const scope = yield* McpInvocationContext.McpInvocationContext;
@@ -63,14 +66,16 @@ const make = Effect.gen(function* () {
         const scope = yield* Effect.serviceOption(McpInvocationContext.McpInvocationContext);
         if (Option.isNone(scope))
           return yield* new TaskProgressRefusedError({
-            detail: "exarch_progress_card requires an agent session.",
+            detail: `${TASK_PROGRESS_TOOL} requires an agent session.`,
           });
-        return yield* publishProgress(scope.value.threadId, input);
+        if (taskProgress.claimed(scope.value.threadId))
+          return yield* new TaskProgressRefusedError({ detail: MCP_WRITE_REFUSED });
+        return yield* taskProgress.publish(scope.value.threadId, input);
       }),
     exarch_progress_card_read: () =>
       Effect.gen(function* () {
         const scope = yield* McpInvocationContext.McpInvocationContext;
-        return { card: yield* readProgressCard(scope.threadId) } as ExarchResult;
+        return { card: yield* taskProgress.read(scope.threadId) } as ExarchResult;
       }),
   });
 });
@@ -81,4 +86,6 @@ export const ExarchToolkitHandlersLive = ExarchToolkit.toLayer(make);
 export const ExarchToolkitRegistrationLive = McpServer.toolkit(ExarchToolkit).pipe(
   Layer.provide(ExarchToolkitHandlersLive),
   Layer.provide(ExarchHostClient.layer()),
+  // The orchestration runtime's reference, so the writer reaches its commands.
+  Layer.provide(taskProgressLayer),
 );

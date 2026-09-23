@@ -46,6 +46,8 @@ import type {
 
 export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
   sessionContext: Schema.optional(Schema.String),
+  /** Exarch: whether the owner's setting lets the session write the task card. */
+  taskProgress: Schema.optional(Schema.Boolean),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   cwd: Schema.NullOr(Schema.String),

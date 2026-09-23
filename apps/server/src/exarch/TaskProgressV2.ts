@@ -1,17 +1,10 @@
 import { CommandId, type TaskProgressRecordV2, type TaskProgressStep } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
-import * as Stream from "effect/Stream";
 import * as NodeCrypto from "node:crypto";
 import type { OrchestratorV2Shape } from "../orchestration-v2/Orchestrator.ts";
-import { ServerSettingsService } from "../serverSettings.ts";
 import { validateTaskProgressContent } from "./TaskProgressInput.ts";
-import {
-  installBridge,
-  setProgressInstructionsEnabled,
-  type Bridge,
-} from "./TaskProgressRuntime.ts";
+import type { TaskProgressCommands, TaskProgressShape } from "./TaskProgressRuntime.ts";
 
 /** Cards are part of the v2 thread record, committed and broadcast with the thread. */
 export function nextTaskProgressRecord(input: {
@@ -38,55 +31,31 @@ export function nextTaskProgressRecord(input: {
   };
 }
 
-export const taskProgressEnabled = Effect.gen(function* () {
-  const settings = yield* Effect.serviceOption(ServerSettingsService);
-  return Option.isSome(settings)
-    ? yield* settings.value.getSettings.pipe(Effect.map((value) => value.enableTaskProgress))
-    : true;
-});
-
-export const registerProgressBridge = Effect.fn("exarch.registerV2ProgressBridge")(function* (
+/**
+ * Binds the orchestrator's card commands to the task-progress service for the
+ * life of the orchestrator's scope.
+ */
+export const bindTaskProgressCommands = Effect.fn("exarch.bindTaskProgressCommands")(function* (
+  taskProgress: TaskProgressShape,
   dispatch: OrchestratorV2Shape["dispatch"],
-  read: Bridge["read"],
+  read: TaskProgressCommands["read"],
 ) {
-  const settings = yield* Effect.serviceOption(ServerSettingsService);
-  const enabled = Option.isSome(settings)
-    ? settings.value.getSettings.pipe(
-        Effect.map((value) => value.enableTaskProgress),
-        Effect.orElseSucceed(() => false),
-      )
-    : Effect.succeed(true);
-  setProgressInstructionsEnabled(yield* enabled);
-  if (Option.isSome(settings)) {
-    const changes = yield* settings.value.subscribeChanges;
-    yield* Effect.forkScoped(
-      Stream.runForEach(changes, (value) =>
-        Effect.sync(() => setProgressInstructionsEnabled(value.enableTaskProgress)),
-      ),
-    );
-  }
-  yield* Effect.acquireRelease(
-    Effect.sync(() =>
-      installBridge({
-        enabled,
-        read,
-        write: Effect.fn("exarch.writeV2Progress")(function* ({ threadId, input }) {
-          const result = yield* dispatch({
-            type: "thread.task-progress.write",
-            commandId: CommandId.make(`exarch-progress-${NodeCrypto.randomUUID()}`),
-            threadId,
-            ...input,
-          });
-          // A later concurrent write must not change this call's acknowledgement.
-          for (const stored of result.storedEvents) {
-            if (stored.event.type === "thread.metadata-updated") {
-              return stored.event.payload.taskProgressV2 ?? null;
-            }
-          }
-          return null;
-        }),
-      }),
-    ),
-    (close) => Effect.sync(close),
-  );
+  yield* taskProgress.bind({
+    read,
+    write: Effect.fn("exarch.writeV2Progress")(function* (threadId, content) {
+      const result = yield* dispatch({
+        type: "thread.task-progress.write",
+        commandId: CommandId.make(`exarch-progress-${NodeCrypto.randomUUID()}`),
+        threadId,
+        ...content,
+      });
+      // A later concurrent write must not change this call's acknowledgement.
+      for (const stored of result.storedEvents) {
+        if (stored.event.type === "thread.metadata-updated") {
+          return stored.event.payload.taskProgressV2 ?? null;
+        }
+      }
+      return null;
+    }),
+  });
 });

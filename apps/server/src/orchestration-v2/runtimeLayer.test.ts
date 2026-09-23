@@ -1,4 +1,4 @@
-import { publishProgress, readProgressCard } from "../exarch/TaskProgressRuntime.ts";
+import { TaskProgress } from "../exarch/TaskProgressRuntime.ts";
 import { SourceControlProviderRegistry } from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -3032,6 +3032,7 @@ it.layer(Layer.merge(TestLayer, SqlitePersistenceMemory))("Exarch v2 task cards"
     () =>
       Effect.gen(function* () {
         const orchestrator = yield* OrchestratorV2;
+        const taskProgress = yield* TaskProgress;
         const threadId = ThreadId.make("exarch-v2-progress");
         yield* orchestrator.dispatch({
           type: "thread.create",
@@ -3049,16 +3050,16 @@ it.layer(Layer.merge(TestLayer, SqlitePersistenceMemory))("Exarch v2 task cards"
         });
         const acknowledgements = yield* Effect.all(
           [
-            publishProgress(threadId, {
+            taskProgress.publish(threadId, {
               markdown: "First",
               plan: [{ step: "Port", status: "in_progress" }],
             }),
-            publishProgress(threadId, { markdown: "Second" }),
+            taskProgress.publish(threadId, { markdown: "Second" }),
           ],
           { concurrency: 2 },
         );
         assert.deepEqual(acknowledgements.map((ack) => ack.revision).sort(), [1, 2]);
-        const card = yield* readProgressCard(threadId);
+        const card = yield* taskProgress.read(threadId);
         assert.equal(card?.revision, 2);
         assert.deepEqual(
           (yield* orchestrator.getThreadShell(threadId))?.taskProgressV2?.card,
@@ -3073,10 +3074,10 @@ it.layer(Layer.merge(TestLayer, SqlitePersistenceMemory))("Exarch v2 task cards"
         const first = yield* orchestrator.dispatch(command);
         const retry = yield* orchestrator.dispatch(command);
         assert.equal(first.sequence, retry.sequence);
-        assert.equal((yield* readProgressCard(threadId))?.revision, 3);
-        const cleared = yield* publishProgress(threadId, {});
+        assert.equal((yield* taskProgress.read(threadId))?.revision, 3);
+        const cleared = yield* taskProgress.publish(threadId, {});
         assert.equal(cleared.message, "Progress card cleared");
-        assert.isNull(yield* readProgressCard(threadId));
+        assert.isNull(yield* taskProgress.read(threadId));
         const projection = yield* orchestrator.getThreadProjection(threadId);
         assert.equal(projection.thread.taskProgressV2?.revision, 4);
         const sql = yield* SqlClient.SqlClient;
@@ -3090,6 +3091,7 @@ it.layer(Layer.merge(TestLayer, SqlitePersistenceMemory))("Exarch v2 task cards"
   it.effect("rejects invalid cards without advancing the last good card", () =>
     Effect.gen(function* () {
       const orchestrator = yield* OrchestratorV2;
+      const taskProgress = yield* TaskProgress;
       const threadId = ThreadId.make("exarch-v2-progress-invalid");
       yield* orchestrator.dispatch({
         type: "thread.create",
@@ -3105,7 +3107,7 @@ it.layer(Layer.merge(TestLayer, SqlitePersistenceMemory))("Exarch v2 task cards"
         branch: null,
         worktreePath: null,
       });
-      yield* publishProgress(threadId, { markdown: "Retain me" });
+      yield* taskProgress.publish(threadId, { markdown: "Retain me" });
       const result = yield* orchestrator
         .dispatch({
           type: "thread.task-progress.write",
@@ -3118,8 +3120,8 @@ it.layer(Layer.merge(TestLayer, SqlitePersistenceMemory))("Exarch v2 task cards"
         })
         .pipe(Effect.result);
       assert.equal(result._tag, "Failure");
-      assert.equal((yield* readProgressCard(threadId))?.markdown, "Retain me");
-      assert.equal((yield* readProgressCard(threadId))?.revision, 1);
+      assert.equal((yield* taskProgress.read(threadId))?.markdown, "Retain me");
+      assert.equal((yield* taskProgress.read(threadId))?.revision, 1);
     }),
   );
 });

@@ -42,6 +42,7 @@ describe("makeClaudeQueryOptions system prompt", () => {
       mcpServers,
       exarchTools: { browser: true, device: true },
       sessionContext: "<session_files>Project standing instructions.</session_files>",
+      taskProgress: true,
     });
     expect(append).toContain("running in Exarch through the Claude Code harness");
     expect(count(append, "<exarch_instructions>")).toBe(1);
@@ -89,11 +90,21 @@ describe("makeClaudeQueryOptions system prompt", () => {
   });
 
   it("leaves the standing block out without the t3-code MCP server", () => {
-    const append = systemPromptAppend({ exarchTools: { browser: true, device: true } });
+    const append = systemPromptAppend({
+      exarchTools: { browser: true, device: true },
+      taskProgress: true,
+    });
     expect(append).toContain("<runtime_info>");
     expect(append).toContain("<task_progress>");
+    expect(append).toContain("before your first work tool call");
     expect(append).not.toContain("exarch_instructions");
     expect(append).not.toContain("link_pull_request");
     expect(append).not.toContain("preview_*");
+  });
+
+  it("leaves the task card out when the owner's setting is off", () => {
+    const append = systemPromptAppend({ mcpServers, taskProgress: false });
+    expect(append).not.toContain("task_progress");
+    expect(append).not.toContain("before your first work tool call");
   });
 });

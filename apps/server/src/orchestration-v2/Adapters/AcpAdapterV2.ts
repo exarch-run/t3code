@@ -6285,6 +6285,7 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
               harness: flavor.runtimeHarness ?? driver,
               model: turnInput.modelSelection.model,
               sessionContext: turnInput.runtimePolicy.sessionContext,
+              taskProgress: turnInput.runtimePolicy.taskProgress,
               capabilities: {
                 t3Mcp: instructionState.hasT3Mcp,
                 browser: instructionState.browser,

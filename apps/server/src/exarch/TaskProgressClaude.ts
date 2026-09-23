@@ -2,12 +2,19 @@ import type { ThreadId } from "@t3tools/contracts";
 import type { HookCallback, HookCallbackMatcher, HookEvent } from "@anthropic-ai/claude-agent-sdk";
 import * as Effect from "effect/Effect";
 import { claudeTaskProgressOwnershipHooks } from "./TaskProgressOwnership.ts";
-import { progressEnabled, readProgressCard } from "./TaskProgressRuntime.ts";
+import type { TaskProgressShape } from "./TaskProgressRuntime.ts";
+
+/** The chat whose saved card a Claude session restores, and the service that holds it. */
+export interface ClaudeTaskCard {
+  readonly threadId: ThreadId;
+  readonly taskProgress: TaskProgressShape;
+}
 
 /** Restore application state through Claude's context hooks, without adding a user turn. */
-export function claudeTaskProgressHooks(
-  threadId: ThreadId,
-): Partial<Record<HookEvent, HookCallbackMatcher[]>> {
+export function claudeTaskProgressHooks({
+  threadId,
+  taskProgress,
+}: ClaudeTaskCard): Partial<Record<HookEvent, HookCallbackMatcher[]>> {
   const restore: HookCallback = async (input, _toolUseId, { signal }) => {
     if (
       input.agent_id ||
@@ -18,8 +25,8 @@ export function claudeTaskProgressHooks(
 
     const card = await Effect.runPromise(
       Effect.gen(function* () {
-        if (!(yield* progressEnabled())) return null;
-        return yield* readProgressCard(threadId);
+        if (!(yield* taskProgress.enabled)) return null;
+        return yield* taskProgress.read(threadId);
       }).pipe(
         Effect.timeout("1 second"),
         Effect.catch(() => Effect.succeed(null)),

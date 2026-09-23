@@ -202,3 +202,17 @@ export const TASK_PROGRESS_TOOL_JSON_SCHEMA = {
 /** The writer's description, shared by the MCP tool and the Codex dynamic tool (after OpenClaw's progress_card). */
 export const TASK_PROGRESS_TOOL_DESCRIPTION =
   'Maintain this chat\'s task card: the single durable status surface Exarch shows beside the owner\'s composer, for someone who is not reading the transcript. Create a card only for substantial work with at least two meaningful sequential steps. Do not create a card for greetings, quick questions, or single-step requests, and do not invent steps just to justify one. Existing cards may still be updated or cleared. Each call replaces the whole card. Pick the representation that fits the work, using either or both parts: `markdown` \u2014 a compact note; tables for comparisons or metrics, a bold one-liner for simple state, or one <progress aria-label="CI \u00b7 4/6" value="4" max="6"></progress> bar for a long operation. Put a progress bar first and give it a short aria-label with its purpose and current/total values. Other raw HTML is stripped. Known URL? Link it. Don\'t leave PRs or issues as bare IDs. And `plan` \u2014 an ordered step checklist (pending | in_progress | completed, at most one in_progress) for genuinely sequential work. The checklist is optional: omit it whenever a table, bar, or sentence says it better, and never repeat the same facts in both parts. Call with both parts empty to clear. Update on meaningful change \u2014 a step done, a blocker, results in \u2014 not every message. Max 8 KB markdown, 50 steps. No read is required first; the main agent keeps the card.';
+
+/** The card tools' names, the same on the shared MCP toolkit and as Codex dynamic tools. */
+export const TASK_PROGRESS_TOOL = "exarch_progress_card";
+export const TASK_PROGRESS_READ_TOOL = "exarch_progress_card_read";
+
+export const TASK_PROGRESS_READ_TOOL_DESCRIPTION =
+  "Read this chat's current Exarch task card, for example after a resume. Returns card with markdown, steps and revision, or null before any write and after a clear. Reading is optional; publishing never requires it.";
+
+/** What a helper agent reads when it tries to write the card (see TaskProgressOwnership). */
+export const SUBAGENT_WRITE_REFUSED =
+  "Only the main agent maintains the Exarch task card. Report progress in your result instead.";
+
+/** What the shared MCP writer answers in a chat whose card travels the provider's own tool. */
+export const MCP_WRITE_REFUSED = `This chat writes its task card through the ${TASK_PROGRESS_TOOL} dynamic tool; the t3-code MCP copy is not accepted here.`;

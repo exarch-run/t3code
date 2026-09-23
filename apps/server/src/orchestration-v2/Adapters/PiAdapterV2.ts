@@ -450,6 +450,7 @@ export function makePiAdapterV2(options: PiAdapterV2Options): ProviderAdapterV2S
             harness: "Pi",
             model: input.modelSelection.model,
             sessionContext: input.runtimePolicy.sessionContext,
+            taskProgress: input.runtimePolicy.taskProgress,
             capabilities: {
               t3Mcp: launch.hasT3Mcp,
               browser: mcpSession?.browserToolsAvailable ?? true,

@@ -103,7 +103,8 @@ import {
 } from "../../provider/Layers/claudeUsageLimits.ts";
 import type { ServerProviderShape } from "../../provider/Services/ServerProvider.ts";
 import { mergeProviderInstanceEnvironment } from "../../provider/ProviderInstanceEnvironment.ts";
-import { claudeTaskProgressHooks } from "../../exarch/TaskProgressClaude.ts";
+import { claudeTaskProgressHooks, type ClaudeTaskCard } from "../../exarch/TaskProgressClaude.ts";
+import { TaskProgress, type TaskProgressShape } from "../../exarch/TaskProgressRuntime.ts";
 import { claudeTaskProgressOwnershipHooks } from "../../exarch/TaskProgressOwnership.ts";
 import { buildRuntimeInstructions } from "../../provider/RuntimeInstructions.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
@@ -716,8 +717,10 @@ export function makeClaudeQueryOptions(input: {
   readonly sessionContext?: string | undefined;
   readonly modelSelection: ModelSelection;
   readonly nativeThreadId: string;
-  /** The Exarch thread whose saved task card is restored into Claude's context. */
-  readonly threadId?: ThreadId;
+  /** Whether the owner's setting lets this session write the task card. */
+  readonly taskProgress?: boolean | undefined;
+  /** The Exarch chat whose saved task card is restored into Claude's context. */
+  readonly taskCard?: ClaudeTaskCard;
   readonly resume: boolean;
   readonly resumeSessionAt?: string;
   readonly cwd: string | null;
@@ -826,15 +829,17 @@ export function makeClaudeQueryOptions(input: {
     ...(input.environment === undefined ? {} : { env: input.environment }),
     ...(input.mcpServers === undefined ? {} : { mcpServers: input.mcpServers }),
     hooks:
-      input.threadId === undefined
+      input.taskCard === undefined
         ? claudeTaskProgressOwnershipHooks()
-        : claudeTaskProgressHooks(input.threadId),
+        : claudeTaskProgressHooks(input.taskCard),
     systemPrompt: {
       type: "preset" as const,
       preset: "claude_code" as const,
       append: buildRuntimeInstructions({
         harness: "Claude Code",
+        driver: CLAUDE_PROVIDER,
         sessionContext: input.sessionContext,
+        taskProgress: input.taskProgress,
         ...(input.mcpServers === undefined
           ? {}
           : {
@@ -2607,6 +2612,8 @@ export interface ClaudeAdapterV2Options {
   readonly continuationRequests?: {
     readonly offer: (request: ProviderContinuationRequest) => Effect.Effect<void>;
   };
+  /** Restores the chat's task card into Claude's context. */
+  readonly taskProgress?: TaskProgressShape;
 }
 
 export function makeClaudeAdapterV2(
@@ -2616,6 +2623,7 @@ export function makeClaudeAdapterV2(
   const continuationRequests = adapterOptions.continuationRequests ?? {
     offer: () => Effect.void,
   };
+  const taskProgress = adapterOptions.taskProgress ?? TaskProgress.defaultValue();
 
   // Re-scan on every send: skills are added and switched off mid-session, and
   // the scan is a few directory reads. A skill switched off via skillOverrides,
@@ -5758,9 +5766,10 @@ export function makeClaudeAdapterV2(
               providerSessionId: input.providerSessionId,
               options: makeClaudeQueryOptions({
                 sessionContext: turnInput.runtimePolicy.sessionContext,
+                taskProgress: turnInput.runtimePolicy.taskProgress,
                 modelSelection: turnInput.modelSelection,
                 nativeThreadId,
-                threadId: turnInput.threadId,
+                taskCard: { threadId: turnInput.threadId, taskProgress },
                 resume: shouldResume,
                 ...(resumeSessionAt === undefined ? {} : { resumeSessionAt }),
                 cwd: turnInput.runtimePolicy.cwd,
@@ -6502,6 +6511,7 @@ export const createClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2Driver.create")(
       idAllocator,
       queryRunner,
       continuationRequests,
+      taskProgress: yield* TaskProgress,
       ...hooks,
     });
   },
@@ -6548,6 +6558,7 @@ const makeDefaultClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2.layer")(function* 
     idAllocator,
     queryRunner,
     continuationRequests,
+    taskProgress: yield* TaskProgress,
   });
 });
 

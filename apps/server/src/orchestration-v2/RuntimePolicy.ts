@@ -112,21 +112,21 @@ export const layerFromProjectRepository: Layer.Layer<
           Effect.provideService(FileSystem.FileSystem, fileSystem),
           Effect.provideService(Path.Path, path),
         );
-        const helperPolicy = Option.isSome(settings)
-          ? helperPolicyForProject(
-              (yield* settings.value.getSettings.pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new RuntimePolicyResolveError({
-                      projectId: input.thread.projectId,
-                      providerInstanceId: input.modelSelection.instanceId,
-                      cause,
-                    }),
-                ),
-              )).helperPolicy,
-              input.thread.projectId,
+        const serverSettings = Option.isSome(settings)
+          ? yield* settings.value.getSettings.pipe(
+              Effect.mapError(
+                (cause) =>
+                  new RuntimePolicyResolveError({
+                    projectId: input.thread.projectId,
+                    providerInstanceId: input.modelSelection.instanceId,
+                    cause,
+                  }),
+              ),
             )
           : undefined;
+        const helperPolicy =
+          serverSettings &&
+          helperPolicyForProject(serverSettings.helperPolicy, input.thread.projectId);
         const helperInstructions = helperPolicy?.enabled
           ? [
               "Available helper task types. Call delegate_task with the exact taskType and a self-contained task brief; the owner's policy selects the model. orchestrator_capabilities shows each task type's resolved model and family, or the reason it cannot run.",
@@ -139,6 +139,7 @@ export const layerFromProjectRepository: Layer.Layer<
           interactionMode: input.thread.interactionMode,
           cwd,
           ...(context ? { sessionContext: context } : {}),
+          taskProgress: serverSettings?.enableTaskProgress ?? false,
         });
       }),
     });

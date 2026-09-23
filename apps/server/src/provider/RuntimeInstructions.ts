@@ -2,7 +2,7 @@ import {
   TASK_PROGRESS_INSTRUCTIONS,
   CLAUDE_TASK_PROGRESS_INSTRUCTIONS,
 } from "../exarch/TaskProgressInstructions.ts";
-import { progressInstructionsEnabled } from "../exarch/TaskProgressRuntime.ts";
+import type { ProviderDriverKind } from "@t3tools/contracts";
 
 /**
  * Which Exarch tool families this session can actually call. Every adapter
@@ -82,7 +82,9 @@ export interface RuntimeInstructionsInput {
   readonly reasoningEffort?: string | undefined;
   /** The project's rendered session files (Exarch), placed after the runtime block. */
   readonly sessionContext?: string | undefined;
-  /** Whether the task card may be written; defaults to the server setting. */
+  /** The adapter's driver, for text that applies to one provider. */
+  readonly driver?: ProviderDriverKind | undefined;
+  /** Whether the owner's setting lets this session write the task card; omitted means no. */
   readonly taskProgress?: boolean | undefined;
   /** Omitted means the `t3-code` MCP server is not attached to this session. */
   readonly capabilities?: ExarchCapabilities | undefined;
@@ -109,8 +111,8 @@ export function runtimeInstructionSections(
   const effortInfo = effort ? ` with ${effort} reasoning effort` : "";
   const capabilities = runtime.capabilities;
   const taskProgress =
-    (runtime.taskProgress ?? progressInstructionsEnabled())
-      ? `${TASK_PROGRESS_INSTRUCTIONS}${harness === "Claude Code" ? `\n${CLAUDE_TASK_PROGRESS_INSTRUCTIONS}` : ""}`
+    runtime.taskProgress === true
+      ? `${TASK_PROGRESS_INSTRUCTIONS}${runtime.driver === "claudeAgent" ? `\n${CLAUDE_TASK_PROGRESS_INSTRUCTIONS}` : ""}`
       : "";
   return {
     runtimeInfo: `<runtime_info>In case you're asked: you are running in Exarch through the ${harness} harness${modelInfo}${effortInfo}. No need to mention this otherwise.</runtime_info>`,
