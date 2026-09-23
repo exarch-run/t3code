@@ -12,7 +12,10 @@ import type * as CodexRpc from "effect-codex-app-server/rpc";
 import * as CodexSchema from "effect-codex-app-server/schema";
 import type { ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import type * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import {
   TASK_PROGRESS_READ_TOOL,
   TASK_PROGRESS_READ_TOOL_DESCRIPTION,
@@ -78,6 +81,46 @@ export const startCodexThreadWithCardTools = <E>(
     Effect.flatMap((encoded) => request("thread/start", encoded)),
     Effect.flatMap(decodeThreadStarted),
   );
+
+/**
+ * thread/resume takes no dynamic tools. Codex restores the ones the thread was
+ * started with from the first line of its rollout, so a chat resumed after an
+ * engine restart keeps its card tools only if that line lists them. A thread
+ * started before the card tools existed, or a rollout that cannot be read,
+ * answers false and the chat keeps the MCP writer.
+ */
+const decodeSessionMeta = Schema.decodeUnknownOption(
+  Schema.fromJsonString(
+    Schema.Struct({
+      payload: Schema.Struct({
+        dynamic_tools: Schema.optionalKey(
+          Schema.NullOr(Schema.Array(Schema.Struct({ name: Schema.String }))),
+        ),
+      }),
+    }),
+  ),
+);
+export const resumedThreadHasCardTools = (
+  fileSystem: FileSystem.FileSystem,
+  rolloutPath: string | null | undefined,
+): Effect.Effect<boolean> =>
+  rolloutPath
+    ? fileSystem.stream(rolloutPath).pipe(
+        Stream.decodeText,
+        Stream.splitLines,
+        Stream.runHead,
+        Effect.map((line) =>
+          Option.flatMap(line, decodeSessionMeta).pipe(
+            Option.exists(
+              (meta) =>
+                meta.payload.dynamic_tools?.some((tool) => tool.name === TASK_PROGRESS_TOOL) ===
+                true,
+            ),
+          ),
+        ),
+        Effect.orElseSucceed(() => false),
+      )
+    : Effect.succeed(false);
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const text = (value: unknown): DynamicToolResult["contentItems"] => [

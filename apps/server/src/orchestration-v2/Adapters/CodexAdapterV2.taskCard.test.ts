@@ -84,7 +84,7 @@ const threadStarted = {
 };
 
 /** A Codex app-server that answers only session setup and hands the test its tool-call handler. */
-const fakeCodex = () => {
+const fakeCodex = (rolloutPath = threadStarted.thread.path) => {
   const sent: Array<{ method: string; params: unknown }> = [];
   let toolCall: ToolHandler | undefined;
   const client = {
@@ -92,7 +92,10 @@ const fakeCodex = () => {
       request: (method: string, params: unknown) =>
         Effect.sync(() => {
           sent.push({ method, params });
-          return method === "thread/start" ? threadStarted : {};
+          if (method === "thread/start") return threadStarted;
+          if (method === "thread/resume")
+            return { thread: { id: ROOT, updatedAt: 1782622450, path: rolloutPath } };
+          return {};
         }),
     },
     request: () => Effect.succeed({}),
@@ -195,6 +198,74 @@ describe("Codex task card ownership", () => {
         assert.isTrue(taskProgress.claimed(threadId));
         yield* Scope.close(sessionScope, Exit.void);
         assert.isFalse(taskProgress.claimed(threadId));
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
+  );
+  it.effect(
+    "after an engine restart, holds the MCP writer only for a thread Codex restores the card tools to",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const dir = yield* fs.makeTempDirectoryScoped();
+        const sessionMeta = (dynamicTools: unknown) =>
+          `${JSON.stringify({ type: "session_meta", payload: { id: ROOT, dynamic_tools: dynamicTools } })}\n` +
+          `${JSON.stringify({ type: "response_item", payload: {} })}\n`;
+        const withTools = `${dir}/with-tools.jsonl`;
+        const withoutTools = `${dir}/without-tools.jsonl`;
+        yield* fs.writeFileString(withTools, sessionMeta(CODEX_TASK_PROGRESS_TOOLS));
+        yield* fs.writeFileString(withoutTools, sessionMeta([]));
+
+        const resume = (rolloutPath: string) =>
+          Effect.gen(function* () {
+            const cards = memoryCards();
+            const taskProgress = boundTaskProgress(cards.commands);
+            const codex = fakeCodex(rolloutPath);
+            const adapter = makeCodexAdapterV2({
+              instanceId: CODEX_DEFAULT_INSTANCE_ID,
+              settings: DEFAULT_CODEX_SETTINGS,
+              environment: {},
+              clientFactory: codex.factory,
+              fileSystem: fs,
+              idAllocator: yield* IdAllocatorV2,
+              serverConfig: yield* makeReplayServerConfig("task-card-resume").pipe(Effect.orDie),
+              taskProgress,
+            });
+            const threadId = ThreadId.make("codex-card-resumed-chat");
+            const providerSessionId = ProviderSessionId.make("codex-card-resumed-session");
+            const input = { threadId, providerSessionId, modelSelection, runtimePolicy };
+            // The thread started under the previous engine process.
+            const before = yield* Scope.make();
+            const providerThread = yield* (yield* adapter
+              .openSession(input)
+              .pipe(Scope.provide(before))).ensureThread({
+              threadId,
+              modelSelection,
+              runtimePolicy,
+            });
+            yield* Scope.close(before, Exit.void);
+            // The new process resumes it.
+            const runtime = yield* adapter.openSession(input);
+            yield* runtime.resumeThread({
+              threadId,
+              providerThread,
+              modelSelection,
+              runtimePolicy,
+            });
+            const call = yield* codex.call(ROOT, "exarch_progress_card", { markdown: "Resumed" });
+            return { claimed: taskProgress.claimed(threadId), call, written: cards.written };
+          });
+
+        const restored = yield* resume(withTools);
+        assert.isTrue(restored.claimed);
+        assert.isTrue(restored.call.success);
+        assert.lengthOf(restored.written, 1);
+
+        // Started before the card tools, or a rollout that cannot be read:
+        // Codex has no card tool for it, so the MCP writer stays open.
+        for (const rolloutPath of [withoutTools, `${dir}/missing.jsonl`]) {
+          const missing = yield* resume(rolloutPath);
+          assert.isFalse(missing.claimed);
+          assert.deepEqual(missing.written, []);
+        }
       }).pipe(Effect.scoped, Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
   );
 });

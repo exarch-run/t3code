@@ -3,6 +3,7 @@ import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts"
 import {
   codexToolFailure,
   handleCodexCardCall,
+  resumedThreadHasCardTools,
   startCodexThreadWithCardTools,
 } from "../../exarch/TaskProgressCodexRoute.ts";
 import { SUBAGENT_WRITE_REFUSED } from "../../exarch/TaskProgressInput.ts";
@@ -1178,7 +1179,13 @@ export function codexThreadRuntimeParams(input: {
 }
 
 const decodeCodexResumeMetadata = Schema.decodeUnknownEffect(
-  Schema.Struct({ thread: Schema.Struct({ id: Schema.String, updatedAt: Schema.Number }) }),
+  Schema.Struct({
+    thread: Schema.Struct({
+      id: Schema.String,
+      updatedAt: Schema.Number,
+      path: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    }),
+  }),
 );
 
 export const makeCodexAppServerSpawnCommand = Effect.fn(
@@ -5272,7 +5279,11 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 Effect.flatMap(decodeCodexResumeMetadata),
               );
               const appThreadId = threadInput.threadId ?? threadInput.providerThread.appThreadId;
-              if (appThreadId !== null) registerProgressThread(appThreadId, response.thread.id);
+              if (
+                appThreadId !== null &&
+                (yield* resumedThreadHasCardTools(fileSystem, response.thread.path))
+              )
+                registerProgressThread(appThreadId, response.thread.id);
               return {
                 ...threadInput.providerThread,
                 providerSessionId: input.providerSessionId,
