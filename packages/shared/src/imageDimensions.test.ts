@@ -157,4 +157,11 @@ describe("readImageMimeType", () => {
     expect(readImageMimeType(webp)).toBe("image/webp");
     expect(readImageMimeType(bytes("not an image"))).toBeNull();
   });
+
+  it("types a JPEG by its signature when its segments cannot be walked", () => {
+    // An APP0 segment whose length runs past the end: no dimensions, still a JPEG.
+    const damaged = bytes([0xff, 0xd8], [0xff, 0xe0], u16(0x4000), "JFIF", [0, 1, 2, 0, 1]);
+    expect(readImageDimensions(damaged)).toBeNull();
+    expect(readImageMimeType(damaged)).toBe("image/jpeg");
+  });
 });

@@ -21,12 +21,20 @@ export function readImageDimensions(bytes: Uint8Array): ImageDimensions | null {
   return dimensions && dimensions.width > 0 && dimensions.height > 0 ? dimensions : null;
 }
 
-/** The MIME type of a PNG, GIF, WebP, or JPEG whose header these bytes carry, else null. */
+/**
+ * The MIME type of a PNG, GIF, WebP, or JPEG from its file signature alone, else
+ * null. A file whose later header is damaged keeps its type even when
+ * `readImageDimensions` cannot size it.
+ */
 export function readImageMimeType(bytes: Uint8Array): string | null {
-  if (readPng(bytes)) return "image/png";
-  if (readGif(bytes)) return "image/gif";
-  if (readWebp(bytes)) return "image/webp";
-  return readJpeg(bytes) ? "image/jpeg" : null;
+  const starts = (offset: number, signature: ReadonlyArray<number>) =>
+    signature.every((byte, index) => bytes[offset + index] === byte);
+  if (starts(0, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return "image/png";
+  if (starts(0, [0x47, 0x49, 0x46, 0x38])) return "image/gif";
+  if (starts(0, [0x52, 0x49, 0x46, 0x46]) && starts(8, [0x57, 0x45, 0x42, 0x50])) {
+    return "image/webp";
+  }
+  return starts(0, [0xff, 0xd8, 0xff]) ? "image/jpeg" : null;
 }
 
 const view = (bytes: Uint8Array) => new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
