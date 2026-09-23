@@ -67,6 +67,7 @@ import {
   canReuseCodexContextUsage,
   CODEX_DEFAULT_INSTANCE_ID,
   CODEX_DRIVER_KIND,
+  decodeCodexGeneratedImage,
   codexBackgroundCommandDetail,
   codexFileChangeApprovalPrompt,
   codexProviderTurnTokenUsage,
@@ -2082,6 +2083,23 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
     "base64",
   );
+
+  it("types a generated image by its bytes before the declared type", () => {
+    const base64 = GENERATED_PNG.toString("base64");
+    assert.equal(
+      decodeCodexGeneratedImage(`data:image/jpeg;base64,${base64}`)?.mimeType,
+      "image/png",
+    );
+    const gif = Buffer.from("GIF89a\x01\x00\x01\x00", "latin1").toString("base64");
+    assert.equal(decodeCodexGeneratedImage(gif)?.mimeType, "image/gif");
+    const unknown = Buffer.from("not an image header").toString("base64");
+    assert.equal(
+      decodeCodexGeneratedImage(`data:image/webp;base64,${unknown}`)?.mimeType,
+      "image/webp",
+    );
+    assert.equal(decodeCodexGeneratedImage(unknown)?.mimeType, "image/png");
+    assert.isNull(decodeCodexGeneratedImage("  "));
+  });
 
   const generatedImageTranscript = (input: {
     readonly scenario: string;

@@ -78,6 +78,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { createDeterministicAttachmentId, resolveAttachmentPath } from "../../attachmentStore.ts";
 import { inferImageExtension, parseBase64DataUrl } from "../../imageMime.ts";
+import { readImageMimeType } from "@t3tools/shared/imageDimensions";
 import { getCodexServiceTierOptionValue } from "../../codexModelOptions.ts";
 import {
   describeMcpElicitation,
@@ -485,48 +486,6 @@ function codexNativeItemRef(nativeItemId: string) {
   };
 }
 
-const IMAGE_SIGNATURES: ReadonlyArray<{
-  readonly mimeType: string;
-  readonly matches: (bytes: Uint8Array) => boolean;
-}> = [
-  {
-    mimeType: "image/png",
-    matches: (bytes) =>
-      bytes.length >= 4 &&
-      bytes[0] === 0x89 &&
-      bytes[1] === 0x50 &&
-      bytes[2] === 0x4e &&
-      bytes[3] === 0x47,
-  },
-  {
-    mimeType: "image/jpeg",
-    matches: (bytes) =>
-      bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff,
-  },
-  {
-    mimeType: "image/gif",
-    matches: (bytes) =>
-      bytes.length >= 4 &&
-      bytes[0] === 0x47 &&
-      bytes[1] === 0x49 &&
-      bytes[2] === 0x46 &&
-      bytes[3] === 0x38,
-  },
-  {
-    mimeType: "image/webp",
-    matches: (bytes) =>
-      bytes.length >= 12 &&
-      bytes[0] === 0x52 &&
-      bytes[1] === 0x49 &&
-      bytes[2] === 0x46 &&
-      bytes[3] === 0x46 &&
-      bytes[8] === 0x57 &&
-      bytes[9] === 0x45 &&
-      bytes[10] === 0x42 &&
-      bytes[11] === 0x50,
-  },
-];
-
 /**
  * The picture inside a Codex `imageGeneration` item. Codex sends the image as
  * base64, with or without a data-URL prefix, and its saved path lies inside
@@ -546,7 +505,7 @@ export function decodeCodexGeneratedImage(
     return null;
   }
   const bytes = decoded.success;
-  const sniffed = IMAGE_SIGNATURES.find((signature) => signature.matches(bytes))?.mimeType;
+  const sniffed = readImageMimeType(bytes);
   const declared = dataUrl?.mimeType.toLowerCase();
   const mimeType =
     sniffed ?? (declared !== undefined && declared.startsWith("image/") ? declared : "image/png");

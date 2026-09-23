@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { readImageDimensions } from "./imageDimensions.ts";
+import { readImageDimensions, readImageMimeType } from "./imageDimensions.ts";
 
 function bytes(...parts: ReadonlyArray<number | string | ReadonlyArray<number>>): Uint8Array {
   const out: number[] = [];
@@ -136,5 +136,25 @@ describe("readImageDimensions", () => {
     expect(readImageDimensions(bytes("GIF89a", u16le(0), u16le(240)))).toBeNull();
     expect(readImageDimensions(bytes([0xff, 0xd8], [0xff, 0xd9]))).toBeNull();
     expect(readImageDimensions(new Uint8Array())).toBeNull();
+  });
+});
+
+describe("readImageMimeType", () => {
+  it("names each supported format from its header and nothing else", () => {
+    const png = bytes([0x89], "PNG", [0x0d, 0x0a, 0x1a, 0x0a], u32(13), "IHDR", u32(1), u32(1));
+    expect(readImageMimeType(png)).toBe("image/png");
+    expect(readImageMimeType(bytes("GIF89a", u16le(1), u16le(1)))).toBe("image/gif");
+    const jpeg = bytes([0xff, 0xd8], [0xff, 0xc0], u16(11), [8], u16(2), u16(3), [1, 0, 0]);
+    expect(readImageMimeType(jpeg)).toBe("image/jpeg");
+    const webp = bytes(
+      "RIFF",
+      [0, 0, 0, 0],
+      "WEBP",
+      "VP8X",
+      [0, 0, 0, 0, 0, 0, 0, 0],
+      [1, 0, 0, 1, 0, 0],
+    );
+    expect(readImageMimeType(webp)).toBe("image/webp");
+    expect(readImageMimeType(bytes("not an image"))).toBeNull();
   });
 });
