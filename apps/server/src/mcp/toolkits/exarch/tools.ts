@@ -12,9 +12,9 @@ import {
 import { TaskProgressAcknowledgement } from "@t3tools/contracts";
 
 /**
- * Exarch's document tools (ExarchMD plan: Exarch and T3 as one app, phase
- * 3). Every session lists them, because this engine only ever runs beside
- * Exarch. What an agent needs to know rides in the descriptions: what Exarch
+ * Exarch's document tools (plan: Exarch and T3 as one app, phase 3). Every
+ * session lists them, because this engine only ever runs beside Exarch.
+ * What an agent needs to know rides in the descriptions: what Exarch
  * is, that a delivery is the owner's round, where block ids come from, that
  * every action needs a fresh actionId and a retry reuses it, and that the
  * owner's focus, reading position, and drafts are never available.

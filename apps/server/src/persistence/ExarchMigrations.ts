@@ -28,23 +28,17 @@ const applyMigrations = Migrator.make({})({
   }),
 });
 
-// Adopt the fork ledger by its stable suffix when the application name changes.
-// The ledger must move before the migrator runs, or it would repeat ALTER TABLE.
+// Databases from before the Strata-to-Exarch rename keep the fork ledger under
+// its old name. It must move before the migrator runs, or it would repeat ALTER TABLE.
+const STRATA_LEDGER = "strata_v2_sql_migrations";
+
 export const runExarchMigrations = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const tables = yield* sql<{
     readonly name: string;
-  }>`SELECT name FROM sqlite_master WHERE type = 'table'`;
-  if (!tables.some((table) => table.name === "exarch_v2_sql_migrations")) {
-    const previous = tables.filter((table) => table.name.endsWith("_v2_sql_migrations"));
-    if (previous.length > 1) {
-      return yield* Effect.die(
-        new Error("Multiple fork migration ledgers found; refusing to choose one"),
-      );
-    }
-    if (previous[0]) {
-      yield* sql`ALTER TABLE ${sql(previous[0].name)} RENAME TO exarch_v2_sql_migrations`;
-    }
+  }>`SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('exarch_v2_sql_migrations', ${STRATA_LEDGER})`;
+  if (tables.length === 1 && tables[0]?.name === STRATA_LEDGER) {
+    yield* sql`ALTER TABLE ${sql(STRATA_LEDGER)} RENAME TO exarch_v2_sql_migrations`;
   }
   return yield* applyMigrations;
 });

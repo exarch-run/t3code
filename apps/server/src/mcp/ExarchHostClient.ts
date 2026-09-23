@@ -4,8 +4,8 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
 /**
- * The private local channel to Exarch (ExarchMD plan: Exarch and T3 as one
- * app, phase 3). Exarch launches this engine with `EXARCH_HOST_URL` and
+ * The private local channel to Exarch (plan: Exarch and T3 as one app,
+ * phase 3). Exarch launches this engine with `EXARCH_HOST_URL` and
  * `EXARCH_HOST_TOKEN` in its environment; a developer running the dev server
  * sources the same two values from Exarch's `exarch-host.env`. Every tool
  * request is one JSON POST carrying the invocation's thread and environment
@@ -74,7 +74,7 @@ export class ExarchOutcomeUncertainError extends Schema.TaggedError<ExarchOutcom
   { actionId: Schema.String, reason: Schema.String },
 ) {
   override get message(): string {
-    return `The outcome of Exarch action ${this.actionId} is unknown. It may already have been applied. Retry exarch_act with the same actionId ${JSON.stringify(this.actionId)} and the same entries. Do not create a new action ID or repeat it in a exarch block.`;
+    return `The outcome of Exarch action ${this.actionId} is unknown. It may already have been applied. Retry exarch_act with the same actionId ${JSON.stringify(this.actionId)} and the same entries. Do not create a new action ID or repeat it in an exarch block.`;
   }
 }
 

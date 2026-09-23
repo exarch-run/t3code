@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Packs apps/server into the tarball ExarchMD bundles, the way upstream's
+// Packs apps/server into the tarball Exarch bundles, the way upstream's
 // publish command does: a trimmed manifest (no dev dependencies, catalog
 // references resolved), the workspace LICENSE beside it, then `npm pack`.
 // Usage: node exarch/pack.mjs --version 0.0.41-exarch.1 --out /path/to/dir
@@ -31,14 +31,20 @@ for (const asset of [
   "dist/bin.mjs",
   "dist/claude-history-worker.mjs",
   "dist/client/index.html",
-  ...(target ? [target] : platforms).map(platform =>
-    `dist/resource-monitor/${platform}/t3-resource-monitor${platform.startsWith("win32") ? ".exe" : ""}`),
+  ...(target ? [target] : platforms).map(
+    (platform) =>
+      `dist/resource-monitor/${platform}/t3-resource-monitor${platform.startsWith("win32") ? ".exe" : ""}`,
+  ),
 ]) {
   if (!existsSync(join(serverDir, asset))) throw new Error(`Missing build asset ${asset}`);
 }
-const built = (await Promise.all((await readdir(join(serverDir, "dist")))
-  .filter(file => file.endsWith(".mjs"))
-  .map(file => readFile(join(serverDir, "dist", file), "utf8")))).join("\n");
+const built = (
+  await Promise.all(
+    (await readdir(join(serverDir, "dist")))
+      .filter((file) => file.endsWith(".mjs"))
+      .map((file) => readFile(join(serverDir, "dist", file), "utf8")),
+  )
+).join("\n");
 if (!built.includes(JSON.stringify(version)))
   throw new Error(
     `dist/bin.mjs was not built with version ${version}; stamp the version before building`,
@@ -75,15 +81,20 @@ for (const [selector, patchPath] of Object.entries(workspace.patchedDependencies
   if (!isRuntimeExternalCliDependency(name)) continue;
   const packageRoot = join(serverDir, "node_modules", name);
   const installed = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
-  if (installed.version !== selector.slice(separator + 1)) throw new Error(`Patch version mismatch for ${selector}`);
+  if (installed.version !== selector.slice(separator + 1))
+    throw new Error(`Patch version mismatch for ${selector}`);
   const patch = await readFile(join(root, patchPath), "utf8");
-  const paths = [...patch.matchAll(/^\+\+\+ b\/(.+)$/gm)].map(match => match[1]);
+  const paths = [...patch.matchAll(/^\+\+\+ b\/(.+)$/gm)].map((match) => match[1]);
   if (!paths.length) throw new Error(`No patched runtime files in ${patchPath}`);
   const files = [];
-  for (const path of paths) files.push({ path, contents: await readFile(join(packageRoot, path), "utf8") });
+  for (const path of paths)
+    files.push({ path, contents: await readFile(join(packageRoot, path), "utf8") });
   runtimePatches.push({ name, version: installed.version, source: patchPath, files });
 }
-await writeFile(join(serverDir, "dist/runtime-patches.json"), JSON.stringify(runtimePatches, null, 2) + "\n");
+await writeFile(
+  join(serverDir, "dist/runtime-patches.json"),
+  JSON.stringify(runtimePatches, null, 2) + "\n",
+);
 
 const manifestPath = join(serverDir, "package.json");
 const original = await readFile(manifestPath);

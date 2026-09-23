@@ -15,7 +15,7 @@ import { ExarchToolkit, type ExarchResult } from "./tools.ts";
 /**
  * Every Exarch document tool is one request to the host with the invocation's
  * thread and environment ids; Exarch answers with JSON. No capability gates
- * these handlers: the fork engine serves only Exarch, and a Exarch that is not
+ * these handlers: the fork engine serves only Exarch, and an Exarch that is not
  * running answers as one not-connected error the agent can act on.
  *
  * The task card tools never leave the server: the chat comes from the
