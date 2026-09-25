@@ -10,6 +10,7 @@ import {
   type OrchestrationV2ThreadProjection,
   type ServerProvider,
 } from "@t3tools/contracts";
+import { helperUsageLimitReason, roomiestHelperAccount } from "../exarch/HelperAccounts.ts";
 
 export const HELPERS_OFF_REASON =
   "Helper tasks are turned off in Settings for this project; the current provider's native subagents are unaffected.";
@@ -64,6 +65,7 @@ export function explainHelperTask(input: {
   availableInstanceIds: ReadonlySet<string>;
   taskType: string | undefined;
   override?: ModelSelection | undefined;
+  nowMs: number;
 }): HelperTaskResolution {
   const policy = helperPolicyForProject(input.policy, input.parent.thread.projectId);
   if (!policy.enabled) return { ok: false, row: null, reason: HELPERS_OFF_REASON };
@@ -97,7 +99,7 @@ export function explainHelperTask(input: {
     const reason =
       providerUnavailableReason(provider, selection.instanceId, input.availableInstanceIds) ??
       (provider!.models.some((model) => model.slug === selection.model)
-        ? null
+        ? helperUsageLimitReason(provider!, selection.model, input.nowMs)
         : `Model '${selection.model}' is not offered by provider '${selection.instanceId}'.`);
     if (reason !== null || !provider) {
       unavailable.push(`${selection.instanceId}/${selection.model}: ${reason}`);
@@ -166,6 +168,8 @@ export function explainHelperTask(input: {
       reason: `Task type '${row.name}' requires a family different from the parent (${parentFamily}), and ${parentFamily} is the only family available to helpers.${unavailable.length > 0 ? ` ${unavailable.join(" ")}` : ""}`,
     };
   }
+  // The table names a model, not an account; an override names an exact account.
+  if (!input.override) selected = roomiestHelperAccount(selected, allowed);
   const options =
     row.effort === null
       ? undefined

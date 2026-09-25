@@ -57,6 +57,7 @@ import {
   type ServerProvider,
   ThreadId,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -1276,6 +1277,7 @@ const make = Effect.gen(function* () {
         // Read on every call so a Settings change shows without a session restart.
         const fullPolicy = yield* readHelperPolicy;
         const policy = helperPolicyForProject(fullPolicy, parent.thread.projectId);
+        const nowMs = yield* Clock.currentTimeMillis;
         return {
           taskTypes: policy.enabled
             ? policy.taskTypes.map((row) => {
@@ -1285,6 +1287,7 @@ const make = Effect.gen(function* () {
                   providers,
                   availableInstanceIds: orchestrationCapableInstanceIds,
                   taskType: row.name,
+                  nowMs,
                 });
                 return {
                   name: row.name,
@@ -1394,6 +1397,7 @@ const make = Effect.gen(function* () {
         const providers = yield* loadProviders;
         const policy = yield* readHelperPolicy;
         const availableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
+        const nowMs = yield* Clock.currentTimeMillis;
         if (initiatedBy !== "user" && input.target !== undefined) {
           return yield* failure(
             "invalid_request",
@@ -1408,6 +1412,7 @@ const make = Effect.gen(function* () {
               providers,
               availableInstanceIds,
               taskType: input.taskType,
+              nowMs,
               override:
                 input.target?.providerInstanceId && input.target.model
                   ? { instanceId: input.target.providerInstanceId, model: input.target.model }

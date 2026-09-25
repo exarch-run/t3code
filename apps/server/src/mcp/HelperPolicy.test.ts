@@ -61,6 +61,7 @@ const resolve = (change: Partial<Parameters<typeof resolveHelperTask>[0]> = {}) 
     providers,
     availableInstanceIds: new Set([codex, claude]),
     taskType: "Review",
+    nowMs: 0,
     ...change,
   });
 const explain = (change: Partial<Parameters<typeof explainHelperTask>[0]> = {}) =>
@@ -70,6 +71,7 @@ const explain = (change: Partial<Parameters<typeof explainHelperTask>[0]> = {}) 
     providers,
     availableInstanceIds: new Set([codex, claude]),
     taskType: "Review",
+    nowMs: 0,
     ...change,
   });
 const reasonOf = (change: Partial<Parameters<typeof explainHelperTask>[0]> = {}) => {
@@ -184,5 +186,86 @@ describe("helper task reasons and families", () => {
       policy: { ...policy, visibleModels: [{ instanceId: zdr, model: "claude-opus-4-1" }] },
     });
     expect(resolution.ok && resolution.family).toBe("private");
+  });
+});
+describe("helper accounts", () => {
+  const second = ProviderInstanceId.make("claude_second");
+  const now = Date.parse("2026-09-25T12:00:00.000Z");
+  const later = "2026-09-25T15:00:00.000Z";
+  const usage = (windows: ReadonlyArray<Record<string, unknown>>) =>
+    ({
+      usageLimits: { checkedAt: "2026-09-25T11:59:00.000Z", windows },
+    }) as Partial<ServerProvider>;
+  const session = (usedPercent: number, resetsAt?: string) => ({
+    id: "five_hour",
+    kind: "session",
+    label: "Session",
+    usedPercent,
+    ...(resetsAt ? { resetsAt } : {}),
+  });
+  const claudes = (first: Partial<ServerProvider>, other: Partial<ServerProvider>) => ({
+    providers: [
+      providers[0]!,
+      snapshot(claude, "claudeAgent", ["fable", "claude-opus-5-5"], first),
+      snapshot(second, "claudeAgent", ["fable", "claude-opus-5-5"], other),
+    ],
+    availableInstanceIds: new Set([codex, claude, second]),
+    policy: {
+      ...policy,
+      visibleModels: [
+        ...policy.visibleModels,
+        { instanceId: second, model: "fable" },
+        { instanceId: claude, model: "claude-opus-5-5" },
+        { instanceId: second, model: "claude-opus-5-5" },
+      ],
+    },
+    nowMs: now,
+  });
+  const instanceOf = (resolution: ReturnType<typeof explain>) =>
+    resolution.ok ? resolution.modelSelection.instanceId : resolution.reason;
+
+  it("runs the chosen model on the matching account with the most room", () => {
+    expect(instanceOf(explain(claudes(usage([session(80)]), usage([session(10)]))))).toBe(second);
+    expect(instanceOf(explain(claudes(usage([session(10)]), usage([session(10)]))))).toBe(claude);
+  });
+  it("skips an account that is out of usage and names it when none is left", () => {
+    expect(instanceOf(explain(claudes(usage([session(100, later)]), usage([session(90)]))))).toBe(
+      second,
+    );
+    const reason = reasonOf(claudes(usage([session(100, later)]), usage([session(100)])));
+    expect(reason).toContain(`Account 'claude' is out of usage until ${later}.`);
+    expect(reason).toContain("Account 'claude_second' is out of usage.");
+  });
+  it("uses an account again once its spent window has reset", () => {
+    expect(
+      instanceOf(explain(claudes(usage([session(100, "2026-09-25T11:00:00.000Z")]), usage([])))),
+    ).toBe(claude);
+  });
+  it("lets a spent per-model weekly window block only that model", () => {
+    const opusSpent = usage([
+      session(10),
+      {
+        id: "seven_day_opus",
+        kind: "weekly",
+        label: "Weekly · Opus",
+        usedPercent: 100,
+        resetsAt: later,
+      },
+    ]);
+    const opusRow = {
+      ...policy.taskTypes[0]!,
+      model: { driverKind: ProviderDriverKind.make("claudeAgent"), model: "claude-opus-5-5" },
+    };
+    const input = claudes(opusSpent, usage([session(50)]));
+    expect(instanceOf(explain(input))).toBe(claude);
+    expect(
+      instanceOf(explain({ ...input, policy: { ...input.policy, taskTypes: [opusRow] } })),
+    ).toBe(second);
+  });
+  it("keeps an exact account the owner chose for one helper", () => {
+    const input = claudes(usage([session(80)]), usage([session(10)]));
+    expect(
+      instanceOf(explain({ ...input, override: { instanceId: claude, model: "fable" } })),
+    ).toBe(claude);
   });
 });
