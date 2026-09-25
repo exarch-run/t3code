@@ -13,6 +13,7 @@ import {
   RunAttemptId,
   RunId,
   ThreadId,
+  TurnItemId,
   ProjectId,
   type OrchestrationV2ThreadProjection,
   OrchestrationV2DomainEvent,
@@ -351,7 +352,11 @@ function makeLocalCommandHarness(input: {
           updatedAt: now,
           lastError: null,
         },
-        ensureThread: () => Effect.succeed(providerThread),
+        ensureThread: () =>
+          Effect.succeed({
+            ...providerThread,
+            nativeThreadRef: { driver: "codex", nativeId: "native-execution", strength: "strong" },
+          }),
       } as never);
     if (input.startupFailure) {
       if (input.stopDuringStartup)
@@ -396,6 +401,31 @@ function makeLocalCommandHarness(input: {
   });
   const startRootRun = vi.fn(() => {
     if (!input.executionFailure) return Effect.die("A local command must not start a native turn.");
+    if (input.executionFailure === "current") {
+      projection = {
+        ...projection,
+        turnItems: [
+          {
+            id: TurnItemId.make("execution-setup-item"),
+            threadId,
+            runId,
+            nodeId: rootNodeId,
+            providerThreadId,
+            providerTurnId: null,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: 7,
+            type: "error",
+            title: "Setup diagnostic",
+            status: "failed",
+            failure: { class: "unknown", message: "Setup diagnostic", code: null, retryable: null },
+            startedAt: now,
+            completedAt: now,
+            updatedAt: now,
+          },
+        ],
+      };
+    }
     if (input.executionFailure !== "current")
       projection = {
         ...projection,
@@ -748,8 +778,12 @@ for (const executionFailure of ["current", "stopped", "replaced"] as const) {
           expect(projection.runs.at(-1)?.startedAt).not.toBeNull();
           expect(projection.attempts[0]?.status).toBe("failed");
           expect(projection.attempts[0]?.startedAt).not.toBeNull();
+          expect(projection.attempts[0]?.nativeThreadId).toBe("native-execution");
           expect(projection.nodes[0]?.status).toBe("failed");
-          expect(projection.turnItems).toMatchObject([{ type: "error", status: "failed" }]);
+          expect(projection.turnItems).toMatchObject([
+            { id: "execution-setup-item", ordinal: 7 },
+            { type: "error", status: "failed", ordinal: 8 },
+          ]);
           yield* harness.start;
           expect(harness.startRootRun).toHaveBeenCalledTimes(1);
         } else {

@@ -303,6 +303,20 @@ export const layer: Layer.Layer<
           readonly providerThreadUpdate?: OrchestrationV2ProviderThread;
         }) {
           const { now, status } = input;
+          // Execution setup can fail after the native thread and running state
+          // have been persisted. Preserve those records and any emitted items.
+          const currentProjection =
+            input.expectedStatus === "running"
+              ? yield* projectionStore.getTurnStartContext(projection.thread.id, runId)
+              : projection;
+          const currentRun = currentProjection.runs.find((candidate) => candidate.id === runId);
+          const currentAttempt = currentProjection.attempts.find(
+            (candidate) => candidate.id === attempt.id,
+          );
+          const currentRootNode = currentProjection.nodes.find(
+            (candidate) => candidate.id === rootNode.id,
+          );
+          if (!currentRun || !currentAttempt || !currentRootNode) return;
           const started = input.startedAt === undefined ? {} : { startedAt: input.startedAt };
           const item: OrchestrationV2TurnItem = {
             id: idAllocator.derive.runSignalTurnItem({ runId, signal: input.signal }),
@@ -316,7 +330,7 @@ export const layer: Layer.Layer<
             ordinal:
               Math.max(
                 0,
-                ...projection.turnItems
+                ...currentProjection.turnItems
                   .filter((item) => item.runId === runId)
                   .map((item) => item.ordinal),
               ) + 1,
@@ -328,14 +342,17 @@ export const layer: Layer.Layer<
           };
           const eventPayloads = [
             { type: "turn-item.updated", payload: item },
-            { type: "run.updated", payload: { ...run, status, ...started, completedAt: now } },
+            {
+              type: "run.updated",
+              payload: { ...currentRun, status, ...started, completedAt: now },
+            },
             {
               type: "run-attempt.updated",
-              payload: { ...attempt, status, ...started, completedAt: now },
+              payload: { ...currentAttempt, status, ...started, completedAt: now },
             },
             {
               type: "node.updated",
-              payload: { ...rootNode, status, ...started, completedAt: now },
+              payload: { ...currentRootNode, status, ...started, completedAt: now },
             },
             ...(input.providerThreadUpdate === undefined
               ? []

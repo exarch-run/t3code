@@ -8,9 +8,8 @@ name: Exarch engine release
 # matrix below must name the same platforms, or packing fails.
 
 on:
-  push:
-    tags:
-      - "v*-exarch.*"
+  # Native release builds incur paid runner work and require explicit dispatch.
+  # Publishing an already verified local artifact must not rebuild that tag.
   workflow_dispatch:
     inputs:
       tag:
