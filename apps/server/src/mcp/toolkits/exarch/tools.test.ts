@@ -56,6 +56,7 @@ it("lists the Exarch tools with described object parameters", () => {
     "exarch_act",
     "exarch_changes",
     "exarch_components",
+    "exarch_computers",
     "exarch_document",
     "exarch_group",
     "exarch_guide",

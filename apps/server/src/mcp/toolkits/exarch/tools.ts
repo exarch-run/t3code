@@ -209,6 +209,44 @@ const ExarchRemoteInvestigationTool = exarchTool(
   }).annotate(Tool.Title, "Investigate on another computer"),
 );
 
+const ExarchComputersTool = exarchTool(
+  Tool.make("exarch_computers", {
+    description:
+      "Work on the owner's other approved computers the way you work here. list shows a computer's ordinary projects, chats, accounts and models. launch starts a chat there with a chosen account (instanceId), model and options and a first message. send messages a chat there. read collects a chat's reply and status. handoff continues this chat there as a new chat carrying a snapshot of this one. Remote chats always run with full access in build mode, like the owner's own chats; never ask for plan mode or approval-required access. Give launch, send and handoff a new UUID operationId and reuse it when retrying. A chat started from another computer cannot start remote work itself. Private is excluded. Launch returns at once with the chat id; use read to follow it.",
+    parameters: Schema.Struct({
+      computer: Schema.String.annotate({
+        description: "Approved computer id from exarch_personal_setup status.",
+      }),
+      request: Schema.Struct({
+        action: Schema.Literals(["list", "launch", "handoff", "send", "read"]),
+        operationId: Schema.optional(Schema.String),
+        projectId: Schema.optional(Schema.String),
+        instanceId: Schema.optional(Schema.String),
+        model: Schema.optional(Schema.String),
+        options: Schema.optional(
+          Schema.Array(
+            Schema.Struct({ id: Schema.String, value: Schema.Union([Schema.String, Schema.Boolean]) }),
+          ),
+        ),
+        title: Schema.optional(Schema.String),
+        message: Schema.optional(Schema.String),
+        threadId: Schema.optional(Schema.String),
+        before: Schema.optional(Schema.String),
+      }).annotate({
+        description:
+          "{action: list}; {action: launch, operationId, projectId, instanceId, model, options?, title?, message}; {action: handoff, operationId, projectId, instanceId, model, options?, title?, message?}; {action: send, operationId, threadId, message}; {action: read, threadId, before?}.",
+      }),
+    }),
+    success: ExarchResult,
+    failure: ExarchToolError,
+    dependencies,
+  })
+    .annotate(Tool.Title, "Work on another computer")
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true),
+);
+
 const ExarchPersonalSetupTool = exarchTool(
   Tool.make("exarch_personal_setup", {
     description:
@@ -517,6 +555,7 @@ export const ExarchToolkit = Toolkit.make(
   ExarchLibraryTool,
   ExarchPersonalSetupTool,
   ExarchRemoteInvestigationTool,
+  ExarchComputersTool,
   ExarchPluginsTool,
   ExarchProgressCardTool,
   ExarchProgressCardReadTool,
