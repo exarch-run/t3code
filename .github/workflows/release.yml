@@ -1,14 +1,8 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*.*.*"
-      - "!v*-nightly.*"
-      - "!v*-preview.*"
-  schedule:
-    # Avoid minute zero, when GitHub scheduled jobs are busiest.
-    - cron: "8,38 * * * *"
+  # This fork publishes verified engine artifacts separately. Upstream tag and
+  # nightly triggers must not start paid builds or publish desktop releases.
   workflow_dispatch:
     inputs:
       channel:
