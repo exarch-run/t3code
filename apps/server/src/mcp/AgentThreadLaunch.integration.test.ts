@@ -38,6 +38,8 @@ import {
   type HarnessOptions,
 } from "../orchestration-v2/testkit/ThreadLaunchHarness.ts";
 
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+
 const decodeLaunchResult = Schema.decodeUnknownEffect(AgentThreadLaunchResult);
 
 const launchProvider: ServerProvider = {
@@ -108,7 +110,7 @@ const agentLaunchContext = Effect.gen(function* () {
   const launch = (input: Record<string, unknown>, session?: string) =>
     invoke(input, session).pipe(
       Effect.flatMap((result) => {
-        assert.isFalse(result.isError, JSON.stringify(result));
+        assert.isFalse(result.isError, encodeJson(result));
         return decodeLaunchResult(result.structuredContent);
       }),
     );
@@ -179,8 +181,8 @@ it.effect(
         ...input,
         threads: [{ entryId: "child", title: "Changed" }],
       });
-      assert.include(JSON.stringify(changed.structuredContent), "invalid_request");
-      assert.include(JSON.stringify(changed.structuredContent), "different input");
+      assert.include(encodeJson(changed.structuredContent), "invalid_request");
+      assert.include(encodeJson(changed.structuredContent), "different input");
       const child = yield* threads.getThreadProjection(first.threads[0]!.threadId!);
       assert.lengthOf(child.messages, 1);
       assert.lengthOf(child.runs, 1);
@@ -270,9 +272,9 @@ it.effect(
         const refused = yield* invoke(input);
         assert.isTrue(
           refused.isError ||
-            JSON.stringify(refused.structuredContent).includes("invalid_request") ||
-            JSON.stringify(refused.structuredContent).includes("ToolParameterValidationError"),
-          JSON.stringify(refused),
+            encodeJson(refused.structuredContent).includes("invalid_request") ||
+            encodeJson(refused.structuredContent).includes("ToolParameterValidationError"),
+          encodeJson(refused),
         );
       }
       assert.lengthOf(
@@ -539,7 +541,7 @@ it.effect("refuses launch authority from a restricted caller", () =>
         },
       ],
     });
-    assert.include(JSON.stringify(result.structuredContent), "requires full-access/default");
+    assert.include(encodeJson(result.structuredContent), "requires full-access/default");
     assert.lengthOf(
       (yield* threads.getThreadProjection(parentId)).visibleTurnItems.filter(
         (row) => row.item.type === "thread_created",

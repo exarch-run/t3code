@@ -1,4 +1,3 @@
-import * as NodePath from "node:path";
 import { ServerConfig } from "../config.ts";
 import * as NodeCrypto from "node:crypto";
 import {
@@ -23,6 +22,7 @@ import {
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as Project from "../project/ProjectService.ts";
@@ -66,7 +66,7 @@ export const launchAgentThreads = Effect.fn("mcp.launchAgentThreads")(function* 
     return yield* failure(`Launch request ${input.requestId} has duplicate entry IDs.`);
   }
   const sql = yield* SqlClient.SqlClient;
-  const requestKey = JSON.stringify([caller.id, input.requestId]);
+  const requestKey = stableStringify([caller.id, input.requestId]);
   const inputJson = stableStringify(input);
   const read = () =>
     sql<{ input_json: string; accepted_json: string }>`
@@ -141,7 +141,7 @@ export const launchAgentThreads = Effect.fn("mcp.launchAgentThreads")(function* 
                 : { type: "root" as const, ...(caller.branch ? { branch: caller.branch } : {}) }
               : entry.workspaceStrategy;
           const identity = `agent-launch:${NodeCrypto.createHash("sha256")
-            .update(JSON.stringify([caller.id, input.requestId, entry.entryId]))
+            .update(stableStringify([caller.id, input.requestId, entry.entryId]))
             .digest("hex")}`;
           if (entry.workspaceStrategy && entry.workspaceStrategy.type !== "inherit") {
             workspaceStrategy = yield* resolveAgentLaunchWorkspace(
@@ -154,7 +154,7 @@ export const launchAgentThreads = Effect.fn("mcp.launchAgentThreads")(function* 
             ...entry,
             ...(workspaceStrategy.type === "worktree"
               ? {
-                  worktreeDestination: NodePath.join(
+                  worktreeDestination: (yield* Path.Path).join(
                     (yield* ServerConfig).worktreesDir,
                     identity.replace(":", "-"),
                   ),
@@ -178,7 +178,7 @@ export const launchAgentThreads = Effect.fn("mcp.launchAgentThreads")(function* 
     };
     // Concurrent identical requests share the winner's captured defaults and parent run.
     yield* sql`INSERT INTO exarch_agent_launch_requests (request_key, input_json, accepted_json)
-      VALUES (${requestKey}, ${inputJson}, ${JSON.stringify(accepted)}) ON CONFLICT(request_key) DO NOTHING`.pipe(
+      VALUES (${requestKey}, ${inputJson}, ${stableStringify(accepted)}) ON CONFLICT(request_key) DO NOTHING`.pipe(
       Effect.mapError(() => failure(`Cannot save launch request ${input.requestId}.`)),
     );
     saved = (yield* read())[0];
