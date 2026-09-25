@@ -1,8 +1,8 @@
 {
-  "version": "8",
   "dialect": "postgres",
   "id": "37dc874a-dfd8-4015-9aa1-182aed51cbe2",
-  "prevIds": ["1109ed23-036c-4c39-a459-52422a7ffd99"],
+  "prevIds": ["3809c51e-3821-4a08-818d-e5d28dd3e9b4"],
+  "version": "8",
   "ddl": [
     {
       "isRlsEnabled": false,
@@ -233,7 +233,7 @@
       "table": "relay_agent_activity_rows"
     },
     {
-      "type": "varchar(191)",
+      "type": "varchar(512)",
       "typeSchema": null,
       "notNull": true,
       "dimensions": 0,
@@ -415,7 +415,7 @@
       "table": "relay_delivery_attempts"
     },
     {
-      "type": "varchar(191)",
+      "type": "varchar(512)",
       "typeSchema": null,
       "notNull": false,
       "dimensions": 0,
@@ -1112,6 +1112,58 @@
       "generated": null,
       "identity": null,
       "name": "ready_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "relay_managed_endpoint_allocations"
+    },
+    {
+      "type": "varchar(64)",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "recovery_enabled_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "relay_managed_endpoint_allocations"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "recovery_environment_public_key",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "relay_managed_endpoint_allocations"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "origin",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "relay_managed_endpoint_allocations"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "generation",
       "entityType": "columns",
       "schema": "public",
       "table": "relay_managed_endpoint_allocations"
