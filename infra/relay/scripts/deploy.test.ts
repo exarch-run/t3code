@@ -221,6 +221,25 @@ describe("publicConfigFromOutput", () => {
     });
   });
 
+  it("accepts explicit empty tracing outputs and clears previous exported credentials", () => {
+    const output = {
+      url: "https://relay.example.test",
+      mobileTracingUrl: "",
+      mobileTracingDataset: "",
+      mobileTracingToken: "",
+      clientTracingUrl: "",
+      clientTracingDataset: "",
+      clientTracingToken: "",
+    };
+    const config = publicConfigFromOutput(output);
+    expect(config).not.toBeNull();
+    expect(missingRelayPublicConfigFields(output)).toEqual([]);
+    expect(serializeRelayClientTracingEnvironment(config!)).toContain(
+      "T3CODE_RELAY_CLIENT_OTLP_TRACES_TOKEN=\n",
+    );
+    expect(publicConfigFromOutput({ ...output, url: "" })).toBeNull();
+  });
+
   it("rejects incomplete stack output", () => {
     expect(publicConfigFromOutput({ url: "https://relay.example.test" })).toBeNull();
   });

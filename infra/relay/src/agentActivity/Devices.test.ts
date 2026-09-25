@@ -228,6 +228,36 @@ describe("Devices", () => {
     );
   });
 
+  it.effect("lists an iPhone older than iOS 18 without a version, for installed clients", () => {
+    const fakeDb = {
+      select: () => ({
+        from: () => ({
+          where: () =>
+            Effect.succeed([
+              {
+                deviceId: "older",
+                label: "iPhone",
+                platform: "ios" as const,
+                iosMajorVersion: 17,
+                androidApiLevel: null,
+                appVersion: "1.0.0",
+                preferences: registration.preferences,
+                updatedAt: "2026-06-01T00:00:00.000Z",
+              },
+            ]),
+        }),
+      }),
+    } as unknown as RelayDb.RelayDb["Service"];
+    return Effect.gen(function* () {
+      const devices = yield* Devices.Devices;
+      const [listed] = yield* devices.listForUser({ userId: "user-2" });
+      expect(listed?.iosMajorVersion).toBeNull();
+      expect(listed?.deviceId).toBe("older");
+    }).pipe(
+      Effect.provide(Devices.layer.pipe(Layer.provide(Layer.succeed(RelayDb.RelayDb, fakeDb)))),
+    );
+  });
+
   it.effect("identifies the failed device registration stage", () => {
     const cause = new Error("push-token claim failed");
     const fakeDb = {

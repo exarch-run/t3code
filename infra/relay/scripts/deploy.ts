@@ -284,7 +284,9 @@ function relayPublicConfigValues(
   const value = output as Record<string, unknown>;
   const text = (name: string) => {
     const candidate = value[name];
-    return typeof candidate === "string" && candidate.length > 0 ? candidate : undefined;
+    return typeof candidate === "string" && (name !== "url" || candidate.length > 0)
+      ? candidate
+      : undefined;
   };
   const secret = (name: string): string | undefined => {
     const candidate = value[name];
@@ -292,7 +294,7 @@ function relayPublicConfigValues(
       return text(name);
     }
     const redacted = Redacted.value(candidate);
-    return typeof redacted === "string" && redacted.length > 0 ? redacted : undefined;
+    return typeof redacted === "string" ? redacted : undefined;
   };
   return {
     url: text("url"),

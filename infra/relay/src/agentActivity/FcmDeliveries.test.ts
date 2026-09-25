@@ -139,7 +139,7 @@ function harness() {
     Layer.succeed(AgentActivityRows, {
       upsert: () => Effect.void,
       remove: () => Effect.void,
-      pruneTerminal: () => Effect.void,
+      pruneExpired: Effect.void,
       listForUser: () =>
         Effect.sync(() =>
           current.linked

@@ -2,6 +2,7 @@ import type {
   RelayClientDeviceRecord,
   RelayDeviceRegistrationRequest,
 } from "@t3tools/contracts/relay";
+import { RelayIosLiveActivityMinimumMajorVersion } from "@t3tools/contracts/relay";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -243,7 +244,13 @@ export const make = Effect.gen(function* () {
         deviceId: row.deviceId,
         label: row.label,
         platform: row.platform,
-        iosMajorVersion: row.iosMajorVersion,
+        // Installed clients decode listed iOS versions with an 18 floor. An
+        // older iPhone is listed with no version rather than breaking them.
+        iosMajorVersion:
+          row.iosMajorVersion !== null &&
+          row.iosMajorVersion >= RelayIosLiveActivityMinimumMajorVersion
+            ? row.iosMajorVersion
+            : null,
         androidApiLevel: row.androidApiLevel,
         appVersion: row.appVersion,
         notifications: {

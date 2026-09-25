@@ -2,6 +2,10 @@ import type { RelayAgentActivityState } from "@t3tools/contracts/relay";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as TestClock from "effect/testing/TestClock";
+import type { SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
+import { relayAgentActivityRows } from "../persistence/schema.ts";
 
 import * as RelayDb from "../db.ts";
 import * as AgentActivityRows from "./AgentActivityRows.ts";
@@ -19,6 +23,39 @@ const state: RelayAgentActivityState = {
 };
 
 describe("AgentActivityRows", () => {
+  it.effect("sweeps finished and stale activity with separate lifetimes", () => {
+    let condition: SQL | undefined;
+    const db = {
+      delete: (table: unknown) => {
+        expect(table).toBe(relayAgentActivityRows);
+        return {
+          where: (where: SQL) => {
+            condition = where;
+            return Effect.void;
+          },
+        };
+      },
+    } as unknown as RelayDb.RelayDb["Service"];
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse("2026-09-25T12:00:00.000Z"));
+      const rows = yield* AgentActivityRows.AgentActivityRows;
+      yield* rows.pruneExpired;
+      const query = new PgDialect().sqlToQuery(condition!);
+      expect(query.params).toEqual([
+        "2026-09-25T11:30:00.000Z",
+        "2026-09-25T10:00:00.000Z",
+        "2026-09-24T12:00:00.000Z",
+      ]);
+      expect(query.sql).toContain("IN ('completed', 'failed')");
+      expect(query.sql).toContain("IN ('running', 'starting')");
+      expect(query.sql.match(/ or /g)).toHaveLength(2);
+    }).pipe(
+      Effect.provide(
+        AgentActivityRows.layer.pipe(Layer.provide(Layer.succeed(RelayDb.RelayDb, db))),
+      ),
+    );
+  });
+
   it.effect("validates database JSON objects and ignores invalid activity rows", () => {
     const queryRows = [
       { stateJson: null },

@@ -48,6 +48,7 @@ import {
   revokeEnvironmentLinkRecord,
   serverApi,
   traceRelayHttpRequestWith,
+  privateRelayHttpRequest,
   unlinkEnvironmentRecord,
   verifyRelayClientBearerToken,
   withoutCapturedParentSpan,
@@ -535,6 +536,58 @@ describe("relay environment unlink", () => {
 });
 
 describe("relay request tracing", () => {
+  it.effect(
+    "production requests do not emit identity or content spans into an ambient tracer",
+    () =>
+      Effect.gen(function* () {
+        const spans: Array<Tracer.NativeSpan> = [];
+        const tracer = Tracer.make({
+          span: (options) => {
+            const span = new Tracer.NativeSpan(options);
+            spans.push(span);
+            return span;
+          },
+        });
+        const request = HttpServerRequest.fromWeb(
+          new Request("https://relay.test/v1/reports?secret=private"),
+        );
+        const parent = yield* Effect.makeSpan("outer").pipe(
+          Effect.provideService(Tracer.Tracer, tracer),
+        );
+        spans.length = 0;
+        const response = yield* privateRelayHttpRequest(
+          Effect.annotateCurrentSpan({
+            "user.id": "private-account",
+            "report.excerpt": "private-content",
+          }).pipe(
+            Effect.andThen(Effect.succeed(HttpServerResponse.empty({ status: 204 }))),
+            Effect.withSpan("relay.report.with-sensitive-fields"),
+          ),
+        ).pipe(
+          Effect.provideService(Tracer.Tracer, tracer),
+          Effect.provideService(Tracer.ParentSpan, parent),
+          Effect.provideService(HttpServerRequest.HttpServerRequest, request),
+        );
+        expect(response.status).toBe(204);
+        expect(response.headers.traceparent).toBeUndefined();
+        expect(parent.attributes.has("user.id")).toBe(false);
+        expect(parent.attributes.has("report.excerpt")).toBe(false);
+        expect(spans).toEqual([]);
+      }),
+  );
+
+  it.effect("production requests still enforce the deadline without tracing", () =>
+    Effect.gen(function* () {
+      const request = HttpServerRequest.fromWeb(new Request("https://relay.test/v1/reports"));
+      const fiber = yield* privateRelayHttpRequest(Effect.never).pipe(
+        Effect.provideService(HttpServerRequest.HttpServerRequest, request),
+        Effect.forkChild,
+      );
+      yield* TestClock.adjust(Duration.millis(RELAY_REQUEST_DEADLINE_MS));
+      expect((yield* Fiber.join(fiber)).status).toBe(504);
+    }),
+  );
+
   it.effect(
     "does not parent endpoint spans to an ambient parent captured while building handlers",
     () =>

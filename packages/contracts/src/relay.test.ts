@@ -34,6 +34,35 @@ describe("mobile device platforms", () => {
     );
     expect(decodeDevice({ ...device, platform: "ios", iosMajorVersion: 18 })._tag).toBe("Success");
   });
+  it.each([
+    [15, false, "Failure"],
+    [16, false, "Success"],
+    [17, false, "Success"],
+    [17, true, "Failure"],
+    [18, true, "Success"],
+  ])(
+    "accepts iOS %i notifications, with Live Activities (%s) only from iOS 18",
+    (iosMajorVersion, liveActivitiesEnabled, result) => {
+      expect(
+        decodeDevice({
+          ...device,
+          platform: "ios",
+          iosMajorVersion,
+          preferences: { ...device.preferences, liveActivitiesEnabled },
+        })._tag,
+      ).toBe(result);
+    },
+  );
+  it("refuses a Live Activity push-to-start token below iOS 18", () => {
+    const older = {
+      ...device,
+      platform: "ios",
+      iosMajorVersion: 17,
+      preferences: { ...device.preferences, liveActivitiesEnabled: false },
+    };
+    expect(decodeDevice(older)._tag).toBe("Success");
+    expect(decodeDevice({ ...older, pushToStartToken: "start" })._tag).toBe("Failure");
+  });
   it("rejects missing platform versions and Apple activity tokens on Android", () => {
     expect(decodeDevice({ ...device, platform: "ios" })._tag).toBe("Failure");
     expect(decodeDevice({ ...device, platform: "android" })._tag).toBe("Failure");

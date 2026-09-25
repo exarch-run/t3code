@@ -33,6 +33,7 @@ import {
   RelayEnvironmentConnectScope,
   RelayEnvironmentStatusScope,
   RelayMobileRegistrationScope,
+  RelayAccountDeleteScope,
   RelayAuthInvalidError,
   type RelayAuthInvalidReason,
   type RelayDpopFailureReason,
@@ -70,6 +71,7 @@ import * as EnvironmentPublishSignatures from "../environments/EnvironmentPublis
 import * as MobileRegistrations from "../agentActivity/MobileRegistrations.ts";
 import { withSpanAttributes } from "../observability.ts";
 import * as RelayDb from "../db.ts";
+import * as AccountDeletions from "../account/AccountDeletions.ts";
 
 // Delegated thread IDs carry escaped command provenance and exceed the router's
 // default 100-character path parameter limit. Match the environment server.
@@ -164,13 +166,8 @@ export const relayDocsRedirectRoute = HttpRouter.add(
   HttpServerResponse.redirect("/docs"),
 );
 
-// Shorter than the mobile client's 10s request timeout on purpose: when a
-// request hangs (e.g. a stuck upstream query), the client would otherwise
-// abort first, the invocation would die with the request span still open, and
-// the batched spans would never export — leaving no server-side trace at all.
-// Failing server-side first turns the hang into a completed 504 whose trace
-// contains the exact child span that stalled, and the response still carries
-// the traceparent back to the client.
+// Fail with a useful 504 before the mobile client's 10-second abort. This
+// deadline applies even when routine request tracing is disabled.
 export const RELAY_REQUEST_DEADLINE_MS = 9_000;
 
 const relayRequestDeadline = <E, R>(
@@ -189,7 +186,6 @@ const relayRequestDeadline = <E, R>(
             const request = yield* HttpServerRequest.HttpServerRequest;
             yield* Effect.logError("relay request exceeded deadline", {
               "http.method": request.method,
-              "http.url": request.url,
               "relay.request.deadline_ms": RELAY_REQUEST_DEADLINE_MS,
             });
             yield* Effect.annotateCurrentSpan({
@@ -204,6 +200,12 @@ const relayRequestDeadline = <E, R>(
       }),
     ),
   );
+
+/** Production requests retain deadlines without exporting identity, URL or error spans. */
+export const privateRelayHttpRequest = <E, R>(
+  httpEffect: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
+) =>
+  withoutCapturedParentSpan(relayRequestDeadline(httpEffect)).pipe(Effect.withTracerEnabled(false));
 
 export const traceRelayHttpRequest = <E, R>(
   httpEffect: Effect.Effect<
@@ -243,6 +245,7 @@ export const relayClientAuthLayer = Layer.effect(
   RelayClientAuth,
   Effect.gen(function* () {
     const config = yield* RelayConfiguration.RelayConfiguration;
+    const deletions = yield* AccountDeletions.AccountDeletions;
     return {
       clientBearer: Effect.fn("relay.auth.client.bearer")(function* (httpEffect, { credential }) {
         const token = readHttpAuthorizationCredential(credential);
@@ -265,6 +268,9 @@ export const relayClientAuthLayer = Layer.effect(
           "relay.auth.mode": verified.mode,
           "relay.auth.subject": verified.sub,
         });
+        if (yield* deletions.isBlocked(verified.sub)) {
+          return yield* relayAuthInvalidError("not_authorized");
+        }
 
         return yield* httpEffect.pipe(
           withSpanAttributes({ "user.id": verified.sub }),
@@ -315,6 +321,7 @@ export const relayDpopClientAuthLayer = Layer.effect(
   RelayDpopClientAuth,
   Effect.gen(function* () {
     const relayTokens = yield* RelayTokens.RelayTokens;
+    const deletions = yield* AccountDeletions.AccountDeletions;
     return {
       relayDpop: Effect.fn("relay.auth.dpop_client")(function* (httpEffect, { credential }) {
         yield* appendRelayDpopChallengeHeader;
@@ -335,6 +342,11 @@ export const relayDpopClientAuthLayer = Layer.effect(
           "relay.auth.mode": "dpop",
           "relay.auth.subject": verified.sub,
         });
+        // A deleted account may still repeat its deletion request, so a lost
+        // response can be recovered. Every other route refuses it.
+        if (!isAccountDeletionPath(request) && (yield* deletions.isBlocked(verified.sub))) {
+          return yield* relayAuthInvalidError("not_authorized");
+        }
         return yield* httpEffect.pipe(
           withSpanAttributes({ "user.id": verified.sub }),
           Effect.provideService(RelayClientPrincipal, {
@@ -348,6 +360,11 @@ export const relayDpopClientAuthLayer = Layer.effect(
     };
   }),
 );
+
+function isAccountDeletionPath(request: HttpServerRequest.HttpServerRequest): boolean {
+  const url = HttpServerRequest.toURL(request);
+  return url._tag === "Some" && url.value.pathname === "/v1/account/deletion";
+}
 
 function isDpopAuthorizationHeader(value: string | undefined): boolean {
   return /^DPoP +/iu.test(value ?? "");
@@ -525,6 +542,50 @@ export const mobileApi = HttpApiBuilder.group(
           return yield* registrations.unregisterDevice({ userId, deviceId: params.deviceId });
         }, mapRelayCommonApiErrors("invalid_dpop")),
       );
+  }),
+);
+
+export const accountApi = HttpApiBuilder.group(
+  RelayApi,
+  "account",
+  Effect.fnUntraced(function* (handlers) {
+    const deletions = yield* AccountDeletions.AccountDeletions;
+    const dpopProofs = yield* DpopProofs.DpopProofReplay;
+    return handlers.handle(
+      "requestAccountDeletion",
+      Effect.fn("relay.api.account.requestAccountDeletion")(function* (args) {
+        yield* appendRelayCredentialResponseHeaders;
+        const { userId, token } = yield* RelayClientPrincipal;
+        const proofKeyThumbprint = yield* requireDpopPrincipalScope(RelayAccountDeleteScope);
+        yield* requireDpopThumbprint(proofKeyThumbprint, {
+          expectedAccessToken: token,
+        }).pipe(Effect.provideService(DpopProofs.DpopProofReplay, dpopProofs));
+        return yield* deletions
+          .request({ userId, requestId: args.payload.requestId })
+          .pipe(Effect.catch(() => relayInternalErrorResponse("persistence_failed")));
+      }, mapRelayCommonApiErrors("invalid_dpop")),
+    );
+  }),
+);
+
+/** Account deletion tears environments down exactly as unlinking does. */
+export const environmentTeardownLayer = Layer.effect(
+  AccountDeletions.EnvironmentTeardown,
+  Effect.gen(function* () {
+    const context = yield* Effect.context<
+      | RelayDb.RelayTransactions
+      | EnvironmentLinks.EnvironmentLinks
+      | EnvironmentCredentials.EnvironmentCredentials
+      | ManagedEndpointProvider.ManagedEndpointProvider
+    >();
+    return AccountDeletions.EnvironmentTeardown.of({
+      unlink: (input) =>
+        unlinkEnvironmentRecord(input).pipe(
+          Effect.provide(context),
+          Effect.asVoid,
+          Effect.mapError((cause) => new AccountDeletions.AccountTeardownError({ cause })),
+        ),
+    });
   }),
 );
 
@@ -716,6 +777,7 @@ export const tokenApi = HttpApiBuilder.group(
     const crypto = yield* Crypto.Crypto;
     const dpopProofs = yield* DpopProofs.DpopProofReplay;
     const relayTokens = yield* RelayTokens.RelayTokens;
+    const deletions = yield* AccountDeletions.AccountDeletions;
     return handlers.handle(
       "exchangeDpopAccessToken",
       Effect.fn("relay.api.token.exchangeDpopAccessToken")(function* (args) {
@@ -739,6 +801,13 @@ export const tokenApi = HttpApiBuilder.group(
         );
         if (!verified.sub || !hasExpectedClerkAudience(verified.aud, config.clerkJwtAudience)) {
           return yield* relayAuthInvalidError("invalid_bearer");
+        }
+        // A deleted account can still mint a token scoped only to the deletion
+        // route, so a phone that lost the response can read the recorded status.
+        const deletionOnly =
+          requestedScopes.length === 1 && requestedScopes[0] === RelayAccountDeleteScope;
+        if (!deletionOnly && (yield* deletions.isBlocked(verified.sub))) {
+          return yield* relayAuthInvalidError("not_authorized");
         }
         const proofKeyThumbprint = yield* requireDpopProof().pipe(
           Effect.provideService(DpopProofs.DpopProofReplay, dpopProofs),

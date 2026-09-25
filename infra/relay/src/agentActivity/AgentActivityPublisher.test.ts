@@ -72,7 +72,7 @@ function makeAgentActivityRows(
   return {
     upsert: () => Effect.void,
     remove: () => Effect.void,
-    pruneTerminal: () => Effect.void,
+    pruneExpired: Effect.void,
     listForUser: () => Effect.succeed([state]),
     getForUserThread: () => Effect.succeed(state),
     ...overrides,

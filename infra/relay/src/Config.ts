@@ -28,6 +28,8 @@ export class RelayConfiguration extends Context.Service<
     readonly cloudMintPublicKey: string;
     readonly managedEndpointBaseDomain: string | undefined;
     readonly managedEndpointNamespace: string | undefined;
+    /** Bearer token for the operator routes. Unset leaves them disabled. */
+    readonly operatorToken?: Redacted.Redacted<string>;
   }
 >()("t3code-relay/Config/RelayConfiguration") {}
 
