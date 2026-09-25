@@ -998,10 +998,13 @@ export const tokenApi = HttpApiBuilder.group(
           return yield* new HttpApiError.Unauthorized({});
         }
 
-        const verified = yield* verifyClerkBearerToken(config, args.payload.subject_token).pipe(
-          Effect.catch(() => relayAuthInvalidError("invalid_bearer")),
-        );
-        if (!verified.sub || !hasExpectedClerkAudience(verified.aud, config.clerkJwtAudience)) {
+        // The same sign-ins the client routes accept: a relay-audience session token, or the
+        // Clerk OAuth token a headless engine holds after the CLI device sign-in.
+        const verified = yield* verifyRelayClientBearerToken(
+          config,
+          args.payload.subject_token,
+        ).pipe(Effect.catch(() => relayAuthInvalidError("invalid_bearer")));
+        if (!verified.sub) {
           return yield* relayAuthInvalidError("invalid_bearer");
         }
         // A deleted account can still mint a token scoped only to the deletion
