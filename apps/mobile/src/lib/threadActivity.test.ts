@@ -9,6 +9,7 @@ import {
   ProviderInstanceId,
   ProviderDriverKind,
   ProviderThreadId,
+  ProviderTurnId,
   RunId,
   RunAttemptId,
   ScheduledTaskId,
@@ -217,6 +218,23 @@ describe("buildThreadFeed", () => {
     });
   });
 
+  it("keeps the sender of an agent message distinct from its timeline source", () => {
+    const feed = buildThreadFeed([
+      projected(
+        {
+          ...userMessage(),
+          createdBy: "agent",
+          creationSource: "mcp",
+          senderThreadId: sourceThreadId,
+        },
+        0,
+      ),
+    ]);
+    const messageEntry = feed.find((entry) => entry.type === "message");
+    expect(messageEntry?.message.senderThreadId).toBe(sourceThreadId);
+    expect(messageEntry?.message.sourceThreadId).toBe(threadId);
+  });
+
   it("adds local feedback messages to an otherwise server-authored feed", () => {
     const feed = buildThreadFeed([], {
       localMessages: [
@@ -338,88 +356,122 @@ describe("buildThreadFeed", () => {
     expect(presented.some((entry) => entry.type === "run-fold")).toBe(false);
   });
 
-  it("presents provider retries as visible work-log activity", () => {
-    const retryBase = {
-      ...base("item-provider-retry", "2026-06-20T00:00:02.000Z", 1),
-      type: "error" as const,
-      failure: {
-        class: "transport_error" as const,
-        message: "The response stream disconnected.",
-        code: "responseStreamDisconnected",
-        retryable: true,
-      },
-      retry: {
-        attempt: 2,
-        maxAttempts: 5,
-        retryDelayMs: null,
-      },
-    };
-    const runningFeed = buildThreadFeed([
+  it("presents a usage-limit stop as a warning while preserving its explanation", () => {
+    const message = "Plan usage limit reached. Try again after reset.";
+    const entries = buildThreadFeed([
       projected(
         {
-          ...retryBase,
-          status: "running",
-          title: "Provider retry",
-          completedAt: null,
-        },
-        0,
-      ),
-    ]);
-    const recoveredFeed = buildThreadFeed([
-      projected(
-        {
-          ...retryBase,
-          status: "completed",
-          title: "Provider recovered",
-        },
-        0,
-      ),
-    ]);
-    const failedFeed = buildThreadFeed([
-      projected(
-        {
-          ...retryBase,
+          ...base("item-limit", "2026-06-20T00:00:02.000Z", 1),
+          type: "error",
           status: "failed",
-          title: "Provider retry failed",
+          title: "Usage limit reached",
+          failure: { class: "usage_limit", message, code: "usageLimitExceeded", retryable: null },
         },
         0,
       ),
-      projected(command("2026-06-20T00:00:03.000Z"), 1),
     ]);
-    const runningActivity = runningFeed.find((entry) => entry.type === "activity-group")
-      ?.activities[0];
-    const recoveredActivity = recoveredFeed.find((entry) => entry.type === "activity-group")
-      ?.activities[0];
-    if (runningActivity === undefined || recoveredActivity === undefined) {
-      throw new Error("Expected provider retry work-log activities.");
-    }
-
-    expect(runningActivity).toMatchObject({
-      summary: "Provider retry",
+    const activity = entries.flatMap((entry) =>
+      entry.type === "activity-group" ? entry.activities : [],
+    )[0];
+    expect(activity).toMatchObject({
+      summary: "Usage limit reached",
       status: "neutral",
-      toolLike: false,
+      icon: "warning",
     });
-    expect(threadFeedActivityIsVisible(runningActivity)).toBe(true);
-    expect(recoveredActivity).toMatchObject({
-      summary: "Provider recovered",
-      status: "success",
-      toolLike: false,
-    });
-    const failedPresentation = deriveThreadFeedPresentation(
-      failedFeed,
-      { runId, status: "running", startedAt: null, completedAt: null },
-      new Set(),
-    );
-    expect(failedPresentation.map((entry) => entry.type)).toEqual([
-      "activity-group",
-      "work-toggle",
-    ]);
-    expect(
-      failedPresentation[0]?.type === "activity-group"
-        ? failedPresentation[0].activities[0]?.summary
-        : null,
-    ).toBe("Provider retry failed");
+    expect(activity?.getFullDetail()).toContain(message);
   });
+
+  it.each(["transport_error", "usage_limit"] as const)(
+    "presents %s retries and clears warning markers on recovery",
+    (failureClass) => {
+      const retryBase = {
+        ...base("item-provider-retry", "2026-06-20T00:00:02.000Z", 1),
+        type: "error" as const,
+        failure: {
+          class: failureClass,
+          message: "The response stream disconnected.",
+          code: "responseStreamDisconnected",
+          retryable: true,
+        },
+        retry: {
+          attempt: 2,
+          maxAttempts: 5,
+          retryDelayMs: null,
+        },
+      };
+      const runningFeed = buildThreadFeed([
+        projected(
+          {
+            ...retryBase,
+            status: "running",
+            title: "Provider retry",
+            completedAt: null,
+          },
+          0,
+        ),
+      ]);
+      const recoveredFeed = buildThreadFeed([
+        projected(
+          {
+            ...retryBase,
+            status: "completed",
+            title: "Provider recovered",
+          },
+          0,
+        ),
+      ]);
+      if (failureClass === "usage_limit") {
+        const recoveredActivity = recoveredFeed.flatMap((entry) =>
+          entry.type === "activity-group" ? entry.activities : [],
+        )[0];
+        expect(recoveredActivity).toMatchObject({ status: "success", icon: "check" });
+      }
+      const failedFeed = buildThreadFeed([
+        projected(
+          {
+            ...retryBase,
+            status: "failed",
+            title: "Provider retry failed",
+          },
+          0,
+        ),
+        projected(command("2026-06-20T00:00:03.000Z"), 1),
+      ]);
+      const runningActivity = runningFeed.find((entry) => entry.type === "activity-group")
+        ?.activities[0];
+      const recoveredActivity = recoveredFeed.find((entry) => entry.type === "activity-group")
+        ?.activities[0];
+      if (runningActivity === undefined || recoveredActivity === undefined) {
+        throw new Error("Expected provider retry work-log activities.");
+      }
+
+      expect(runningActivity).toMatchObject({
+        summary: "Provider retry",
+        status: "neutral",
+        toolLike: false,
+      });
+      expect(threadFeedActivityIsVisible(runningActivity)).toBe(true);
+      expect(recoveredActivity).toMatchObject({
+        summary: "Provider recovered",
+        status: "success",
+        toolLike: false,
+      });
+      const failedPresentation = deriveThreadFeedPresentation(
+        failedFeed,
+        { runId, status: "running", startedAt: null, completedAt: null },
+        new Set(),
+      );
+      expect(failedPresentation.map((entry) => entry.type)).toEqual([
+        "activity-group",
+        "activity-group",
+      ]);
+      expect(
+        failedPresentation[0]?.type === "activity-group"
+          ? failedPresentation[0].activities[0]?.summary
+          : null,
+      ).toBe("Provider retry failed");
+    },
+  );
 
   it.each(["pending", "running", "completed"] as const)(
     "omits %s task progress without hiding adjacent conversation items",
@@ -1042,6 +1094,18 @@ describe("buildThreadFeed", () => {
     expect(activity?.getCopyText().split("\n")[0]).toBe("Read a T3 thread");
   });
 
+  it("uses the CUA action title in the mobile feed", () => {
+    const item: OrchestrationV2TurnItem = {
+      ...base("cua", "2026-09-23T20:20:00.000Z", 1),
+      type: "dynamic_tool",
+      toolName: "cua_repl.js",
+      input: { code: "await game.getAXStateAndScreenshot();", title: "Inspect Saga music screen" },
+    };
+    const feed = buildThreadFeed([projected(item, 0)]);
+    const activity = feed[0]?.type === "activity-group" ? feed[0].activities[0] : null;
+    expect(activity?.summary).toBe("Inspect Saga music screen");
+  });
+
   it("uses canonical T3 orchestration summaries in compact work groups", () => {
     const rows = [
       projected(command("2026-06-20T00:00:01.000Z"), 0),
@@ -1396,6 +1460,117 @@ describe("retained v2 feed presentation", () => {
       expect(rows[0]).toMatchObject({ type: "work-toggle", summary, hasFailure, shimmer: false });
     },
   );
+
+  it.each([
+    { envelope: "direct", output: { taskId: "a" } },
+    { envelope: "structured", output: { structuredContent: { taskId: "a" } } },
+    { envelope: "text", output: { content: [{ type: "text", text: '{"taskId":"a"}' }] } },
+  ])(
+    "folds matched $envelope delegations without hiding pending, failed or unmatched calls",
+    ({ output }) => {
+      const agent = (
+        id: string,
+        index: number,
+        origin = "app_owned" as "app_owned" | "provider_native",
+      ) =>
+        projected(
+          {
+            ...base(id, "2026-06-20T00:00:01.000Z", index),
+            type: "subagent",
+            subagentId: NodeId.make(id),
+            origin,
+            driver: ProviderDriverKind.make("codex"),
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            childThreadId: ThreadId.make(`child-${id}`),
+            prompt: "Identical task",
+            result: "Done",
+          },
+          index,
+        );
+      const delegation = (
+        id: string,
+        index: number,
+        overrides: Partial<Extract<OrchestrationV2TurnItem, { type: "dynamic_tool" }>> = {},
+      ) =>
+        projected(
+          {
+            ...base(id, "2026-06-20T00:00:02.000Z", index),
+            type: "dynamic_tool",
+            toolName: "t3-code.delegate_task",
+            input: { task: "Identical task" },
+            output,
+            ...overrides,
+          },
+          index,
+        );
+      const feed = buildThreadFeed([
+        agent("a", 1),
+        delegation("matched", 2),
+        agent("b", 3),
+        delegation("pending", 4, { status: "running", output: null }),
+        delegation("unmatched", 5, { output: { taskId: "missing" } }),
+        delegation("failed", 6, { status: "failed" }),
+        delegation("error-output", 7, { output: { taskId: "a", isError: true } }),
+        delegation("other-run", 8, { runId: RunId.make("other-run") }),
+        agent("native", 9, "provider_native"),
+        delegation("native-delegation", 10, { output: { taskId: "native" } }),
+      ]);
+      const groups = feed.flatMap((entry) =>
+        entry.type === "activity-group"
+          ? [entry.activities.map((activity) => activity.projectedItem.item.id)]
+          : [],
+      );
+      expect(groups[0]).toEqual(["a", "b"]);
+      expect(groups.flat()).toEqual([
+        "a",
+        "b",
+        "pending",
+        "unmatched",
+        "failed",
+        "error-output",
+        "other-run",
+        "native",
+        "native-delegation",
+      ]);
+      const presented = deriveThreadFeedPresentation(
+        feed,
+        null,
+        new Set([runId, RunId.make("other-run")]),
+      );
+      expect(
+        presented.find(
+          (entry) =>
+            entry.type === "activity-group" && entry.activities[0]?.projectedItem.item.id === "a",
+        )?.continuesWorkLog,
+      ).toBeUndefined();
+    },
+  );
+
+  it("keeps subagents from different provider turns in separate cards", () => {
+    const agent = (id: string, index: number) =>
+      projected(
+        {
+          ...base(id, "2026-06-20T00:00:01.000Z", index),
+          type: "subagent",
+          subagentId: NodeId.make(id),
+          origin: "provider_native",
+          driver: ProviderDriverKind.make("codex"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          providerTurnId: ProviderTurnId.make(id),
+          childThreadId: null,
+          prompt: "Task",
+          result: null,
+        },
+        index,
+      );
+    expect(
+      buildThreadFeed([agent("a", 1), agent("b", 2)]).flatMap((entry) =>
+        entry.type === "activity-group"
+          ? [entry.activities.map((activity) => activity.projectedItem.item.id)]
+          : [],
+      ),
+    ).toEqual([["a"], ["b"]]);
+  });
 
   it("groups only adjacent subagents in the same run, keeping their child links", () => {
     const agent = (id: string, index: number, agentRunId = runId) =>
@@ -1802,3 +1977,62 @@ it("previews a settled thought in its collapsed header and labels its expanded h
   if (detail?.type !== "activity-group") throw new Error("Expected full thought");
   expect(detail.activities[0]?.detail).toBe(thought.text);
 });
+
+it.each(["provider_error", "usage_limit"] as const)(
+  "keeps a historical %s failure and preceding work visible without disclosures",
+  (failureClass) => {
+    const at = "2026-06-20T00:00:03.000Z";
+    const error: OrchestrationV2TurnItem = {
+      ...base("failure", at, 2),
+      type: "error",
+      status: "failed",
+      failure: {
+        class: failureClass,
+        message: "The provider stopped this turn.\nRetry later.",
+        code: null,
+        retryable: true,
+      },
+    };
+    const command: OrchestrationV2TurnItem = {
+      ...base("command", "2026-06-20T00:00:02.000Z", 1),
+      type: "command_execution",
+      input: "pwd",
+      output: "",
+      exitCode: 0,
+    };
+    const sourceFeed = buildThreadFeed([
+      projected(userMessage(), 0),
+      projected(command, 1),
+      projected(error, 2),
+    ]);
+    const feed = deriveThreadFeedPresentation(
+      sourceFeed,
+      { runId: RunId.make("newer-run"), status: "completed", startedAt: at, completedAt: at },
+      new Set(),
+    );
+    const whileWorking = deriveThreadFeedPresentation(
+      sourceFeed,
+      { runId: RunId.make("newer-run"), status: "running", startedAt: at, completedAt: null },
+      new Set(),
+    );
+    for (const entry of feed) {
+      expect(whileWorking.find((row) => row.id === entry.id)).toBe(entry);
+    }
+    expect(feed.some((entry) => entry.type === "run-fold" || entry.type === "work-toggle")).toBe(
+      false,
+    );
+    const activities = feed.flatMap((entry) =>
+      entry.type === "activity-group" ? entry.activities : [],
+    );
+    expect(activities.map((activity) => activity.projectedItem.item.id)).toEqual([
+      "command",
+      "failure",
+    ]);
+    expect(activities.at(-1)).toMatchObject({
+      detail: error.failure.message,
+      createdAt: at,
+      canExpand: false,
+      prominent: true,
+    });
+  },
+);

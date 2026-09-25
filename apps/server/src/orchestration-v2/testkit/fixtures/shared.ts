@@ -52,13 +52,16 @@ export const SUBAGENT_TEXT_FINAL_MARKER = "SUBAGENT FINAL MARKER";
 export const SUBAGENT_TEXT_PARENT_MARKER = "PARENT FINAL MARKER";
 export const SUBAGENT_TEXT_PROMPT =
   "Use the Agent tool with run_in_background set to true to spawn exactly one subagent with this prompt: 'Reply with a message that is exactly: SUBAGENT NARRATION MARKER. Then read package.json in the current working directory. Then finish with a final message that is exactly: SUBAGENT FINAL MARKER.' Then call the TaskOutput tool repeatedly until the task reports it has completed; do not end your turn while the task is still running. Once it has completed, do not repeat or quote the subagent's output; respond with exactly: PARENT FINAL MARKER";
-export const SUBAGENT_V2_PROMPT = "just say hello";
+export const SUBAGENT_V2_NESTED_PROMPT =
+  "Spawn one subagent and tell it to spawn its own subagent, which must in turn spawn one more subagent whose only task is to reply with exactly: Hello. Each agent waits for its child and replies with exactly what the child said. Wait for your subagent, then reply with exactly what it said.";
+export const SUBAGENT_V2_PROMPT =
+  "Spawn one subagent whose only task is to reply with exactly: Hello. Wait for it to finish, then reply with exactly what it said.";
 export const OPENCODE_SUBAGENT_PROMPT =
   "Use the task tool exactly once. Delegate to the general subagent with this prompt: Respond exactly CHILD_OK. After the task completes, respond exactly PARENT_OK.";
 export const SUBAGENT_CONTINUE_PROMPT =
   "Spawn one subagent and have it reply exactly: initial subagent response";
 export const SUBAGENT_CONTINUE_PARENT_PROMPT =
-  "@hooke have the same subagent reply exactly: continued subagent response";
+  "Have the same subagent you spawned earlier reply exactly: continued subagent response";
 export const SUBAGENT_CONTINUE_CHILD_PROMPT = "Reply exactly: continued subagent response";
 export const TURN_INTERRUPT_PROMPT =
   "Do not answer immediately. First run the local shell command `sleep 30`, then respond with exactly: interrupt fixture should not finish naturally.";
@@ -156,6 +159,9 @@ export const PROPOSED_PLAN_PROMPT =
   "Create a short implementation plan for adding deterministic replay fixtures. Do not ask questions. Present the final plan in a proposed plan block.";
 export const WEB_SEARCH_PROMPT =
   "Search the web for FIFA World Cup ticket pricing, then answer exactly: web search fixture complete";
+export const SKILL_INVOCATION_PROMPT = "$review README.md";
+/** What Cursor receives once the adapter rewrites a discovered `$skill` mention. */
+export const SKILL_INVOCATION_CURSOR_MESSAGE = "/review README.md";
 
 export type OrchestratorFixtureInputStep =
   | {
@@ -184,6 +190,8 @@ export type OrchestratorFixtureInputStep =
       readonly type: "await_run_status";
       readonly targetRunIndex: number;
       readonly status: OrchestrationV2RunStatus;
+      /** Then also wait until that run has projected an item of this type. */
+      readonly waitForTurnItemType?: OrchestrationV2TurnItem["type"];
     }
   | {
       readonly type: "capture_shell_snapshot";
@@ -243,6 +251,13 @@ export type OrchestratorFixtureInputStep =
 
 export interface OrchestratorFixtureInput {
   readonly interactionMode?: ProviderInteractionMode;
+  /**
+   * Files committed into the replay workspace before the scenario runs, keyed
+   * by workspace-relative path. A recorder must seed the same files so adapter
+   * logic that reads the workspace (e.g. skill discovery) sees what the
+   * provider saw.
+   */
+  readonly workspaceFiles?: Readonly<Record<string, string>>;
   readonly steps: ReadonlyArray<OrchestratorFixtureInputStep>;
 }
 
@@ -253,6 +268,8 @@ export interface ProviderOrchestratorReplayVariant {
   readonly transcriptEntriesThroughLabel?: string;
   readonly modelSelection: ModelSelection;
   readonly runtimePolicyOverride?: RuntimePolicyV2Override;
+  /** Replays a provider wake turn as a continuation run, as the live runtime does. */
+  readonly runContinuationWorker?: boolean;
   /**
    * Workspace-relative paths that must not exist once the scenario finishes,
    * e.g. the target of a tool call the run was configured to deny.
@@ -283,7 +300,7 @@ export interface FixtureIds {
 
 export const CODEX_MODEL_SELECTION = {
   instanceId: ProviderInstanceId.make("codex"),
-  model: "gpt-5.4",
+  model: "gpt-6-luna",
 } satisfies ModelSelection;
 
 export const CLAUDE_MODEL_SELECTION = {
@@ -305,6 +322,12 @@ export const OPENCODE_MODEL_SELECTION = {
   instanceId: ProviderInstanceId.make("opencode"),
   model: "openai/gpt-5.4-mini",
   options: [{ id: "agent", value: "build" }],
+} satisfies ModelSelection;
+
+/** Pi fixtures are recorded against this pinned OpenRouter model; the slug is `provider/model`. */
+export const PI_MODEL_SELECTION = {
+  instanceId: ProviderInstanceId.make("pi"),
+  model: "openrouter/deepseek/deepseek-v4-flash",
 } satisfies ModelSelection;
 
 export const ACP_REGISTRY_MODEL_SELECTION = {
@@ -489,7 +512,10 @@ export function materializeFixtureInput(input: {
                   nextStep.type === "queue_message" ||
                   (nextStep.type === "restart" && nextStep.targetRunIndex === runIndex) ||
                   (nextStep.type === "release_replay_gate_after_waiting" &&
-                    nextStep.targetRunIndex === runIndex))) ||
+                    nextStep.targetRunIndex === runIndex) ||
+                  // A provider continuation run starts while this thread is
+                  // busy, so waiting for idle first would never return.
+                  (nextStep.type === "await_run_status" && nextStep.targetRunIndex > runIndex))) ||
               nextStep?.type === "approve_next_runtime_request" ||
               nextStep?.type === "answer_next_user_input_request";
             const key = `run:${runIndex}`;
@@ -576,6 +602,14 @@ export function materializeFixtureInput(input: {
             runId: runIdFor(step.targetRunIndex),
             status: step.status,
           });
+          if (step.waitForTurnItemType !== undefined) {
+            steps.push({
+              type: "await_run_turn_item",
+              threadId: ids.threadId,
+              runId: runIdFor(step.targetRunIndex),
+              itemType: step.waitForTurnItemType,
+            });
+          }
           break;
         case "capture_shell_snapshot":
           steps.push({ type: "capture_shell_snapshot", key: step.key });

@@ -1,6 +1,7 @@
 import { vi } from "vite-plus/test";
 import { runScheduledPlugin } from "../exarch/plugins.ts";
 vi.mock("../exarch/plugins.ts", () => ({ runScheduledPlugin: vi.fn(async () => {}) }));
+import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as NodeUtil from "node:util";
 
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -218,6 +219,7 @@ it.effect(
                 }),
                 Layer.mock(ThreadManagementService.ThreadManagementService)({}),
                 NodeCrypto.layer,
+                Scheduler.layer,
               ),
             ),
           );
@@ -322,6 +324,7 @@ it.effect(
                 }),
                 Layer.mock(ThreadManagementService.ThreadManagementService)({}),
                 NodeCrypto.layer,
+                Scheduler.layer,
               ),
             ),
           );
@@ -364,6 +367,7 @@ it.effect("passes start-clean and the schedule's saved modes to a bound schedule
         readonly interactionMode: string | undefined;
       }>({ startClean: undefined, runtimeMode: undefined, interactionMode: undefined });
       const deps = Layer.mergeAll(
+        Scheduler.layer,
         NodeCrypto.layer,
         Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
@@ -408,6 +412,7 @@ it.effect("runs and records a plugin schedule without launching a conversation",
   Effect.scoped(
     Effect.gen(function* () {
       const deps = Layer.mergeAll(
+        Scheduler.layer,
         NodeCrypto.layer,
         Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
         Layer.mock(ThreadManagementService.ThreadManagementService)({}),

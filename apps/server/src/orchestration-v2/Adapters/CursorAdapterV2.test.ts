@@ -31,7 +31,6 @@ import {
   type ProviderAdapterV2SessionRuntime,
 } from "../ProviderAdapter.ts";
 import {
-  CursorProviderCapabilitiesV2,
   cursorMcpServers,
   cursorRuntimeAgentPolicy,
   cursorSdkModelSelection,
@@ -334,6 +333,155 @@ describe("CursorAdapterV2", () => {
       assert.deepEqual(opened, ["create", "resume"]);
     }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, idAllocatorLayer))),
   );
+
+  for (const { status, model } of [
+    { status: "finished", model: undefined },
+    { status: "cancelled", model: "claude-opus-4-6" },
+    { status: "error", model: "custom-fable" },
+  ] as const) {
+    it.effect(`settles missing task completions when the Cursor run is ${status}`, () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const workspace = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "cursor-v2-lifecycle-",
+        });
+        const instanceId = ProviderInstanceId.make("cursor");
+        const threadId = ThreadId.make("cursor-lifecycle-thread");
+        const modelSelection = { instanceId, model: "composer-2.5" };
+        const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: workspace,
+        });
+        const adapter = makeCursorAdapterV2({
+          instanceId,
+          settings: yield* decodeCursorSettings({}),
+          environment: { HOME: workspace },
+          fileSystem,
+          path,
+          idAllocator: yield* IdAllocatorV2,
+          serverConfig: yield* ServerConfig.pipe(
+            Effect.provide(
+              serverConfigLayerTest(workspace, { prefix: "cursor-v2-lifecycle-config-" }),
+            ),
+          ),
+          runner: {
+            assertComplete: Effect.void,
+            open: () =>
+              Effect.succeed({
+                agentId: "native-cursor-lifecycle",
+                listMessages: Effect.succeed([]),
+                close: Effect.void,
+                send: (input) =>
+                  Effect.gen(function* () {
+                    // Recorded Cursor task calls (see fixtures/subagent) stream a
+                    // partial-tool-call before tool-call-started with the same args.
+                    // The run then ends without tool-call-completed, which a live
+                    // run cannot produce on demand.
+                    const taskToolCall = {
+                      type: "task" as const,
+                      args: {
+                        description: "Review",
+                        prompt: "Review the code.",
+                        subagentType: { kind: "unspecified" },
+                        ...(model === undefined ? {} : { model }),
+                        agentId: "cursor-task-agent",
+                        mode: "unspecified" as const,
+                      },
+                    };
+                    for (const type of ["partial-tool-call", "tool-call-started"] as const) {
+                      yield* input.onDelta!({
+                        type,
+                        modelCallId: "model-call",
+                        callId: "task-call",
+                        toolCall: taskToolCall,
+                      }).pipe(Effect.orDie);
+                    }
+                    return {
+                      agentId: "native-cursor-lifecycle",
+                      runId: "native-cursor-run",
+                      wait: Effect.succeed({
+                        id: "native-cursor-run",
+                        requestId: "native-request",
+                        status,
+                        model: { id: "composer-2.5" },
+                        durationMs: 1,
+                      }),
+                      cancel: Effect.void,
+                    };
+                  }),
+              }),
+          },
+        });
+        const runtime = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("cursor-lifecycle-session"),
+          modelSelection,
+          runtimePolicy,
+        });
+        const providerThread = yield* runtime.ensureThread({
+          threadId,
+          modelSelection,
+          runtimePolicy,
+        });
+        const now = yield* DateTime.now;
+        yield* runtime.startTurn({
+          threadId,
+          providerThread,
+          modelSelection,
+          runtimePolicy,
+          runId: RunId.make("cursor-lifecycle-run"),
+          runOrdinal: 1,
+          providerTurnOrdinal: 1,
+          attemptId: RunAttemptId.make("cursor-lifecycle-attempt"),
+          rootNodeId: NodeId.make("cursor-lifecycle-root"),
+          appThread: {
+            id: threadId,
+            projectId: ProjectId.make("cursor-lifecycle-project"),
+            createdBy: "user",
+            creationSource: "web",
+            title: "Cursor lifecycle",
+            providerInstanceId: instanceId,
+            modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            activeProviderThreadId: providerThread.id,
+            lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+            forkedFrom: null,
+            createdAt: now,
+            updatedAt: now,
+            archivedAt: null,
+            settledOverride: null,
+            settledAt: null,
+            lastVisitedAt: null,
+            deletedAt: null,
+          },
+          message: {
+            messageId: MessageId.make("cursor-lifecycle-message"),
+            createdBy: "user",
+            creationSource: "web",
+            text: "Review the code.",
+            attachments: [],
+          },
+        });
+        const events = yield* runtime.events.pipe(
+          Stream.takeUntil((event) => event.type === "turn.terminal"),
+          Stream.runCollect,
+        );
+        const rows = events.filter((event) => event.type === "subagent.updated");
+        assert.equal(rows[0]?.subagent.status, "running");
+        assert.equal(rows[0]?.subagent.model, model ?? null);
+        assert.equal(
+          rows.at(-1)?.subagent.status,
+          status === "finished" ? "idle" : status === "cancelled" ? "cancelled" : "failed",
+        );
+        assert.isNotNull(rows.at(-1)?.subagent.completedAt);
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, idAllocatorLayer))),
+    );
+  }
 
   it.effect("fails standalone SDK transport diagnostics and sends compaction as /compress", () =>
     Effect.gen(function* () {
@@ -879,18 +1027,26 @@ describe("CursorAdapterV2", () => {
     );
   });
 
-  it("advertises only capabilities exposed by the official SDK adapter", () => {
-    assert.isTrue(CursorProviderCapabilitiesV2.threads.canReadThreadSnapshot);
-    assert.isFalse(CursorProviderCapabilitiesV2.threads.canForkThread);
-    assert.isFalse(CursorProviderCapabilitiesV2.threads.canRollbackThread);
-    assert.isTrue(CursorProviderCapabilitiesV2.turns.supportsInterrupt);
-    assert.isFalse(CursorProviderCapabilitiesV2.turns.supportsActiveSteering);
-    assert.isTrue(CursorProviderCapabilitiesV2.turns.supportsSteeringByInterruptRestart);
-    assert.isTrue(CursorProviderCapabilitiesV2.tools.supportsMcpTools);
-    assert.isTrue(CursorProviderCapabilitiesV2.subagents.supportsSubagents);
-    assert.isFalse(CursorProviderCapabilitiesV2.subagents.exposesSubagentThreadIds);
-    assert.equal(CursorProviderCapabilitiesV2.identity.nativeItemIds, "weak");
-    assert.isFalse(CursorProviderCapabilitiesV2.approvals.supportsCommandApproval);
+  it("loads the user's Cursor settings layers in every runtime mode", () => {
+    // The SDK loads no rules, skills, hooks, or MCP config from disk unless
+    // settingSources names them, so an omitted list silently drops AGENTS.md.
+    for (const runtimeMode of ["full-access", "auto-accept-edits", "approval-required"] as const) {
+      const options = makeCursorAgentOptions({
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("cursor"),
+          model: "composer-2.5",
+        },
+        runtimePolicy: { runtimeMode, interactionMode: "default", cwd: "/workspace" },
+        threadId: ThreadId.make("thread-cursor-setting-sources"),
+      });
+      assert.deepEqual(options.local?.settingSources, [
+        "project",
+        "user",
+        "team",
+        "mdm",
+        "plugins",
+      ]);
+    }
   });
 
   it("injects thread-scoped MCP credentials without logging them", () => {

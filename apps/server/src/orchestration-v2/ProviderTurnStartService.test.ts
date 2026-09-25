@@ -17,6 +17,7 @@ import {
   type OrchestrationV2ThreadProjection,
   OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -103,9 +104,16 @@ it("does not commit running state when inherited background routing cannot be re
             ),
         }),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
-          getThreadProjection: () => {
+          getTurnStartContext: () => {
             projectionReadCount += 1;
-            return Effect.succeed(projection);
+            return Effect.succeed({
+              ...projection,
+              hasConversation: projection.messages.some(
+                (m) =>
+                  m.role === "user" &&
+                  (m.text.trim().toLowerCase() !== "/compact" || m.attachments.length > 0),
+              ),
+            });
           },
           getRuntimeRecoveryProjection: () => {
             projectionReadCount += 1;
@@ -151,6 +159,10 @@ function makeLocalCommandHarness(input: {
   readonly startupFailure?: boolean;
   readonly stopDuringStartup?: boolean;
   readonly executionFailure?: "current" | "stopped" | "replaced";
+  readonly openFailure?: unknown;
+  readonly interruptOpen?: boolean;
+  readonly interruptRunBeforeOpenFailure?: boolean;
+  readonly writeFailure?: unknown;
 }) {
   const now = DateTime.makeUnsafe("2026-09-04T12:00:00Z");
   const threadId = ThreadId.make("thread-native-account-command");
@@ -341,19 +353,46 @@ function makeLocalCommandHarness(input: {
         },
         ensureThread: () => Effect.succeed(providerThread),
       } as never);
-    if (!input.startupFailure) return Effect.die("A local command must not open a native session.");
-    if (input.stopDuringStartup)
-      projection = {
-        ...projection,
-        runs: projection.runs.map((run) => ({ ...run, status: "interrupted" })),
-      };
-    return Effect.fail(
-      new ProviderSessionManager.ProviderSessionOpenError({
-        instanceId: newInstanceId,
-        providerSessionId,
-        cause: "Synthetic provider unavailable",
-      }),
-    );
+    if (input.startupFailure) {
+      if (input.stopDuringStartup)
+        projection = {
+          ...projection,
+          runs: projection.runs.map((run) => ({ ...run, status: "interrupted" })),
+        };
+      return Effect.fail(
+        new ProviderSessionManager.ProviderSessionOpenError({
+          instanceId: newInstanceId,
+          providerSessionId,
+          cause: "Synthetic provider unavailable",
+        }),
+      );
+    }
+    return input.interruptOpen === true
+      ? Effect.interrupt
+      : "openFailure" in input
+        ? Effect.sync(() => {
+            if (input.interruptRunBeforeOpenFailure === true) {
+              projection = {
+                ...projection,
+                runs: projection.runs.map((candidate) =>
+                  candidate.id === runId
+                    ? { ...candidate, status: "interrupted", completedAt: now }
+                    : candidate,
+                ),
+              };
+            }
+          }).pipe(
+            Effect.andThen(
+              Effect.fail(
+                new ProviderSessionManager.ProviderSessionOpenError({
+                  instanceId: newInstanceId,
+                  providerSessionId,
+                  cause: input.openFailure,
+                }),
+              ),
+            ),
+          )
+        : Effect.die("A local command must not open a native session.");
   });
   const startRootRun = vi.fn(() => {
     if (!input.executionFailure) return Effect.die("A local command must not start a native turn.");
@@ -386,54 +425,195 @@ function makeLocalCommandHarness(input: {
           }),
         ),
   );
+  const writeIfRunCurrent = vi.fn(({ events: incoming, activeAttemptId, expectedStatus }) =>
+    "writeFailure" in input
+      ? Effect.fail(
+          new EventSink.EventSinkWriteError({
+            eventCount: incoming.length,
+            cause: input.writeFailure,
+          }),
+        )
+      : Effect.sync(() => {
+          const current = projection.runs.find((candidate) => candidate.id === runId);
+          const committed =
+            current !== undefined &&
+            current.activeAttemptId === activeAttemptId &&
+            current.status === expectedStatus;
+          if (committed) {
+            for (const event of incoming) {
+              expect(isDomainEvent(event)).toBe(true);
+              events.push(event);
+              projection = ProjectionStore.applyToProjection(projection, event);
+            }
+          }
+          return { committed, storedEvents: [] };
+        }),
+  );
   const layer = ProviderTurnStart.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({}),
-        Layer.mock(EventSink.EventSinkV2)({
-          writeIfRunCurrent: ({ events: incoming, activeAttemptId, expectedStatus }) =>
-            Effect.sync(() => {
-              const current = projection.runs.find((candidate) => candidate.id === runId);
-              const committed =
-                current?.activeAttemptId === activeAttemptId && current.status === expectedStatus;
-              if (committed) {
-                for (const event of incoming) {
-                  expect(isDomainEvent(event)).toBe(true);
-                  events.push(event);
-                  projection = ProjectionStore.applyToProjection(projection, event);
-                }
-              }
-              return { committed, storedEvents: [] };
-            }),
-        }),
+        Layer.mock(EventSink.EventSinkV2)({ writeIfRunCurrent }),
         IdAllocator.layer,
         FileSystem.layerNoop({}),
         Layer.mock(GitWorkflow.GitWorkflowService)({}),
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
-          getThreadProjection: () => Effect.succeed(projection),
-          getRuntimeRecoveryProjection: () => Effect.succeed(projection),
+          getTurnStartContext: () =>
+            Effect.succeed({
+              ...projection,
+              hasConversation: projection.messages.some(
+                (m) =>
+                  m.role === "user" &&
+                  (m.text.trim().toLowerCase() !== "/compact" || m.attachments.length > 0),
+              ),
+            }),
+          getRuntimeRecoveryProjection: () =>
+            Effect.succeed({
+              ...projection,
+              hasConversation: projection.messages.some(
+                (m) =>
+                  m.role === "user" &&
+                  (m.text.trim().toLowerCase() !== "/compact" || m.attachments.length > 0),
+              ),
+            }),
         }),
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({ open }),
         Layer.mock(ProviderAuthService)({ tryHandlePromptCommand }),
         Layer.mock(RunExecutionService.RunExecutionServiceV2)({ startRootRun }),
-        Layer.mock(RuntimePolicy.RuntimePolicyV2)({ resolve: () => Effect.succeed({} as never) }),
+        Layer.mock(RuntimePolicy.RuntimePolicyV2)({
+          resolve: () => Effect.succeed({} as never),
+        }),
       ),
     ),
   );
   return {
     open,
+    writeIfRunCurrent,
     startRootRun,
     tryHandlePromptCommand,
     events,
     oldInstanceId,
     newInstanceId,
+    attemptId,
     projection: () => projection,
     start: Effect.gen(function* () {
       yield* (yield* ProviderTurnStart.ProviderTurnStartServiceV2).start({ threadId, runId });
     }).pipe(Effect.provide(layer)),
+    startWithRetry: Effect.gen(function* () {
+      yield* (yield* ProviderTurnStart.ProviderTurnStartServiceV2).start({
+        threadId,
+        runId,
+        willRetry: true,
+      });
+    }).pipe(Effect.provide(layer)),
   };
 }
+
+effectIt.effect("terminalizes a starting run when its provider session cannot open", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      openFailure: new Error("DESCRIPTION is not valid ACP JSON"),
+    });
+
+    yield* harness.start;
+
+    expect(harness.open).toHaveBeenCalledOnce();
+    expect(harness.startRootRun).not.toHaveBeenCalled();
+    expect(harness.writeIfRunCurrent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        activeAttemptId: harness.attemptId,
+        expectedStatus: "starting",
+      }),
+    );
+    const projection = harness.projection();
+    expect(projection.runs.at(-1)).toMatchObject({ status: "failed", startedAt: null });
+    expect(projection.attempts[0]).toMatchObject({ status: "failed", startedAt: null });
+    expect(projection.nodes[0]).toMatchObject({ status: "failed", startedAt: null });
+    expect(projection.turnItems).toMatchObject([
+      {
+        type: "error",
+        status: "failed",
+        failure: {
+          class: "provider_error",
+          message: "DESCRIPTION is not valid ACP JSON",
+        },
+      },
+    ]);
+  }),
+);
+
+effectIt.effect("leaves the run starting when a session-open failure will be retried", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      openFailure: new Error("provider session rejected"),
+    });
+
+    const error = yield* harness.startWithRetry.pipe(Effect.flip);
+
+    expect(error._tag).toBe("ProviderTurnStartError");
+    expect(harness.writeIfRunCurrent).not.toHaveBeenCalled();
+    expect(harness.projection().runs.at(-1)?.status).toBe("starting");
+  }),
+);
+
+effectIt.effect("keeps a session-open failure retryable when terminal persistence fails", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      openFailure: new Error("provider session rejected"),
+      writeFailure: new Error("database unavailable"),
+    });
+
+    const error = yield* harness.start.pipe(Effect.flip);
+
+    expect(error._tag).toBe("ProviderTurnStartError");
+    expect(harness.writeIfRunCurrent).toHaveBeenCalledOnce();
+    expect(harness.startRootRun).not.toHaveBeenCalled();
+    expect(harness.projection().runs.at(-1)?.status).toBe("starting");
+    expect(harness.events).toEqual([]);
+  }),
+);
+
+effectIt.effect("does not terminalize a provider-session open interruption", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({ text: "Continue", interruptOpen: true });
+
+    const exit = yield* Effect.exit(harness.start);
+
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag === "Failure") {
+      expect(Cause.hasInterruptsOnly(exit.cause)).toBe(true);
+    }
+    expect(harness.writeIfRunCurrent).not.toHaveBeenCalled();
+    expect(harness.startRootRun).not.toHaveBeenCalled();
+    expect(harness.projection().runs.at(-1)?.status).toBe("starting");
+    expect(harness.events).toEqual([]);
+  }),
+);
+
+effectIt.effect("does not overwrite a run interrupted while its provider session opens", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      openFailure: new Error("provider session rejected"),
+      interruptRunBeforeOpenFailure: true,
+    });
+
+    yield* harness.start;
+
+    expect(harness.writeIfRunCurrent).toHaveBeenCalledOnce();
+    expect(harness.startRootRun).not.toHaveBeenCalled();
+    const projection = harness.projection();
+    expect(projection.runs.at(-1)?.status).toBe("interrupted");
+    expect(projection.attempts[0]?.status).toBe("pending");
+    expect(projection.nodes[0]?.status).toBe("pending");
+    expect(projection.turnItems).toEqual([]);
+    expect(harness.events).toEqual([]);
+  }),
+);
 
 effectIt.effect(
   "signs out the existing native provider before opening the newly selected provider",
@@ -530,7 +710,7 @@ for (const stopDuringStartup of [false, true]) {
           stopDuringStartup,
         });
         const result = yield* harness.start.pipe(Effect.result);
-        expect(result._tag).toBe("Failure");
+        expect(result._tag).toBe("Success");
         expect(harness.startRootRun).not.toHaveBeenCalled();
         const projection = harness.projection();
         if (stopDuringStartup) {
@@ -544,7 +724,7 @@ for (const stopDuringStartup of [false, true]) {
             {
               type: "error",
               status: "failed",
-              failure: { message: expect.stringContaining("Failed to open provider instance") },
+              failure: { message: "Synthetic provider unavailable" },
             },
           ]);
           yield* harness.start;

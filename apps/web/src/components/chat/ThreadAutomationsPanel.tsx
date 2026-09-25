@@ -1,5 +1,6 @@
+import { ThreadDetailsControl } from "./ThreadDetailsControl";
 import { useNavigate } from "@tanstack/react-router";
-import { CalendarClockIcon, PlayIcon, Settings2Icon } from "lucide-react";
+import { CalendarClockIcon, PencilIcon, PlayIcon, Settings2Icon } from "lucide-react";
 import { useState } from "react";
 import type { EnvironmentId, ScheduledTask, ThreadId } from "@t3tools/contracts";
 import {
@@ -13,13 +14,13 @@ import { relativeLabel, scheduleLabel } from "../settings/ScheduledTasksSettings
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { Button } from "../ui/button";
+
 import { Switch } from "../ui/switch";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
-  THREAD_DETAILS_PANEL_ICON_ACTION_CLASS,
   THREAD_DETAILS_PANEL_ICON_CLASS,
+  THREAD_DETAILS_PANEL_ROW_CONTENT_CLASS,
 } from "./threadDetailsPanelStyles";
 
 const STATUS_DOT_CLASS: Record<ScheduledTask["lastRunStatus"], string> = {
@@ -106,10 +107,10 @@ export function ThreadAutomationsPanel(props: {
         <Tooltip>
           <TooltipTrigger
             render={
-              <Button
+              <ThreadDetailsControl
                 size="icon-xs"
                 variant="ghost"
-                className={THREAD_DETAILS_PANEL_ICON_ACTION_CLASS}
+                part="icon"
                 aria-label="Manage scheduled tasks"
                 onClick={() =>
                   void navigate({
@@ -119,37 +120,43 @@ export function ThreadAutomationsPanel(props: {
                 }
               >
                 <Settings2Icon className="size-3.5" />
-              </Button>
+              </ThreadDetailsControl>
             }
           />
-          <TooltipPopup>Manage schedule tasks</TooltipPopup>
+          <TooltipPopup>Manage scheduled tasks</TooltipPopup>
         </Tooltip>
       }
     >
       {tasksQuery.error !== null ? (
-        <p className="px-2.5 py-1.5 text-[11px] text-destructive">
+        <p className="px-2.5 py-1.5 text-2xs text-destructive">
           Could not load automations: {tasksQuery.error}
         </p>
       ) : null}
 
       <ul className="m-0 list-none p-0">
         {boundTasks.map((task) => (
-          <li key={task.id} className="group flex items-center gap-2.5 rounded-lg px-2.5 py-1.5">
-            <CalendarClockIcon className={THREAD_DETAILS_PANEL_ICON_CLASS} />
+          <li
+            key={task.id}
+            className={cn(
+              "group flex items-center rounded-lg py-1.5",
+              THREAD_DETAILS_PANEL_ROW_CONTENT_CLASS,
+            )}
+          >
+            <span className="relative inline-flex size-4 shrink-0 items-center justify-center">
+              <CalendarClockIcon className={THREAD_DETAILS_PANEL_ICON_CLASS} />
+              <span
+                className={cn(
+                  "absolute -right-1 -top-1 size-1.5 rounded-full",
+                  STATUS_DOT_CLASS[task.lastRunStatus],
+                )}
+                aria-hidden
+              />
+            </span>
             <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-1.5">
-                <span
-                  className={cn(
-                    "size-1.5 shrink-0 rounded-full",
-                    STATUS_DOT_CLASS[task.lastRunStatus],
-                  )}
-                  aria-hidden
-                />
-                <span className="truncate text-[13px] font-medium text-foreground/80">
-                  {task.title}
-                </span>
-              </div>
-              <p className="truncate text-[11px] text-muted-foreground">
+              <span className="block truncate text-sm font-medium text-foreground/80">
+                {task.title}
+              </span>
+              <p className="truncate text-2xs text-muted-foreground">
                 {scheduleLabel(task.schedule)}
                 {task.enabled && task.nextRunAt !== null
                   ? ` · next ${relativeLabel(task.nextRunAt)}`
@@ -161,16 +168,37 @@ export function ThreadAutomationsPanel(props: {
             <Tooltip>
               <TooltipTrigger
                 render={
-                  <Button
+                  <ThreadDetailsControl
                     size="icon-xs"
                     variant="ghost"
-                    className={THREAD_DETAILS_PANEL_ICON_ACTION_CLASS}
+                    part="icon"
+                    aria-label={`Edit ${task.title}`}
+                    onClick={() =>
+                      void navigate({
+                        to: "/settings/scheduled-tasks",
+                        search: { environmentId: props.environmentId, taskId: task.id },
+                      })
+                    }
+                  >
+                    <PencilIcon className="size-3.5" />
+                  </ThreadDetailsControl>
+                }
+              />
+              <TooltipPopup>Edit automation</TooltipPopup>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <ThreadDetailsControl
+                    size="icon-xs"
+                    variant="ghost"
+                    part="icon"
                     aria-label={`Run ${task.title} now`}
                     disabled={busyTaskId !== null || task.lastRunStatus === "running"}
                     onClick={() => void runNow(task)}
                   >
                     <PlayIcon className="size-3.5" />
-                  </Button>
+                  </ThreadDetailsControl>
                 }
               />
               <TooltipPopup>Run now</TooltipPopup>

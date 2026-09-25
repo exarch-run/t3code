@@ -1,3 +1,4 @@
+import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
 import { ScheduledTaskUpsertInput } from "@t3tools/contracts";
@@ -18,6 +19,7 @@ it.effect("rejects a stale form save after deletion while preserving explicit-id
   Effect.gen(function* () {
     const dependencies = Layer.mergeAll(
       NodeCrypto.layer,
+      Scheduler.layer,
       Layer.mock(ThreadLaunchService)({}),
       Layer.mock(ThreadManagementService)({}),
     );
@@ -59,6 +61,7 @@ it.effect("preserves a due run when a save only pads the scheduled hour", () =>
 
     const dependencies = Layer.mergeAll(
       NodeCrypto.layer,
+      Scheduler.layer,
       Layer.mock(ThreadLaunchService)({}),
       Layer.mock(ThreadManagementService)({}),
     );
@@ -112,6 +115,7 @@ it.effect(
       // not the machine's clock, decides which day the run lands on.
       yield* TestClock.setTime(Date.parse("2026-07-01T12:00:00.000Z"));
       const dependencies = Layer.mergeAll(
+        Scheduler.layer,
         NodeCrypto.layer,
         Layer.mock(ThreadLaunchService)({}),
         Layer.mock(ThreadManagementService)({}),

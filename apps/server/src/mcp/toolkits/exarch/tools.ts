@@ -225,7 +225,10 @@ const ExarchComputersTool = exarchTool(
         model: Schema.optional(Schema.String),
         options: Schema.optional(
           Schema.Array(
-            Schema.Struct({ id: Schema.String, value: Schema.Union([Schema.String, Schema.Boolean]) }),
+            Schema.Struct({
+              id: Schema.String,
+              value: Schema.Union([Schema.String, Schema.Boolean]),
+            }),
           ),
         ),
         title: Schema.optional(Schema.String),

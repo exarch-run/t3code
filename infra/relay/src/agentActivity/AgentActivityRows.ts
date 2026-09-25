@@ -7,7 +7,7 @@ import * as Function from "effect/Function";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { and, desc, eq, isNull, lt, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, lt, or, sql } from "drizzle-orm";
 
 import * as RelayDb from "../db.ts";
 import { relayAgentActivityRows, relayEnvironmentLinks } from "../persistence/schema.ts";
@@ -38,15 +38,15 @@ export class AgentActivityRowDeletePersistenceError extends Schema.TaggedError<A
   }
 }
 
-export class AgentActivityRowPruneTerminalPersistenceError extends Schema.TaggedError<AgentActivityRowPruneTerminalPersistenceError>()(
-  "AgentActivityRowPruneTerminalPersistenceError",
+export class AgentActivityRowPrunePersistenceError extends Schema.TaggedError<AgentActivityRowPrunePersistenceError>()(
+  "AgentActivityRowPrunePersistenceError",
   {
     updatedBefore: Schema.String,
     cause: Schema.Defect(),
   },
 ) {
   override get message(): string {
-    return `Failed to prune terminal agent activity rows updated before ${this.updatedBefore}.`;
+    return `Failed to prune expired agent activity rows at ${this.updatedBefore}.`;
   }
 }
 
@@ -69,9 +69,7 @@ export class AgentActivityRows extends Context.Service<
       readonly environmentPublicKey: string;
       readonly state: RelayAgentActivityState;
     }) => Effect.Effect<void, AgentActivityRowUpsertPersistenceError>;
-    readonly pruneTerminal: (input: {
-      readonly updatedBefore: string;
-    }) => Effect.Effect<void, AgentActivityRowPruneTerminalPersistenceError>;
+    readonly pruneExpired: Effect.Effect<void, AgentActivityRowPrunePersistenceError>;
     readonly remove: (input: {
       readonly environmentId: string;
       readonly environmentPublicKey: string;
@@ -180,23 +178,31 @@ export const make = Effect.gen(function* () {
         );
     }),
 
-    pruneTerminal: Effect.fn("relay.agent_activity_rows.prune_terminal")(function* (input) {
-      yield* Effect.annotateCurrentSpan({
-        "relay.agent_activity_prune.before": input.updatedBefore,
-      });
+    // Match the lifetime already used to hide stale activity from notifications.
+    // A later computer update can recreate a removed row.
+    pruneExpired: Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const before = (minutes: number) => DateTime.formatIso(DateTime.subtract(now, { minutes }));
       yield* db
         .delete(relayAgentActivityRows)
         .where(
-          and(
-            sql`${relayAgentActivityRows.stateJson} ->> 'phase' IN ('completed', 'failed')`,
-            lt(relayAgentActivityRows.updatedAt, input.updatedBefore),
+          or(
+            and(
+              sql`${relayAgentActivityRows.stateJson} ->> 'phase' IN ('completed', 'failed')`,
+              lt(relayAgentActivityRows.updatedAt, before(30)),
+            ),
+            and(
+              sql`${relayAgentActivityRows.stateJson} ->> 'phase' IN ('running', 'starting')`,
+              lt(relayAgentActivityRows.updatedAt, before(120)),
+            ),
+            lt(relayAgentActivityRows.updatedAt, before(1440)),
           ),
         )
         .pipe(
           Effect.mapError(
             (cause) =>
-              new AgentActivityRowPruneTerminalPersistenceError({
-                updatedBefore: input.updatedBefore,
+              new AgentActivityRowPrunePersistenceError({
+                updatedBefore: DateTime.formatIso(now),
                 cause,
               }),
           ),

@@ -1,5 +1,6 @@
 import type { ProviderInteractionMode } from "@t3tools/contracts";
-import { buildRuntimeInstructions } from "./RuntimeInstructions.ts";
+import type { V2TurnStartParams__AdditionalContextEntry } from "effect-codex-app-server/schema";
+import { runtimeInstructionSections } from "./RuntimeInstructions.ts";
 
 export interface T3CodeToolAvailability {
   readonly browser: boolean;
@@ -157,6 +158,7 @@ In Default mode, strongly prefer making reasonable assumptions and executing the
 
 export interface CodexRuntimeInfo {
   readonly model: string;
+  readonly modelName?: string | undefined;
   readonly reasoningEffort: string;
   /** Exarch's rendered session files for the project; appended after the runtime block. */
   readonly sessionContext?: string | undefined;
@@ -164,30 +166,41 @@ export interface CodexRuntimeInfo {
   readonly taskProgress?: boolean | undefined;
 }
 
+/** Mode prompt for `turn/start.collaborationMode.settings.developer_instructions`. */
+export function buildCodexDeveloperInstructions(interactionMode: ProviderInteractionMode): string {
+  return interactionMode === "plan"
+    ? CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS
+    : CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS;
+}
+
 /**
- * Codex only receives this block while the `t3-code` MCP server is attached
- * (see `buildCodexTurnStartParams`), so the standing Exarch block is always
- * on; `browserToolsAvailable` decides which capability-bound rules it keeps.
+ * T3 Code context for `turn/start.additionalContext`. Codex renders each entry
+ * as a `<key>value</key>` developer message and resends it only when the value
+ * changes.
+ *
+ * This must stay out of the collaboration mode: when the model catalog ships
+ * its own text for a mode, as newer models do, Codex uses that text and drops
+ * the client's `developer_instructions` entirely.
  */
-export function buildCodexDeveloperInstructions(
-  interactionMode: ProviderInteractionMode,
+export function buildCodexAdditionalContext(
   runtime: CodexRuntimeInfo,
   /**
    * Which `t3-code` tool families this turn actually has. Callers derive it
    * from the session's MCP configuration rather than re-reading the setting,
    * so the prompt cannot claim tools the turn doesn't have.
    */
-  browserToolsAvailable: boolean | T3CodeToolAvailability = true,
-): string {
-  const base =
-    interactionMode === "plan"
-      ? CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS
-      : CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS;
-  return `${base}
-
-${buildRuntimeInstructions({
-  harness: "Codex",
-  ...runtime,
-  capabilities: { t3Mcp: true, ...normalizeAvailability(browserToolsAvailable) },
-})}`;
+  toolsAvailable: boolean | T3CodeToolAvailability = true,
+): Record<string, V2TurnStartParams__AdditionalContextEntry> {
+  const sections = runtimeInstructionSections({
+    harness: "Codex",
+    ...runtime,
+    capabilities: { t3Mcp: true, ...normalizeAvailability(toolsAvailable) },
+  });
+  // Separate entries keep standing instructions, task cards, and project context
+  // independently below Codex's per-entry cap and restorable after compaction.
+  return Object.fromEntries(
+    Object.entries(sections)
+      .filter(([, value]) => value.length > 0)
+      .map(([key, value]) => [`exarch_${key}`, { kind: "application" as const, value }]),
+  );
 }

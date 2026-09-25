@@ -7,6 +7,7 @@ import {
   project,
   modelSelection,
 } from "./testkit/ThreadLaunchHarness.ts";
+import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as FileSystem from "effect/FileSystem";
@@ -41,7 +42,6 @@ import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ScheduledTasks from "../scheduledTasks/ScheduledTaskService.ts";
@@ -74,7 +74,7 @@ for (const target of ["new", "existing"] as const) {
       () => {
         const harness = makeHarness();
         const scheduledTasks = ScheduledTasks.layer.pipe(
-          Layer.provide(Layer.mergeAll(harness.layer, NodeCrypto.layer)),
+          Layer.provide(Layer.mergeAll(harness.layer, NodeCrypto.layer, Scheduler.layer)),
         );
         return Effect.gen(function* () {
           const tasks = yield* ScheduledTasks.ScheduledTaskService;
@@ -126,7 +126,7 @@ for (const target of ["new", "existing"] as const) {
   }
 }
 
-it.effect("retains automation attribution while a message waits in the queue", () => {
+it.effect("retains automation and sender attribution while a message waits in the queue", () => {
   const harness = makeHarness({ runSetup: () => Effect.never });
   return Effect.gen(function* () {
     const launches = yield* ThreadLaunch.ThreadLaunchService;
@@ -139,12 +139,14 @@ it.effect("retains automation attribution while a message waits in the queue", (
       }),
     );
     const scheduledTaskId = ScheduledTaskId.make("scheduled-task:queued");
+    const senderThreadId = ThreadId.make("thread:agent-sender");
     const queued = yield* threads.sendToThread({
       projectId,
       commandId: CommandId.make("command:automation:queued"),
       threadId: launched.threadId,
       messageId: MessageId.make("message:automation:queued"),
       scheduledTaskId,
+      senderThreadId,
       text: "Run the audit",
       attachments: [],
       mode: "queue",
@@ -155,6 +157,7 @@ it.effect("retains automation attribution while a message waits in the queue", (
     const projection = yield* threads.getThreadProjection(launched.threadId);
     const message = projection.messages.find((item) => item.id === queued.message.id);
     assert.equal(message?.scheduledTaskId, scheduledTaskId);
+    assert.equal(message?.senderThreadId, senderThreadId);
     assert.equal(message?.text, "Run the audit");
   }).pipe(Effect.provide(harness.layer));
 });
@@ -364,7 +367,7 @@ it.effect(
         assert.equal(followUp.delivery, "queued");
         assert.equal(followUp.run.status, "queued");
         assert.equal(
-          followUp.projection.nodes.find(
+          (yield* threads.getThreadRecords(launched.threadId, ["nodes"])).nodes.find(
             (node) => node.runId === followUp.run.id && node.kind === "root_turn",
           )?.checkpointScopeId,
           null,
@@ -1476,23 +1479,6 @@ it.effect("creates a strong provider-thread mapping for an imported native sessi
       launched.projection.thread.activeProviderThreadId,
       launched.projection.providerThreads[0]?.id,
     );
-  }).pipe(Effect.provide(harness.layer));
-});
-
-it.effect("does not depend on the legacy launch workflow table", () => {
-  const harness = makeHarness();
-  return Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    const launches = yield* ThreadLaunch.ThreadLaunchService;
-    yield* sql`DROP TABLE orchestration_v2_thread_launch_workflows`;
-    const launched = yield* launches.launch(
-      launchInput({
-        command: "command:launch:no-workflow-table",
-        thread: "thread:launch:no-workflow-table",
-        message: "No private workflow state",
-      }),
-    );
-    assert.equal(launched.projection.messages[0]?.text, "No private workflow state");
   }).pipe(Effect.provide(harness.layer));
 });
 

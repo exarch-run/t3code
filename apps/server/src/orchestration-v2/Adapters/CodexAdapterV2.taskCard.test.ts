@@ -111,7 +111,7 @@ const fakeCodex = (rolloutPath = threadStarted.thread.path) => {
   return {
     factory,
     sent,
-    call: (threadId: string, tool: string, args: unknown = {}) => {
+    call: (threadId: string, tool: string, args: ToolCall["arguments"] = {}) => {
       if (toolCall === undefined) return Effect.die("no item/tool/call handler registered");
       return toolCall({ threadId, turnId: "turn-1", callId: "call-1", tool, arguments: args });
     },

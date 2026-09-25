@@ -10,7 +10,6 @@ import { describe, expect } from "vite-plus/test";
 import {
   XAiExitPlanModeRequest,
   XAI_EMPTY_PLAN_MARKDOWN,
-  makeXAiExitPlanModeCapturedResponse,
   isGrokPlanMarkdownPath,
   extractXAiExitPlanMarkdown,
   extractGrokPlanMarkdownFromToolCallData,
@@ -24,7 +23,6 @@ import {
   isGenericAcpToolTitle,
   isXAiMonitorTool,
   isXAiPersistentMonitor,
-  makeXAiAskUserQuestionCancelledResponse,
   makeXAiAskUserQuestionResponse,
   makeXAiPromptCompletionRuntime,
   normalizeXAiAcpToolCallState,
@@ -35,6 +33,11 @@ import {
   XAiAskUserQuestionRequest,
 } from "./XAiAcpExtension.ts";
 import * as AcpSessionRuntime from "./AcpSessionRuntime.ts";
+import {
+  type AcpToolCallState,
+  mergeToolCallState,
+  parseSessionUpdateEvent,
+} from "./AcpRuntimeModel.ts";
 
 const decodeXAiAskUserQuestionRequest = Schema.decodeUnknownSync(XAiAskUserQuestionRequest);
 
@@ -81,6 +84,16 @@ describe("xAiPromptCompleteFromSessionUpdate", () => {
     ).toBeNull();
   });
 });
+
+// Runs a recorded Grok tool_call_update through the adapter's parse path.
+function parseRecordedToolCallUpdate(update: Record<string, unknown>): AcpToolCallState {
+  const [event] = parseSessionUpdateEvent({
+    sessionId: "01a0d660-c1bb-7842-91a3-02d91dc8b0d2",
+    update,
+  } as Parameters<typeof parseSessionUpdateEvent>[0]).events;
+  if (event?._tag !== "ToolCallUpdated") throw new Error("expected a tool call update");
+  return event.toolCall;
+}
 
 describe("XAiAcpExtension", () => {
   it("recognizes Grok Task starts as native subagents", () => {
@@ -406,27 +419,77 @@ describe("XAiAcpExtension", () => {
     expect(extractXAiMonitorTaskId(normalized)).toBe("019f44a5-87d1-7640-8e35-6a4667ffc873");
   });
 
-  it("completes Monitor variant tools from structured Bash exit codes", () => {
-    const toolCall = {
-      toolCallId: "call-mon-2",
-      title: "Tool",
-      status: "inProgress" as const,
-      data: {
-        rawInput: {
-          variant: "Monitor",
-          command: "echo MON_DONE",
-          description: "Stream mon lines",
-        },
-        rawOutput: {
-          type: "Bash",
-          output: Array.from(new TextEncoder().encode("mon_line_1\nMON_DONE\n")),
-          output_for_prompt: "mon_line_1\nMON_DONE\n",
+  it("keeps Monitor ticks running while Grok reports them in progress", () => {
+    // Recorded from Grok 1.0.41: every tick is an in_progress update whose
+    // Bash-shaped rawOutput already carries exit_code 0. The monitor ends only
+    // through `_x.ai/task_completed`, never through a completed status.
+    const command = "for i in 1 2 3; do sleep 8; echo tick $i; done";
+    const started = parseRecordedToolCallUpdate({
+      sessionUpdate: "tool_call_update",
+      toolCallId: "call-6b025a4e-621c-4526-a579-ba86ada2669c-0",
+      kind: "other",
+      title: "Start monitor: Watch three ticks eight seconds apart",
+      locations: [],
+      rawInput: {
+        variant: "Monitor",
+        command,
+        description: "Watch three ticks eight seconds apart",
+        timeout_ms: 36000000,
+        persistent: false,
+      },
+    });
+    const tick = parseRecordedToolCallUpdate({
+      sessionUpdate: "tool_call_update",
+      toolCallId: "call-6b025a4e-621c-4526-a579-ba86ada2669c-0",
+      status: "in_progress",
+      content: [{ type: "content", content: { type: "text", text: "tick 1\n" } }],
+      rawOutput: {
+        type: "Bash",
+        output: [116, 105, 99, 107, 32, 49, 10],
+        output_for_prompt: "tick 1\n",
+        exit_code: 0,
+        command,
+        truncated: false,
+        signal: null,
+        timed_out: false,
+        description: null,
+        current_dir: "<workspace>",
+        output_file: "",
+        total_bytes: 7,
+      },
+    });
+    const toolCall = normalizeXAiAcpToolCallState(mergeToolCallState(started, tick));
+    expect(isXAiMonitorTool(toolCall)).toBe(true);
+    expect(toolCall.status).toBe("inProgress");
+  });
+
+  it("finishes monitors from the recorded task_completed snapshot", () => {
+    const completed = {
+      sessionId: "01a0d660-c1bb-7842-91a3-02d91dc8b0d2",
+      update: {
+        sessionUpdate: "task_completed",
+        task_snapshot: {
+          task_id: "01a0d660-f98d-7ef3-a291-97af1c2b6455",
+          output: "tick 1\ntick 2\ntick 3\n",
           exit_code: 0,
         },
       },
     };
-    expect(isXAiMonitorTool(toolCall)).toBe(true);
-    expect(normalizeXAiAcpToolCallState(toolCall).status).toBe("completed");
+    expect(xAiBackgroundTaskLifecycleMutation(completed, "completed")).toEqual({
+      sessionId: "01a0d660-c1bb-7842-91a3-02d91dc8b0d2",
+      taskId: "01a0d660-f98d-7ef3-a291-97af1c2b6455",
+      status: "completed",
+      output: "tick 1\ntick 2\ntick 3\n",
+    });
+    expect(
+      xAiBackgroundTaskLifecycleMutation(
+        {
+          ...completed,
+          update: { ...completed.update, task_snapshot: { task_id: "t", exit_code: 2 } },
+        },
+        "completed",
+      )?.status,
+    ).toBe("failed");
   });
 
   it("detects Monitor start ACKs from structured rawOutput when title is generic", () => {
@@ -452,14 +515,13 @@ describe("XAiAcpExtension", () => {
     expect(extractXAiMonitorTaskId(toolCall)).toBe("019f44a5-87d1-7640-8e35-6a4667ffc873");
   });
 
-  it("completes wake re-reports of finished commands despite generic titles", () => {
-    // Post-settle wake replay: the finished monitor is re-reported with empty
-    // rawInput and a generic title, so monitor detection cannot match; the
-    // structured Bash result with exit_code must still terminalize it.
+  it("completes status-less Bash results despite generic titles", () => {
+    // A Bash result that carries no status (empty rawInput, generic title) is
+    // terminalized from its exit_code. An explicit in_progress status wins:
+    // that is how Grok streams a still-running monitor.
     const toolCall = {
       toolCallId: "call-wake-1",
       title: "Tool",
-      status: "inProgress" as const,
       data: {
         rawInput: {},
         rawOutput: {
@@ -820,7 +882,7 @@ describe("XAiAcpExtension", () => {
       const mutations: Array<{
         readonly sessionId: string;
         readonly taskId: string;
-        readonly status: "running" | "completed";
+        readonly status: "running" | "completed" | "failed";
       }> = [];
       const runtime = {
         handleExtNotification: (
@@ -1267,12 +1329,6 @@ describe("XAiAcpExtension", () => {
           notes: "pistachio",
         },
       },
-    });
-  });
-
-  it("encodes interrupted dialogs as xAI cancelled responses", () => {
-    expect(makeXAiAskUserQuestionCancelledResponse()).toEqual({
-      outcome: "cancelled",
     });
   });
 
@@ -1729,13 +1785,6 @@ describe("Grok exit_plan_mode capture (#8358)", () => {
     expect(extractXAiExitPlanMarkdown(wrapped, "  # fallback plan  ")).toBe("# fallback plan");
     expect(extractXAiExitPlanMarkdown(wrapped, "")).toBe(XAI_EMPTY_PLAN_MARKDOWN);
     expect(extractXAiExitPlanMarkdown(wrapped)).toBe(XAI_EMPTY_PLAN_MARKDOWN);
-  });
-  it("builds an abandoned exit_plan_mode response that captures the plan", () => {
-    expect(makeXAiExitPlanModeCapturedResponse()).toEqual({
-      outcome: "abandoned",
-      feedback:
-        "The client captured your proposed plan. Stop here and wait for the user's feedback or implementation request in a later turn.",
-    });
   });
   it("identifies Grok plan.md paths and extracts markdown from tool call data", () => {
     const linuxHost = { platform: "linux" as const, environment: {} };

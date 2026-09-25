@@ -2,20 +2,24 @@ import * as NodeCryptoLayer from "@effect/platform-node/NodeCrypto";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as TestClock from "effect/testing/TestClock";
+import type { SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 
 import * as RelayDb from "../db.ts";
 import { relayDeliveryAttempts } from "../persistence/schema.ts";
 import * as DeliveryAttempts from "./DeliveryAttempts.ts";
 
 describe("DeliveryAttempts", () => {
-  it.effect("records the signed queue source job id for APNs delivery auditability", () => {
-    const insertedValues: Array<Record<string, unknown>> = [];
+  it.effect("prunes attempts older than an hour while preserving the retry window", () => {
+    const dialect = new PgDialect();
+    let condition: SQL | null = null;
     const fakeDb = {
-      insert: (table: unknown) => {
+      delete: (table: unknown) => {
         expect(table).toBe(relayDeliveryAttempts);
         return {
-          values: (values: Record<string, unknown>) => {
-            insertedValues.push(values);
+          where: (next: SQL) => {
+            condition = next;
             return Effect.void;
           },
         };
@@ -23,31 +27,27 @@ describe("DeliveryAttempts", () => {
     } as unknown as RelayDb.RelayDb["Service"];
 
     return Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse("2026-10-25T12:00:00.000Z"));
       const attempts = yield* DeliveryAttempts.DeliveryAttempts;
-      yield* attempts.record({
-        userId: "user-1",
-        environmentId: "env-1",
-        threadId: "thread-1",
-        deviceId: "device-1",
-        kind: "live_activity_update",
-        sourceJobId: "job-1",
-        token: "apns-token",
-        apnsStatus: 200,
-        apnsId: "apns-id",
-      });
+      yield* attempts.pruneExpired;
 
-      expect(insertedValues).toHaveLength(1);
-      expect(insertedValues[0]).toMatchObject({
-        userId: "user-1",
-        environmentId: "env-1",
-        threadId: "thread-1",
-        deviceId: "device-1",
-        kind: "live_activity_update",
-        sourceJobId: "job-1",
-        tokenSuffix: "ns-token",
-        apnsStatus: 200,
-        apnsId: "apns-id",
+      const query = dialect.sqlToQuery(condition!);
+      expect(query).toEqual({
+        sql: '"relay_delivery_attempts"."created_at" < $1',
+        params: ["2026-10-25T11:00:00.000Z"],
       });
+      // Applying that strict cutoff: only rows older than exactly one hour go.
+      const cutoff = query.params[0] as string;
+      const rows = [
+        "2026-08-01T00:00:00.000Z",
+        "2026-10-25T10:59:59.999Z",
+        "2026-10-25T11:00:00.000Z",
+        "2026-10-25T11:50:00.000Z",
+      ];
+      expect(rows.filter((createdAt) => !(createdAt < cutoff))).toEqual([
+        "2026-10-25T11:00:00.000Z",
+        "2026-10-25T11:50:00.000Z",
+      ]);
     }).pipe(
       Effect.provide(
         DeliveryAttempts.layer.pipe(
@@ -57,6 +57,59 @@ describe("DeliveryAttempts", () => {
       ),
     );
   });
+
+  it.effect(
+    "records delivery outcome without user identifiers, token suffixes or provider request IDs",
+    () => {
+      const insertedValues: Array<Record<string, unknown>> = [];
+      const fakeDb = {
+        insert: (table: unknown) => {
+          expect(table).toBe(relayDeliveryAttempts);
+          return {
+            values: (values: Record<string, unknown>) => {
+              insertedValues.push(values);
+              return Effect.void;
+            },
+          };
+        },
+      } as unknown as RelayDb.RelayDb["Service"];
+
+      return Effect.gen(function* () {
+        const attempts = yield* DeliveryAttempts.DeliveryAttempts;
+        yield* attempts.record({
+          userId: "user-1",
+          environmentId: "env-1",
+          threadId: "thread-1",
+          deviceId: "device-1",
+          kind: "live_activity_update",
+          sourceJobId: "job-1",
+          token: "apns-token",
+          apnsStatus: 200,
+          apnsId: "apns-id",
+        });
+
+        expect(insertedValues).toHaveLength(1);
+        expect(insertedValues[0]).toMatchObject({
+          userId: null,
+          environmentId: null,
+          threadId: null,
+          deviceId: null,
+          kind: "live_activity_update",
+          sourceJobId: "job-1",
+          tokenSuffix: null,
+          apnsStatus: 200,
+          apnsId: null,
+        });
+      }).pipe(
+        Effect.provide(
+          DeliveryAttempts.layer.pipe(
+            Layer.provide(NodeCryptoLayer.layer),
+            Layer.provide(Layer.succeed(RelayDb.RelayDb, fakeDb)),
+          ),
+        ),
+      );
+    },
+  );
 
   it.effect("claims signed queue source jobs before APNs delivery", () => {
     const insertedValues: Array<Record<string, unknown>> = [];
@@ -97,7 +150,7 @@ describe("DeliveryAttempts", () => {
       expect(insertedValues[0]).toMatchObject({
         kind: "push_notification",
         sourceJobId: "job-1",
-        tokenSuffix: "ns-token",
+        tokenSuffix: null,
         apnsStatus: null,
       });
     }).pipe(
@@ -306,8 +359,8 @@ describe("DeliveryAttempts", () => {
         {
           createdAt: expect.any(String),
           apnsStatus: 410,
-          apnsReason: "Unregistered",
-          apnsId: "apns-id",
+          apnsReason: "rejected",
+          apnsId: null,
           transportError: null,
         },
       ]);

@@ -4,6 +4,7 @@ import {
   RelayEnvironmentStatusScope,
   RelayMobileClientId,
   RelayMobileRegistrationScope,
+  RelayAccountDeleteScope,
   RelayWebClientId,
   type RelayPublicClientId,
   type RelayEnvironmentLinkChallengeRequest,
@@ -68,6 +69,7 @@ const allowedScopesByClientId: Record<
     RelayEnvironmentConnectScope,
     RelayEnvironmentStatusScope,
     RelayMobileRegistrationScope,
+    RelayAccountDeleteScope,
   ]),
   [RelayWebClientId]: new Set([RelayEnvironmentConnectScope, RelayEnvironmentStatusScope]),
 };

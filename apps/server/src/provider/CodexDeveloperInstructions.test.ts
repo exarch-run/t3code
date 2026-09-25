@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vite-plus/test";
-import { buildCodexDeveloperInstructions } from "./CodexDeveloperInstructions.ts";
+import {
+  buildCodexAdditionalContext,
+  buildCodexDeveloperInstructions,
+} from "./CodexDeveloperInstructions.ts";
 
+const contextText = (...args: Parameters<typeof buildCodexAdditionalContext>) =>
+  Object.values(buildCodexAdditionalContext(...args))
+    .map((entry) => entry.value)
+    .join("\n\n");
 const runtime = { model: "gpt-5.3-codex", reasoningEffort: "high" };
 const BROWSER_BULLET = "- Interactive browser work: Use Exarch's `preview_*` tools";
 const DEVICE_BULLET = "- Device work: Use Exarch's `device_*` discovery";
@@ -10,7 +17,7 @@ describe("buildCodexDeveloperInstructions", () => {
   it.each(["plan", "default"] as const)(
     "carries the standing Exarch block once after the %s mode text",
     (mode) => {
-      const instructions = buildCodexDeveloperInstructions(mode, runtime);
+      const instructions = buildCodexDeveloperInstructions(mode) + "\n\n" + contextText(runtime);
       expect(instructions.startsWith("<collaboration_mode>")).toBe(true);
       expect(count(instructions, "<exarch_instructions>")).toBe(1);
       expect(instructions.indexOf("</collaboration_mode>")).toBeLessThan(
@@ -25,21 +32,21 @@ describe("buildCodexDeveloperInstructions", () => {
   );
 
   it("keeps the plan-mode rules", () => {
-    const instructions = buildCodexDeveloperInstructions("plan", runtime);
+    const instructions = buildCodexDeveloperInstructions("plan");
     expect(instructions).toMatch(/^<collaboration_mode># Plan Mode/);
     expect(instructions).toContain(
       "You are in **Plan Mode** until a developer message explicitly ends it.",
     );
     expect(instructions).toContain("request_user_input");
     expect(instructions).toContain("<proposed_plan>");
-    expect(buildCodexDeveloperInstructions("default", runtime)).toMatch(
+    expect(buildCodexDeveloperInstructions("default")).toMatch(
       /^<collaboration_mode># Collaboration Mode: Default/,
     );
   });
 
   it.each(["plan", "default"] as const)("drops the old T3 Code headings in %s mode", (mode) => {
     for (const availability of [true, false, { browser: true, device: true }]) {
-      const instructions = buildCodexDeveloperInstructions(mode, runtime, availability);
+      const instructions = contextText(runtime, availability);
       expect(instructions).not.toContain("T3 Code orchestration");
       expect(instructions).not.toContain("T3 Code collaborative browser");
       expect(instructions).not.toContain("T3 Code devices");
@@ -48,32 +55,32 @@ describe("buildCodexDeveloperInstructions", () => {
   });
 
   it("gates the browser and device rules on the attached tool families", () => {
-    const both = buildCodexDeveloperInstructions("default", runtime, {
+    const both = contextText(runtime, {
       browser: true,
       device: true,
     });
     expect(both).toContain(BROWSER_BULLET);
     expect(both).toContain(DEVICE_BULLET);
 
-    const browserOnly = buildCodexDeveloperInstructions("plan", runtime, true);
+    const browserOnly = contextText(runtime, true);
     expect(browserOnly).toContain(BROWSER_BULLET);
     expect(browserOnly).not.toContain(DEVICE_BULLET);
 
-    const none = buildCodexDeveloperInstructions("plan", runtime, false);
+    const none = contextText(runtime, false);
     expect(none).not.toContain(BROWSER_BULLET);
     expect(none).not.toContain(DEVICE_BULLET);
     expect(none).toContain("<exarch_instructions>");
-    expect(none).toContain("</collaboration_mode>");
+    expect(none).not.toContain("</collaboration_mode>");
   });
 
   it("appends the project's session files once at the end", () => {
     const block = "<session_files>Project standing instructions.</session_files>";
-    const instructions = buildCodexDeveloperInstructions("default", {
+    const instructions = contextText({
       ...runtime,
       sessionContext: block,
     });
     expect(count(instructions, "<session_files>")).toBe(1);
     expect(instructions.endsWith(block)).toBe(true);
-    expect(buildCodexDeveloperInstructions("default", runtime)).not.toContain("session_files");
+    expect(buildCodexDeveloperInstructions("default")).not.toContain("session_files");
   });
 });

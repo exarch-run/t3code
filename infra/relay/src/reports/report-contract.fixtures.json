@@ -1,0 +1,141 @@
+{
+  "about": "Shared accept and reject cases for AI response reports. An identical copy lives in Exarch at apps/mobile/test/fixtures/report-contract.json. `excerptRepeat` and `notesRepeat` replace that field with the letter a repeated that many times.",
+  "cases": [
+    {
+      "name": "excerpt only",
+      "accepted": true,
+      "body": {
+        "id": "0b9f8c62-3f5e-4a4b-9d7e-2c1a5f6e7d80",
+        "reason": "Harmful content",
+        "excerpt": "The answer said to do something dangerous.",
+        "notes": ""
+      }
+    },
+    {
+      "name": "notes only",
+      "accepted": true,
+      "body": {
+        "id": "1c2d3e4f-5a6b-4c7d-8e9f-a0b1c2d3e4f5",
+        "reason": "Something else",
+        "excerpt": "",
+        "notes": "It made up a library."
+      }
+    },
+    {
+      "name": "uppercase id is normalized",
+      "accepted": true,
+      "normalizedId": "abcdef01-2345-4678-9abc-def012345678",
+      "body": {
+        "id": "ABCDEF01-2345-4678-9ABC-DEF012345678",
+        "reason": "Misleading content",
+        "excerpt": "x",
+        "notes": ""
+      }
+    },
+    {
+      "name": "excerpt at the limit",
+      "accepted": true,
+      "excerptRepeat": 8000,
+      "body": {
+        "id": "2d3e4f5a-6b7c-4d8e-9fa0-b1c2d3e4f5a6",
+        "reason": "Harmful content",
+        "excerpt": "",
+        "notes": ""
+      }
+    },
+    {
+      "name": "notes at the limit",
+      "accepted": true,
+      "notesRepeat": 2000,
+      "body": {
+        "id": "3e4f5a6b-7c8d-4e9f-a0b1-c2d3e4f5a6b7",
+        "reason": "Harmful content",
+        "excerpt": "",
+        "notes": ""
+      }
+    },
+    {
+      "name": "excerpt over the limit",
+      "accepted": false,
+      "excerptRepeat": 8001,
+      "body": {
+        "id": "4f5a6b7c-8d9e-4fa0-b1c2-d3e4f5a6b7c8",
+        "reason": "Harmful content",
+        "excerpt": "",
+        "notes": ""
+      }
+    },
+    {
+      "name": "notes over the limit",
+      "accepted": false,
+      "notesRepeat": 2001,
+      "body": {
+        "id": "5a6b7c8d-9e0f-4a1b-8c2d-e3f4a5b6c7d8",
+        "reason": "Harmful content",
+        "excerpt": "",
+        "notes": ""
+      }
+    },
+    {
+      "name": "blank excerpt and notes",
+      "accepted": false,
+      "body": {
+        "id": "6b7c8d9e-0f1a-4b2c-9d3e-f4a5b6c7d8e9",
+        "reason": "Harmful content",
+        "excerpt": "   ",
+        "notes": "\n"
+      }
+    },
+    {
+      "name": "extra field",
+      "accepted": false,
+      "body": {
+        "id": "7c8d9e0f-1a2b-4c3d-ae4f-a5b6c7d8e9f0",
+        "reason": "Harmful content",
+        "excerpt": "x",
+        "notes": "",
+        "transcript": "everything else"
+      }
+    },
+    {
+      "name": "unknown reason",
+      "accepted": false,
+      "body": {
+        "id": "8d9e0f1a-2b3c-4d4e-bf5a-b6c7d8e9f0a1",
+        "reason": "Spam",
+        "excerpt": "x",
+        "notes": ""
+      }
+    },
+    {
+      "name": "not a version 4 uuid",
+      "accepted": false,
+      "body": {
+        "id": "8d9e0f1a-2b3c-1d4e-bf5a-b6c7d8e9f0a1",
+        "reason": "Harmful content",
+        "excerpt": "x",
+        "notes": ""
+      }
+    },
+    {
+      "name": "missing notes",
+      "accepted": false,
+      "body": {
+        "id": "9e0f1a2b-3c4d-4e5f-8a6b-c7d8e9f0a1b2",
+        "reason": "Harmful content",
+        "excerpt": "x"
+      }
+    },
+    {
+      "name": "excerpt is not text",
+      "accepted": false,
+      "body": {
+        "id": "0f1a2b3c-4d5e-4f6a-9b7c-d8e9f0a1b2c3",
+        "reason": "Harmful content",
+        "excerpt": 42,
+        "notes": ""
+      }
+    },
+    { "name": "array instead of object", "accepted": false, "body": ["Harmful content"] }
+  ]
+}

@@ -121,6 +121,7 @@ export interface VisitThreadInput extends ThreadCommandInput {
 export type MarkThreadUnreadInput = ThreadCommandInput;
 
 export interface UpdateThreadMetadataInput extends ThreadCommandInput {
+  readonly limitRecovery?: import("@t3tools/contracts").OrchestrationV2LimitRecoveryUpdate | null;
   readonly title?: string;
   readonly modelSelection?: ModelSelection;
   readonly branch?: string | null;
@@ -453,6 +454,20 @@ export const pinThread = Effect.fn("EnvironmentCommands.pinThread")(function* (
   });
 });
 
+export interface SetThreadAutoSettleInput extends ThreadCommandInput {
+  readonly enabled: boolean;
+}
+export const setThreadAutoSettle = Effect.fn("EnvironmentCommands.setThreadAutoSettle")(function* (
+  input: SetThreadAutoSettleInput,
+) {
+  return yield* dispatch({
+    type: "thread.auto-settle.set",
+    commandId: yield* allocateCommandId(input),
+    threadId: input.threadId,
+    enabled: input.enabled,
+  });
+});
+
 export const reorderPinnedThread = Effect.fn("EnvironmentCommands.reorderPinnedThread")(function* (
   input: ReorderPinnedThreadInput,
 ) {
@@ -545,10 +560,12 @@ export const updateThreadMetadata = Effect.fn("EnvironmentCommands.updateThreadM
       input.branch !== undefined ||
       input.worktreePath !== undefined ||
       input.regenerateTitle !== undefined ||
-      input.linkedPullRequest !== undefined
+      input.linkedPullRequest !== undefined ||
+      input.limitRecovery !== undefined
     ) {
       result = yield* dispatch({
         type: "thread.metadata.update",
+        ...(input.limitRecovery === undefined ? {} : { limitRecovery: input.limitRecovery }),
         commandId,
         threadId: input.threadId,
         ...(input.title === undefined ? {} : { title: input.title }),

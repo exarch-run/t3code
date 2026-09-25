@@ -251,6 +251,7 @@ export const launchAgentThreads = Effect.fn("mcp.launchAgentThreads")(function* 
               ? {
                   initialMessage: {
                     messageId: entry.messageId,
+                    senderThreadId: accepted.creator.parentThreadId,
                     text: entry.message ?? "",
                     attachments,
                   },

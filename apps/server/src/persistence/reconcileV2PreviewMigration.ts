@@ -3,10 +3,10 @@ import * as Migrator from "effect/unstable/sql/Migrator";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import PullRequestFilesViewed from "./Migrations/053_PullRequestFilesViewed.ts";
+import AutoSettleDisabledAt from "./Migrations/054_ProjectionThreadsAutoSettleDisabledAt.ts";
 
-// Published V2 previews used 53 before main assigned it to PullRequestFilesViewed.
-// Preserve their completed V2 migration without replaying its schema or imports.
-// Keep this bridge for upgrades that skip releases; new migrations must be additive.
+// Published previews assigned V2 to 53, then 54. Keep their schema and import
+// progress intact while reserving main's migration ids for upgrades from main.
 export const reconcileV2PreviewMigration = Effect.fn("reconcileV2PreviewMigration")(function* () {
   const sql = yield* SqlClient.SqlClient;
   return yield* sql.withTransaction(
@@ -18,25 +18,39 @@ export const reconcileV2PreviewMigration = Effect.fn("reconcileV2PreviewMigratio
       const history = yield* sql<{ readonly migration_id: number; readonly name: string }>`
         SELECT migration_id, name FROM effect_sql_migrations WHERE migration_id >= 53
       `;
-      if (!history.some((row) => row.migration_id === 53 && row.name === "OrchestrationV2")) {
-        return [];
-      }
-      if (history.length !== 1) {
+      const legacy = history.find(
+        (row) =>
+          row.name === "OrchestrationV2" && (row.migration_id === 53 || row.migration_id === 54),
+      );
+      if (!legacy) return [];
+      const valid = history.every(
+        (row) =>
+          row === legacy ||
+          (legacy.migration_id === 54 &&
+            ((row.migration_id === 53 && row.name === "PullRequestFilesViewed") ||
+              (row.migration_id === 55 && row.name === "RemoveRedundantProjectionIndexes"))),
+      );
+      if (!valid) {
         return yield* new Migrator.MigrationError({
           kind: "BadState",
-          message: "Cannot upgrade V2 preview migration 53 with unexpected later migrations.",
+          message: "Cannot upgrade V2 preview with unexpected later migrations.",
         });
       }
-
-      yield* PullRequestFilesViewed;
-      yield* sql`
-        UPDATE effect_sql_migrations SET migration_id = 54
-        WHERE migration_id = 53 AND name = 'OrchestrationV2'
-      `;
-      yield* sql`
-        INSERT INTO effect_sql_migrations (migration_id, name) VALUES (53, 'PullRequestFilesViewed')
-      `;
-      return [[53, "PullRequestFilesViewed"]] as const;
+      const executed: Array<readonly [number, string]> = [];
+      if (legacy.migration_id === 53) {
+        yield* PullRequestFilesViewed;
+        executed.push([53, "PullRequestFilesViewed"]);
+      }
+      yield* AutoSettleDisabledAt;
+      executed.push([54, "ProjectionThreadsAutoSettleDisabledAt"]);
+      // Move the later entry first to avoid a primary-key collision.
+      yield* sql`UPDATE effect_sql_migrations SET migration_id = 56 WHERE migration_id = 55 AND name = 'RemoveRedundantProjectionIndexes'`;
+      yield* sql`UPDATE effect_sql_migrations SET migration_id = 55 WHERE migration_id = ${legacy.migration_id} AND name = 'OrchestrationV2'`;
+      if (legacy.migration_id === 53) {
+        yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (53, 'PullRequestFilesViewed')`;
+      }
+      yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (54, 'ProjectionThreadsAutoSettleDisabledAt')`;
+      return executed;
     }),
   );
 });

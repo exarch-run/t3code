@@ -172,6 +172,8 @@ import {
   toAcpRegistryOperationError,
 } from "./provider/acp/AcpRegistrySupport.ts";
 import { AcpRegistryRuntimeCoordinator } from "./provider/acp/AcpRegistryRuntimeCoordinator.ts";
+import * as ModelManifest from "./provider/ModelManifest.ts";
+import * as ProviderMaintenance from "./provider/providerMaintenance.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import { ProviderAuthService } from "./provider/Services/ProviderAuthService.ts";
 import { makeProviderInstallation } from "./provider/providerInstallation.ts";
@@ -197,6 +199,7 @@ import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
+import { refreshPushedPullRequests } from "./git/refreshPushedPullRequests.ts";
 import { linkCreatedPullRequest } from "./git/linkCreatedPullRequest.ts";
 import * as ReviewService from "./review/ReviewService.ts";
 import * as ProjectEnrichmentService from "./project/ProjectEnrichmentService.ts";
@@ -210,7 +213,7 @@ import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as RemoteOpenTargets from "./environment/RemoteOpenTargets.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
-import { requiredScopeForRpcMethod } from "./auth/RpcAuthorization.ts";
+import { requiredScopeForRpcMethod, requiredScopeForDeviceList } from "./auth/RpcAuthorization.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
@@ -1149,6 +1152,8 @@ const makeWsRpcLayer = (
       const previewManager = yield* PreviewManager.PreviewManager;
       const portDiscovery = yield* PortScanner.PortDiscovery;
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
+      const modelManifest = yield* ModelManifest.ModelManifest;
+      const providerVersionCache = yield* ProviderMaintenance.ProviderVersionCache;
       const providerInstances = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
       const acpRegistryCatalog = yield* AcpRegistryCatalog;
       const acpRegistryRuntimeCoordinator = yield* AcpRegistryRuntimeCoordinator;
@@ -2226,17 +2231,30 @@ const makeWsRpcLayer = (
                   message: "The ACP agent does not advertise logout.",
                 });
               }
-              yield* providerSessionManager.closeInstance(input.instanceId).pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new AcpRegistryOperationError({
-                      reason: "logout_failed",
-                      message: "Could not stop live sessions before ACP logout.",
-                      cause,
-                    }),
-                ),
-              );
-              yield* manager.logout(config.cwd);
+              if (instance.auth) {
+                yield* providerAuth.logout(input).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new AcpRegistryOperationError({
+                        reason: "logout_failed",
+                        message: "Could not sign out of the ACP agent.",
+                        cause,
+                      }),
+                  ),
+                );
+              } else {
+                yield* providerSessionManager.closeInstance(input.instanceId).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new AcpRegistryOperationError({
+                        reason: "logout_failed",
+                        message: "Could not stop live sessions before ACP logout.",
+                        cause,
+                      }),
+                  ),
+                );
+                yield* manager.logout(config.cwd);
+              }
               yield* providerRegistry.refreshInstance(input.instanceId);
               return { loggedOut: true } as const;
             }),
@@ -2248,22 +2266,82 @@ const makeWsRpcLayer = (
         [WS_METHODS.serverRefreshProviders]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverRefreshProviders,
-            (input.cwd !== undefined && input.instanceId !== undefined
-              ? providerRegistry.refreshWorkspaceSnapshot({
-                  instanceId: input.instanceId,
-                  cwd: input.cwd,
-                })
-              : input.instanceId !== undefined
-                ? providerRegistry.refreshInstance(input.instanceId)
-                : providerRegistry.refresh()
-            ).pipe(Effect.map((providers) => ({ providers }))),
+            Effect.gen(function* () {
+              // Only explicit catalog refreshes bypass T3's caches. Workspace
+              // discovery and background status checks retain their timers.
+              if (input.refreshModels) {
+                yield* modelManifest.forceRefresh;
+                const instances = yield* providerInstances.listInstances;
+                yield* Effect.forEach(
+                  instances.filter(
+                    (instance) =>
+                      input.instanceId === undefined || input.instanceId === instance.instanceId,
+                  ),
+                  (instance) =>
+                    Effect.gen(function* () {
+                      yield* instance.invalidateCaches ?? Effect.void;
+                      const maintenance = yield* instance.snapshot.resolveMaintenance({
+                        fresh: true,
+                      });
+                      if (maintenance.packageName)
+                        providerVersionCache.delete(maintenance.packageName);
+                    }),
+                  { concurrency: "unbounded", discard: true },
+                );
+              }
+              // An untargeted refresh is "re-read everything's status", which
+              // includes quota from configured usage-limit sources. Awaited,
+              // not forked: the RPC scope closes on return and would
+              // interrupt a fork before the hub answered.
+              if (input.instanceId === undefined) {
+                yield* usageLimitSources.refresh;
+              }
+              let providers = yield* input.cwd !== undefined && input.instanceId !== undefined
+                ? providerRegistry.refreshWorkspaceSnapshot({
+                    instanceId: input.instanceId,
+                    cwd: input.cwd,
+                  })
+                : input.instanceId !== undefined
+                  ? providerRegistry.refreshInstance(input.instanceId)
+                  : providerRegistry.refresh();
+              if (input.refreshModels) {
+                const instances = yield* providerInstances.listInstances;
+                for (const instance of instances) {
+                  if (
+                    !instance.refreshModels ||
+                    (input.instanceId !== undefined && input.instanceId !== instance.instanceId) ||
+                    !providers.some(
+                      (provider) =>
+                        provider.instanceId === instance.instanceId &&
+                        provider.enabled &&
+                        provider.installed,
+                    )
+                  )
+                    continue;
+                  yield* instance.refreshModels().pipe(
+                    Effect.mapError(
+                      (error) =>
+                        new ProviderSetupError({
+                          instanceId: instance.instanceId,
+                          operation: "refresh-models",
+                          detail: error.detail,
+                        }),
+                    ),
+                  );
+                  providers = yield* providerRegistry.refreshInstance(instance.instanceId);
+                }
+              }
+              return { providers };
+            }),
             { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.providerUploadFeedback]: (input) =>
           observeRpcEffect(
             WS_METHODS.providerUploadFeedback,
             Effect.gen(function* () {
-              const projection = yield* threadManagement.getThreadProjection(input.threadId);
+              const projection = yield* threadManagement.getThreadRecords(input.threadId, [
+                "providerThreads",
+              ]);
               const providerThread =
                 projection.providerThreads.find(
                   (candidate) => candidate.id === projection.thread.activeProviderThreadId,
@@ -2359,6 +2437,15 @@ const makeWsRpcLayer = (
             WS_METHODS.providerAuthStart,
             providerAuth.start(input, currentSessionId),
             { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerAuthRespond]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerAuthRespond,
+            providerAuth.respond(input, currentSessionId),
+            {
+              "rpc.aggregate": "provider",
+              instanceId: input.instanceId,
+            },
           ),
         [WS_METHODS.providerAuthComplete]: (input) =>
           observeRpcEffect(
@@ -3090,7 +3177,7 @@ const makeWsRpcLayer = (
                 });
               }
               const thread = yield* threadManagement
-                .getThreadProjection(input.resource.threadId)
+                .getThreadRecords(input.resource.threadId, [])
                 .pipe(
                   Effect.mapError(
                     (cause) =>
@@ -3200,6 +3287,19 @@ const makeWsRpcLayer = (
                             ),
                           )
                       ).pipe(
+                        Effect.andThen(
+                          refreshPushedPullRequests(input, result).pipe(
+                            Effect.provideService(OrchestratorV2, orchestrationEngine),
+                            Effect.provideService(
+                              ProjectionSnapshotQuery.ProjectionSnapshotQuery,
+                              projectionSnapshotQuery,
+                            ),
+                            Effect.provideService(
+                              PullRequestService.PullRequestService,
+                              pullRequests,
+                            ),
+                          ),
+                        ),
                         Effect.andThen(refreshGitStatus(input.cwd)),
                         Effect.andThen(Queue.end(queue).pipe(Effect.asVoid)),
                       ),
@@ -3385,10 +3485,23 @@ const makeWsRpcLayer = (
           observeRpcEffect(WS_METHODS.deviceTestHost, deviceService.testHost(input), {
             "rpc.aggregate": "device",
           }),
-        [WS_METHODS.deviceList]: (_input) =>
-          observeRpcEffect(WS_METHODS.deviceList, deviceService.list, {
-            "rpc.aggregate": "device",
-          }),
+        [WS_METHODS.deviceList]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.deviceList,
+            input.inspectOnly && !input.updateTool
+              ? deviceService.inspect
+              : authorizeEffect(
+                  requiredScopeForDeviceList(input),
+                  input.updateTool
+                    ? deviceService.updateTool(input.updateTool)
+                    : input.retryHostId
+                      ? deviceService.retryHost(input.retryHostId)
+                      : deviceService.list,
+                ),
+            {
+              "rpc.aggregate": "device",
+            },
+          ),
         [WS_METHODS.deviceOpen]: (input) =>
           observeRpcEffect(WS_METHODS.deviceOpen, deviceService.open(input), {
             "rpc.aggregate": "device",

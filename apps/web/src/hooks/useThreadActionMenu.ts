@@ -11,7 +11,7 @@ import type { ScopedThreadRef, ThreadId } from "@t3tools/contracts";
 import { useRouter } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
 
-import { resolveSnoozePresets, snoozeWakeDescription } from "../components/Sidebar.snooze";
+import { resolveSnoozePresets } from "../components/Sidebar.snooze";
 import {
   buildThreadActionMenuItems,
   type ThreadActionMenuId,
@@ -20,6 +20,7 @@ import { stackedThreadToast, toastManager } from "../components/ui/toast";
 import { threadEnvironment } from "../state/threads";
 import { useAtomCommand } from "../state/use-atom-command";
 import {
+  readEnvironmentSupportsAutoSettleOptOut,
   readEnvironmentSupportsPinning,
   readEnvironmentSupportsSettlement,
   readEnvironmentSupportsSnooze,
@@ -88,6 +89,7 @@ export function useThreadActionMenu(input: {
     unsnoozeThread,
     pinThread,
     confirmAndUnpinThread,
+    setThreadAutoSettle,
     archiveThread,
     deleteThread,
     markThreadUnread,
@@ -132,6 +134,7 @@ export function useThreadActionMenu(input: {
         const now = new Date();
         const supports = {
           settlement: readEnvironmentSupportsSettlement(threadRef.environmentId),
+          autoSettleOptOut: readEnvironmentSupportsAutoSettleOptOut(threadRef.environmentId),
           snooze: readEnvironmentSupportsSnooze(threadRef.environmentId),
           pinning: readEnvironmentSupportsPinning(threadRef.environmentId),
           titleRegeneration: readEnvironmentSupportsTitleRegeneration(threadRef.environmentId),
@@ -143,6 +146,7 @@ export function useThreadActionMenu(input: {
           projectFilter: null,
           isPinned: thread.pinnedAt != null,
           isSettled: supports.settlement && thread.settledOverride === "settled",
+          autoSettleEnabled: thread.autoSettleDisabledAt == null,
           isSnoozed: supports.snooze && effectiveSnoozed(thread, { now: now.toISOString() }),
           canSnoozeNow: canSnooze(thread, { now: now.toISOString() }),
           isRegeneratingTitle,
@@ -160,29 +164,9 @@ export function useThreadActionMenu(input: {
               : snoozePresets.find((candidate) => `snooze:${candidate.id}` === action);
           if (!preset) return;
           const result = await snoozeThread(threadRef, preset.snoozedUntil);
-          if (result._tag === "Failure") {
-            if (!isAtomCommandInterrupted(result)) {
-              failureToast("Failed to snooze thread", squashAtomCommandFailure(result));
-            }
-            return;
+          if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+            failureToast("Failed to snooze thread", squashAtomCommandFailure(result));
           }
-          toastManager.add(
-            stackedThreadToast({
-              type: "success",
-              title: `Snoozed until ${snoozeWakeDescription(preset.snoozedUntil, new Date(), timestampFormat)}`,
-              timeout: 5_000,
-              actionProps: {
-                children: "Undo",
-                onClick: () => {
-                  void unsnoozeThread(threadRef).then((undone) => {
-                    if (undone._tag === "Failure" && !isAtomCommandInterrupted(undone)) {
-                      failureToast("Failed to wake thread", squashAtomCommandFailure(undone));
-                    }
-                  });
-                },
-              },
-            }),
-          );
           return;
         }
         const reportFailure = async (
@@ -243,6 +227,12 @@ export function useThreadActionMenu(input: {
             await reportFailure("Failed to unpin thread", () => confirmAndUnpinThread(threadRef));
             return;
           }
+          case "auto-settle:enabled":
+          case "auto-settle:disabled":
+            await reportFailure("Failed to update auto-settle", () =>
+              setThreadAutoSettle(threadRef, action === "auto-settle:enabled"),
+            );
+            return;
           case "rename":
             onStartRename();
             return;
@@ -351,6 +341,7 @@ export function useThreadActionMenu(input: {
       projectGroupingSettings,
       projects,
       router,
+      setThreadAutoSettle,
       settleThread,
       snoozeThread,
       threadRef,

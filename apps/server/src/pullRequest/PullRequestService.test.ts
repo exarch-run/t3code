@@ -22,6 +22,7 @@ import { PullRequestOperationError } from "@t3tools/contracts";
 import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import * as PullRequestFilesViewed from "../persistence/PullRequestFilesViewed.ts";
+import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as SourceControlRateLimit from "../sourceControl/SourceControlRateLimit.ts";
 import { ForgejoCli } from "../sourceControl/ForgejoCli.ts";
@@ -402,6 +403,7 @@ function makeService(input: {
   readonly projects: ReadonlyArray<OrchestrationProjectShell>;
   readonly providers: ReadonlyArray<PullRequestProviderApi>;
   readonly resolveHandle?: SourceControlProviderRegistry.SourceControlProviderRegistry["Service"]["resolveHandle"];
+  readonly resolveRepositoryIdentity?: RepositoryIdentityResolver.RepositoryIdentityResolver["Service"]["resolve"];
 }) {
   // Built into the test's own scope rather than provided call by call: the marks store owns a
   // database, and `Effect.provide` would close it the moment the service was handed back.
@@ -421,6 +423,9 @@ function makeService(input: {
             ),
           getProjectShellById: (projectId) =>
             Effect.succeed(Option.fromNullishOr(input.projects.find((p) => p.id === projectId))),
+        }),
+        Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({
+          resolve: input.resolveRepositoryIdentity ?? (() => Effect.succeed(null)),
         }),
         SourceControlRateLimit.layer,
         // The real store over a database of its own, so the environment-kept marks are exercised
@@ -1844,14 +1849,16 @@ for (const [provider, host] of [
           number: 1,
           allowStale: false,
         };
-        yield* Effect.all([service[read](reference), service[read](reference)], { concurrency: 2 });
+        const request: Effect.Effect<unknown, PullRequestService.PullRequestError> =
+          service[read](reference);
+        yield* Effect.all([request, request], { concurrency: 2 });
         assert.strictEqual(calls, 1);
         yield* TestClock.adjust("45 seconds");
         limited = true;
-        yield* Effect.flip(service[read](reference));
+        assert.strictEqual((yield* Effect.exit(request))._tag, "Failure");
         assert.strictEqual(calls, 2);
         yield* TestClock.adjust("45 seconds");
-        yield* Effect.flip(service[read](reference));
+        assert.strictEqual((yield* Effect.exit(request))._tag, "Failure");
         assert.strictEqual(calls, 2);
         yield* TestClock.adjust("75 seconds");
         limited = false;
@@ -2179,6 +2186,33 @@ it.effect("rejects a different Forgejo HTTP port for an HTTP checkout", () =>
       )
       .pipe(Effect.flip);
     assert.strictEqual(failure._tag, "PullRequestUnavailableError");
+  }),
+);
+
+it.effect("resolves a project's repository identity when its shell has none cached", () =>
+  Effect.gen(function* () {
+    const resolved = project({
+      id: "web",
+      title: "web",
+      workspaceRoot: "/web",
+      repository: "acme/web",
+    });
+    const service = yield* makeService({
+      projects: [{ ...resolved, repositoryIdentity: null }],
+      providers: [
+        fakeProvider("github", {
+          getChangeRequestSummary: () => Effect.succeed(changeRequest(7, "2026-07-02T00:00:00Z")),
+        }),
+      ],
+      resolveRepositoryIdentity: () => Effect.succeed(resolved.repositoryIdentity ?? null),
+    });
+
+    const summary = yield* service.summary(
+      { projectId: "web" as ProjectId, host: "github.com", repository: "acme/web", number: 7 },
+      { recoverTransientFailure: false },
+    );
+
+    assert.strictEqual(summary.number, 7);
   }),
 );
 
@@ -3334,13 +3368,13 @@ it.effect("shares one cold viewer lookup across distinct concurrent lists", () =
       ],
     });
 
-    yield* Effect.all(
-      ["all", "authored", "reviewing"].map((involvement) =>
+    yield* Effect.forEach(
+      ["all", "authored", "reviewing"],
+      (involvement) =>
         service.list({
           state: "open",
           involvement: involvement as "all" | "authored" | "reviewing",
         }),
-      ),
       { concurrency: "unbounded" },
     );
 
@@ -3485,6 +3519,67 @@ it.effect("a listing narrowed to some projects is its own cache entry", () =>
     yield* service.list({ state: "open", projectIds: ["p2" as ProjectId] });
     assert.strictEqual(asked.length, 2);
   }),
+);
+
+it.effect(
+  "keeps listing freshness tied to read start when filtered reads finish out of order",
+  () =>
+    Effect.gen(function* () {
+      const olderStarted = yield* Deferred.make<void>();
+      const releaseOlder = yield* Deferred.make<void>();
+      let reads = 0;
+      const updatedAt = "2026-07-02T00:00:00Z";
+      const service = yield* makeService({
+        projects: [
+          project({ id: "p1", title: "web", workspaceRoot: "/a", repository: "acme/web" }),
+        ],
+        providers: [
+          fakeProvider("github", {
+            listChangeRequests: ({ filters }) =>
+              Effect.gen(function* () {
+                reads += 1;
+                const older = filters?.checks === "failing";
+                if (older) {
+                  yield* Deferred.succeed(olderStarted, undefined);
+                  yield* Deferred.await(releaseOlder);
+                }
+                return {
+                  items: [
+                    {
+                      ...changeRequest(1, updatedAt),
+                      checksState: older ? ("failing" as const) : ("passing" as const),
+                      mergeability: older ? ("mergeable" as const) : ("conflicting" as const),
+                    },
+                  ],
+                  truncated: false,
+                  continues: false,
+                };
+              }),
+          }),
+        ],
+      });
+      const olderInput = { state: "open" as const, filters: { checks: "failing" as const } };
+      const newerInput = { state: "open" as const, filters: { checks: "passing" as const } };
+
+      const olderRead = yield* service.list(olderInput).pipe(Effect.forkChild());
+      yield* Deferred.await(olderStarted);
+      yield* TestClock.adjust("1 second");
+      const newer = yield* service.list(newerInput);
+      yield* Deferred.succeed(releaseOlder, undefined);
+      const older = yield* Fiber.join(olderRead);
+
+      assert.strictEqual(older.entries[0]?.checksState, "failing");
+      assert.strictEqual(older.entries[0]?.mergeability, "mergeable");
+      assert.strictEqual(newer.entries[0]?.checksState, "passing");
+      assert.strictEqual(newer.entries[0]?.mergeability, "conflicting");
+      assert.strictEqual(typeof older.entries[0]?.observedAt, "number");
+      assert.strictEqual(typeof newer.entries[0]?.observedAt, "number");
+      assert.isBelow(older.entries[0]!.observedAt!, newer.entries[0]!.observedAt!);
+
+      const cachedOlder = yield* service.list(olderInput);
+      assert.strictEqual(cachedOlder.entries[0]?.observedAt, older.entries[0]?.observedAt);
+      assert.strictEqual(reads, 2);
+    }),
 );
 
 it.effect("keeps unrelated PRs warm after a mutation, explicit refresh, and project turn", () =>
@@ -4351,6 +4446,7 @@ it.effect("keeps routed reads separate when the GitHub account changes", () =>
         ],
       });
       const readOperation = (input: Parameters<typeof service.diff>[0]) =>
+        // @effect-diagnostics-next-line unnecessaryEffectGen:off - the generator unifies the per-operation union of Effect types, which Effect.asVoid cannot infer through.
         Effect.gen(function* () {
           yield* service[operation](input);
         });
@@ -4422,6 +4518,7 @@ it.effect("isolates routed caches for two credentials belonging to the same acco
         ],
       });
       const readOperation = (input: Parameters<typeof service.diff>[0]) =>
+        // @effect-diagnostics-next-line unnecessaryEffectGen:off - the generator unifies the per-operation union of Effect types, which Effect.asVoid cannot infer through.
         Effect.gen(function* () {
           yield* service[operation](input);
         });

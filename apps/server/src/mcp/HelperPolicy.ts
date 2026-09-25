@@ -59,7 +59,7 @@ export type HelperTaskResolution =
  */
 export function explainHelperTask(input: {
   policy: HelperPolicy;
-  parent: OrchestrationV2ThreadProjection;
+  parent: Pick<OrchestrationV2ThreadProjection, "thread">;
   providers: ReadonlyArray<ServerProvider>;
   availableInstanceIds: ReadonlySet<string>;
   taskType: string | undefined;

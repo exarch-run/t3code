@@ -1,3 +1,5 @@
+import { ThreadDetailsControl } from "./ThreadDetailsControl";
+import { ThreadHoverCardPopup } from "../ThreadHoverCard";
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
 import { CollapsibleSectionHeader, SectionHeaderStatus } from "../ui/collapsible-section-header";
 import { SubagentTooltipContent } from "./SubagentTooltipContent";
@@ -43,18 +45,14 @@ import {
 } from "../../state/entities";
 import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { AgentElapsed } from "../AgentsPanel";
+import { AgentElapsed } from "./AgentElapsed";
 import { ThreadRelationshipIcon } from "./ThreadRelationshipIcon";
-import { Button } from "../ui/button";
+
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
-  THREAD_DETAILS_PANEL_ICON_ACTION_CLASS,
-  THREAD_DETAILS_PANEL_LINK_ROW_CLASS,
   THREAD_DETAILS_PANEL_LINK_SPLIT_GROUP_CLASS,
-  THREAD_DETAILS_PANEL_LINK_SPLIT_PRIMARY_CLASS,
-  THREAD_DETAILS_PANEL_LINK_SPLIT_SECONDARY_CLASS,
-  THREAD_DETAILS_PANEL_MENU_POPUP_CLASS,
+  THREAD_DETAILS_PANEL_ROW_CONTENT_CLASS,
   THREAD_DETAILS_PANEL_SPLIT_SEPARATOR_CLASS,
 } from "./threadDetailsPanelStyles";
 
@@ -98,9 +96,9 @@ export function ThreadLineageRowList(props: {
         <button
           type="button"
           onClick={props.onShowMore}
-          className="flex h-9 w-full cursor-pointer items-center gap-2.5 rounded-lg px-2.5 text-left text-[13px] font-medium text-muted-foreground/70 hover:bg-black/[0.055] hover:text-foreground/80 dark:hover:bg-white/[0.075]"
+          className={`flex h-9 w-full cursor-pointer items-center rounded-lg ${THREAD_DETAILS_PANEL_ROW_CONTENT_CLASS} text-sm font-medium text-muted-foreground/70 hover:bg-black/[0.055] hover:text-foreground/80 dark:hover:bg-white/[0.075]`}
         >
-          <PlusIcon aria-hidden className="-mx-0.5 size-4 shrink-0" />
+          <PlusIcon aria-hidden className="size-4 shrink-0" />
           Show {Math.min(props.hiddenCount, THREAD_LINEAGE_PAGE_COUNT)} more
         </button>
       ) : null}
@@ -295,10 +293,10 @@ export function ThreadRelationshipsPanel(props: {
           <Menu>
             <MenuTrigger
               render={
-                <Button
+                <ThreadDetailsControl
                   size="icon-xs"
                   variant="ghost"
-                  className={THREAD_DETAILS_PANEL_ICON_ACTION_CLASS}
+                  part="icon"
                   aria-label="More thread actions"
                   disabled={busyAction !== null}
                 />
@@ -306,7 +304,7 @@ export function ThreadRelationshipsPanel(props: {
             >
               <MoreHorizontalIcon className="size-3.5" />
             </MenuTrigger>
-            <MenuPopup align="end" className={THREAD_DETAILS_PANEL_MENU_POPUP_CLASS}>
+            <MenuPopup align="end" className="min-w-60 max-w-(--available-width)">
               <MenuItem onClick={() => void detach()}>
                 <UnplugIcon className="size-3.5" />
                 Disconnect agent session
@@ -345,11 +343,14 @@ export function ThreadRelationshipsPanel(props: {
               const relationshipHint = node?.missing
                 ? "This related thread is unavailable"
                 : `Open ${relationship.toLowerCase()} in this chat`;
+              const RelationshipPopup = agent ? ThreadHoverCardPopup : TooltipPopup;
               const relationshipTooltip = agent ? (
                 <SubagentTooltipContent
                   title={threadTitle}
                   model={agent.model}
                   provider={provider}
+                  driver={providerDriver}
+                  elapsed={<AgentElapsed agent={agent} />}
                   status={agent.status}
                   result={agent.result}
                   progress={agent.progress}
@@ -370,14 +371,14 @@ export function ThreadRelationshipsPanel(props: {
                     status={edge.status}
                   />
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[13px] font-medium leading-4 text-foreground/85">
+                    <span className="block truncate text-left text-sm font-medium leading-4 text-foreground/85">
                       {threadTitle}
                     </span>
                     {agent ? <span className="sr-only">{agent.status}</span> : null}
                   </span>
                   {agent ? (
                     agent.startedAt ? (
-                      <span className="shrink-0 text-[11px] font-normal tabular-nums text-muted-foreground">
+                      <span className="shrink-0 text-2xs font-normal tabular-nums text-muted-foreground">
                         <AgentElapsed agent={agent} />
                       </span>
                     ) : null
@@ -394,10 +395,10 @@ export function ThreadRelationshipsPanel(props: {
                         <TooltipTrigger
                           delay={200}
                           render={
-                            <Button
+                            <ThreadDetailsControl
                               size="sm"
                               variant="ghost"
-                              className={THREAD_DETAILS_PANEL_LINK_SPLIT_PRIMARY_CLASS}
+                              part="link-primary"
                               disabled={node?.missing === true}
                               onClick={() => openThread(threadId)}
                             />
@@ -405,7 +406,7 @@ export function ThreadRelationshipsPanel(props: {
                         >
                           {relationshipContent}
                         </TooltipTrigger>
-                        <TooltipPopup side="left">{relationshipTooltip}</TooltipPopup>
+                        <RelationshipPopup side="left">{relationshipTooltip}</RelationshipPopup>
                       </Tooltip>
                       <span
                         aria-hidden="true"
@@ -414,10 +415,10 @@ export function ThreadRelationshipsPanel(props: {
                       <Tooltip>
                         <TooltipTrigger
                           render={
-                            <Button
+                            <ThreadDetailsControl
                               size="sm"
                               variant="ghost"
-                              className={THREAD_DETAILS_PANEL_LINK_SPLIT_SECONDARY_CLASS}
+                              part="secondary"
                               aria-label={
                                 parentTitle
                                   ? `Merge back to ${parentTitle}`
@@ -431,7 +432,7 @@ export function ThreadRelationshipsPanel(props: {
                               ) : (
                                 <PullRequestGlyph.merged className="size-3" />
                               )}
-                            </Button>
+                            </ThreadDetailsControl>
                           }
                         />
                         <TooltipPopup side="left">
@@ -448,18 +449,18 @@ export function ThreadRelationshipsPanel(props: {
                       <TooltipTrigger
                         delay={200}
                         render={
-                          <Button
+                          <ThreadDetailsControl
                             size="sm"
                             variant="ghost"
                             disabled={node?.missing === true}
                             onClick={() => openThread(threadId)}
-                            className={THREAD_DETAILS_PANEL_LINK_ROW_CLASS}
+                            part="row"
                           />
                         }
                       >
                         {relationshipContent}
                       </TooltipTrigger>
-                      <TooltipPopup side="left">{relationshipTooltip}</TooltipPopup>
+                      <RelationshipPopup side="left">{relationshipTooltip}</RelationshipPopup>
                     </Tooltip>
                   )}
                 </li>

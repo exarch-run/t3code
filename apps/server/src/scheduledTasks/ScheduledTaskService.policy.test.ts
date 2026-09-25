@@ -1,3 +1,4 @@
+import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, it } from "@effect/vitest";
 import {
@@ -79,6 +80,7 @@ it.effect("skips and records a due run while the bound chat is still working", (
     const chatBusy = yield* Ref.make(true);
     const sends = yield* Ref.make(0);
     const deps = Layer.mergeAll(
+      Scheduler.layer,
       NodeCrypto.layer,
       Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
       Layer.mock(ThreadManagementService.ThreadManagementService)({
@@ -108,10 +110,10 @@ it.effect("skips and records a due run while the bound chat is still working", (
         assert.equal(yield* Ref.get(sends), 0);
         assert.equal(skipped.run_count, 0);
         assert.equal(skipped.last_run_status, "never");
-        assert.equal(skipped.next_run_at, isoAt(now + 5_000 + 60_000));
+        assert.equal(skipped.next_run_at, isoAt(now + 60_000));
         const listed = (yield* service.list()).tasks[0]!;
         assert.equal(listed.lastOutcome?.kind, "skipped_overlap");
-        assert.equal(listed.lastOutcome?.at, isoAt(now + 5_000));
+        assert.equal(listed.lastOutcome?.at, isoAt(now));
 
         // A manual run is refused rather than steered into the busy turn.
         const refused = yield* service.runNow({ id: task.id }).pipe(Effect.flip);
@@ -140,6 +142,7 @@ it.effect("watches the chat its last run launched for a fresh-chat task", () =>
     const launches = yield* Ref.make(0);
     const shellReads = yield* Ref.make<string[]>([]);
     const deps = Layer.mergeAll(
+      Scheduler.layer,
       NodeCrypto.layer,
       Layer.mock(ThreadLaunchService.ThreadLaunchService)({
         launch: () =>
@@ -183,6 +186,7 @@ it.effect("records a fixed-time run missed while the engine was off instead of r
     yield* TestClock.setTime(now);
     const sends = yield* Ref.make(0);
     const deps = Layer.mergeAll(
+      Scheduler.layer,
       NodeCrypto.layer,
       Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
       Layer.mock(ThreadManagementService.ThreadManagementService)({
@@ -225,6 +229,7 @@ it.effect("pausing future runs leaves the run already in flight alone", () =>
     const dispatched = yield* Deferred.make<void>();
     const release = yield* Deferred.make<void>();
     const deps = Layer.mergeAll(
+      Scheduler.layer,
       NodeCrypto.layer,
       Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
       Layer.mock(ThreadManagementService.ThreadManagementService)({
@@ -270,6 +275,7 @@ it.effect("changing the cadence updates the task in place", () =>
     const now = Date.parse("2026-09-09T12:00:00.000Z");
     yield* TestClock.setTime(now);
     const deps = Layer.mergeAll(
+      Scheduler.layer,
       NodeCrypto.layer,
       Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
       Layer.mock(ThreadManagementService.ThreadManagementService)({}),

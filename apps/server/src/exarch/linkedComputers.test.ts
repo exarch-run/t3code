@@ -1,5 +1,5 @@
-import { expect, it } from "vite-plus/test";
-import * as Crypto from "node:crypto";
+import { expect, it } from "@effect/vitest";
+import * as NodeCrypto from "node:crypto";
 import { EnvironmentId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -57,23 +57,19 @@ function fixture(insecure = false, signedIn = true) {
       );
     }),
   );
-  const token = Crypto.randomUUID();
+  const token = NodeCrypto.randomUUID();
   const run = (input: Parameters<typeof linkedComputers>[0]) =>
-    Effect.runPromise(
-      linkedComputers(input).pipe(
-        Effect.provideService(HttpClient.HttpClient, client),
-        Effect.provideService(CloudCliTokenManager, {
-          getExisting: Effect.succeed(
-            signedIn ? Option.some({ accessToken: token }) : Option.none(),
-          ),
-        } as unknown as CloudCliTokenManager["Service"]),
-        Effect.provideService(ServerEnvironmentIdentity, {
-          getEnvironmentId: Effect.succeed(own),
-        } as ServerEnvironmentIdentity["Service"]),
-        Effect.provideService(
-          ConfigProvider.ConfigProvider,
-          ConfigProvider.fromUnknown({ T3CODE_RELAY_URL: "https://relay.test" }),
-        ),
+    linkedComputers(input).pipe(
+      Effect.provideService(HttpClient.HttpClient, client),
+      Effect.provideService(CloudCliTokenManager, {
+        getExisting: Effect.succeed(signedIn ? Option.some({ accessToken: token }) : Option.none()),
+      } as unknown as CloudCliTokenManager["Service"]),
+      Effect.provideService(ServerEnvironmentIdentity, {
+        getEnvironmentId: Effect.succeed(own),
+      } as ServerEnvironmentIdentity["Service"]),
+      Effect.provideService(
+        ConfigProvider.ConfigProvider,
+        ConfigProvider.fromUnknown({ T3CODE_RELAY_URL: "https://relay.test" }),
       ),
     );
   return {
@@ -85,65 +81,78 @@ function fixture(insecure = false, signedIn = true) {
     },
   };
 }
-it("excludes itself and reuses a signed session without repeating enrollment", async () => {
-  const f = fixture();
-  expect(await f.run({ action: "list" })).toEqual({ computers: [{ id: "other", name: "other" }] });
-  await f.run({ action: "send", environmentId: f.other, packet: { ciphertext: "opaque" } });
-  const count = f.calls.length;
-  expect(
-    await f.run({ action: "send", environmentId: f.other, packet: { ciphertext: "next" } }),
-  ).toEqual({ received: true });
-  expect(f.calls).toHaveLength(count + 1);
-  const request = f.calls.at(-1)!;
-  expect(request.headers.authorization).toBe("DPoP remote-token");
-  const [header, payload, signature] = request.headers.dpop!.split(".");
-  const decoded = JSON.parse(Buffer.from(header!, "base64url").toString());
-  expect(
-    Crypto.verify(
-      "sha256",
-      Buffer.from(`${header}.${payload}`),
-      {
-        key: Crypto.createPublicKey({ key: decoded.jwk, format: "jwk" }),
-        dsaEncoding: "ieee-p1363",
-      },
-      Buffer.from(signature!, "base64url"),
-    ),
-  ).toBe(true);
-  expect(JSON.parse(Buffer.from(payload!, "base64url").toString())).toMatchObject({
-    htm: "POST",
-    htu: "https://remote.test/api/exarch/personal-setup",
-  });
-});
-it("refuses insecure remote endpoints before transmitting the bootstrap credential", async () => {
-  const f = fixture(true);
-  await expect(f.run({ action: "send", environmentId: f.other, packet: {} })).rejects.toThrow(
-    "unavailable",
-  );
-  expect(f.calls.every((request) => request.url.startsWith("https://relay.test"))).toBe(true);
-});
+it.effect("excludes itself and reuses a signed session without repeating enrollment", () =>
+  Effect.gen(function* () {
+    const f = fixture();
+    expect(yield* f.run({ action: "list" })).toEqual({
+      computers: [{ id: "other", name: "other" }],
+    });
+    yield* f.run({ action: "send", environmentId: f.other, packet: { ciphertext: "opaque" } });
+    const count = f.calls.length;
+    expect(
+      yield* f.run({ action: "send", environmentId: f.other, packet: { ciphertext: "next" } }),
+    ).toEqual({ received: true });
+    expect(f.calls).toHaveLength(count + 1);
+    const request = f.calls.at(-1)!;
+    expect(request.headers.authorization).toBe("DPoP remote-token");
+    const [header, payload, signature] = request.headers.dpop!.split(".");
+    const decoded = JSON.parse(Buffer.from(header!, "base64url").toString());
+    expect(
+      NodeCrypto.verify(
+        "sha256",
+        Buffer.from(`${header}.${payload}`),
+        {
+          key: NodeCrypto.createPublicKey({ key: decoded.jwk, format: "jwk" }),
+          dsaEncoding: "ieee-p1363",
+        },
+        Buffer.from(signature!, "base64url"),
+      ),
+    ).toBe(true);
+    expect(JSON.parse(Buffer.from(payload!, "base64url").toString())).toMatchObject({
+      htm: "POST",
+      htu: "https://remote.test/api/exarch/personal-setup",
+    });
+  }),
+);
+it.effect("refuses insecure remote endpoints before transmitting the bootstrap credential", () =>
+  Effect.gen(function* () {
+    const f = fixture(true);
+    expect(
+      (yield* f.run({ action: "send", environmentId: f.other, packet: {} }).pipe(Effect.flip))
+        .message,
+    ).toContain("unavailable");
+    expect(f.calls.every((request) => request.url.startsWith("https://relay.test"))).toBe(true);
+  }),
+);
 
-it("keeps sessions for unavailable plugins but replaces an unauthorized session", async () => {
-  const f = fixture();
-  const input = { action: "send" as const, environmentId: f.other, packet: {} };
-  await f.run(input);
-  const initial = f.calls.length;
-  f.status(503);
-  await expect(f.run(input)).rejects.toThrow("unavailable");
-  await expect(f.run(input)).rejects.toThrow("unavailable");
-  expect(f.calls).toHaveLength(initial + 2);
-  f.status(401);
-  await expect(f.run(input)).rejects.toThrow("unavailable");
-  f.status(200);
-  await f.run(input);
-  expect(f.calls).toHaveLength(initial + 8);
-});
-it("does not contact the network without an account and refuses an unlisted computer", async () => {
-  const empty = fixture(false, false);
-  expect(await empty.run({ action: "list" })).toEqual({ computers: [] });
-  expect(empty.calls).toHaveLength(0);
-  const f = fixture();
-  await expect(
-    f.run({ action: "send", environmentId: EnvironmentId.make("unlisted"), packet: {} }),
-  ).rejects.toThrow("unavailable");
-  expect(f.calls).toHaveLength(1);
-});
+it.effect("keeps sessions for unavailable plugins but replaces an unauthorized session", () =>
+  Effect.gen(function* () {
+    const f = fixture();
+    const input = { action: "send" as const, environmentId: f.other, packet: {} };
+    yield* f.run(input);
+    const initial = f.calls.length;
+    f.status(503);
+    expect((yield* f.run(input).pipe(Effect.flip)).message).toContain("unavailable");
+    expect((yield* f.run(input).pipe(Effect.flip)).message).toContain("unavailable");
+    expect(f.calls).toHaveLength(initial + 2);
+    f.status(401);
+    expect((yield* f.run(input).pipe(Effect.flip)).message).toContain("unavailable");
+    f.status(200);
+    yield* f.run(input);
+    expect(f.calls).toHaveLength(initial + 8);
+  }),
+);
+it.effect("does not contact the network without an account and refuses an unlisted computer", () =>
+  Effect.gen(function* () {
+    const empty = fixture(false, false);
+    expect(yield* empty.run({ action: "list" })).toEqual({ computers: [] });
+    expect(empty.calls).toHaveLength(0);
+    const f = fixture();
+    expect(
+      (yield* f
+        .run({ action: "send", environmentId: EnvironmentId.make("unlisted"), packet: {} })
+        .pipe(Effect.flip)).message,
+    ).toContain("unavailable");
+    expect(f.calls).toHaveLength(1);
+  }),
+);

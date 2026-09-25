@@ -1,21 +1,6 @@
-import { makeRelayClientTracingLayer } from "@t3tools/shared/relayTracing";
+import * as Layer from "effect/Layer";
 
-import { resolveRelayClientTracingConfig } from "./publicConfig.ts";
-
-const relayClientTracingConfig = resolveRelayClientTracingConfig();
-
-export const headlessRelayClientTracingLayer = makeRelayClientTracingLayer(
-  relayClientTracingConfig,
-  {
-    serviceName: "t3-headless-relay-client",
-    runtime: "node",
-    client: "headless-cli",
-  },
-);
-
-export const serverRelayBrokerTracingLayer = makeRelayClientTracingLayer(relayClientTracingConfig, {
-  serviceName: "t3-server",
-  runtime: "node",
-  client: "environment-server",
-  component: "relay-broker",
-});
+// Relay traffic is private operational activity. Legacy build/environment OTLP
+// credentials must not turn first-party request tracing back on.
+export const headlessRelayClientTracingLayer = Layer.empty;
+export const serverRelayBrokerTracingLayer = Layer.empty;

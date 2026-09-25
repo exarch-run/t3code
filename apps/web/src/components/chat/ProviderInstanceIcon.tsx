@@ -31,6 +31,20 @@ const PROVIDER_ICON_BY_PROVIDER: Partial<Record<ProviderDriverKind, Icon>> = {
   [ProviderDriverKind.make("pi")]: PiAgentIcon,
 };
 
+const PROVIDER_TEXT_COLOR_BY_PROVIDER: Partial<Record<ProviderDriverKind, string>> = {
+  [ProviderDriverKind.make("codex")]: "text-black dark:text-white",
+  [ProviderDriverKind.make("claudeAgent")]: "text-[#d97757]",
+  [ProviderDriverKind.make("cursor")]: "text-[#26251E] dark:text-[#EDECEC]",
+  [ProviderDriverKind.make("grok")]: "text-[#0F0F0F] dark:text-[#F5F5F5]",
+  [ProviderDriverKind.make("pi")]: "text-[#0F0F0F] dark:text-[#F5F5F5]",
+  [ProviderDriverKind.make("opencode")]: "text-[#211E1E] dark:text-[#F1ECEC]",
+  [ProviderDriverKind.make("antigravity")]: "text-[#5b87bf]",
+};
+
+export function providerTextColorClassName(driverKind: ProviderDriverKind): string | undefined {
+  return PROVIDER_TEXT_COLOR_BY_PROVIDER[driverKind];
+}
+
 export function resolveProviderInstanceAcpRegistryIconUrl(input: {
   readonly driverKind: ProviderDriverKind;
   readonly agentId?: string | undefined;
@@ -90,7 +104,7 @@ export const ProviderInstanceIcon = memo(function ProviderInstanceIcon(props: {
       ) : Icon ? (
         <Icon className={cn("size-5 shrink-0", props.iconClassName)} aria-hidden />
       ) : (
-        <span className={cn("text-[10px] font-semibold leading-none", props.iconClassName)}>
+        <span className={cn("text-3xs font-semibold leading-none", props.iconClassName)}>
           {providerInstanceInitials(props.displayName)}
         </span>
       )}
@@ -107,9 +121,9 @@ export const ProviderInstanceIcon = memo(function ProviderInstanceIcon(props: {
       {props.showBadge ? (
         <span
           className={cn(
-            "pointer-events-none absolute right-0 bottom-0 z-10 flex h-3.5 min-w-3.5 items-center justify-center rounded-full border px-0.5 text-[8px] font-semibold leading-none shadow-sm",
+            "pointer-events-none absolute right-0 bottom-0 z-10 flex h-3.5 min-w-3.5 items-center justify-center rounded-full border px-0.5 text-3xs font-semibold leading-none shadow-sm",
             props.accentColor
-              ? "bg-[var(--provider-accent)] text-white"
+              ? "bg-(--provider-accent) text-white"
               : "bg-card text-muted-foreground",
             props.badgeClassName,
           )}

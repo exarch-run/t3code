@@ -11,7 +11,7 @@ import type { DeviceScreenSize } from "@t3tools/client-runtime/device/stream";
 
 export const PREVIEW_MINI_PLAYER_EDGE_GAP = 12;
 export const PREVIEW_MINI_PLAYER_CORNER_RADIUS = 12;
-// The mini-player shell straddles this webview at 47 and 49; dialogs begin at 50.
+// The mini-player shell straddles this webview at 47 and 49: above --z-sheet, under dialogs (50).
 export const PREVIEW_MINI_PLAYER_WEBVIEW_Z_INDEX = 48;
 // A fresh player is the largest box at the source aspect ratio that fits here.
 const PREVIEW_MINI_PLAYER_DEFAULT_BOX = { width: 320, height: 320 } as const;
@@ -143,8 +143,7 @@ const availableArea = (
 /**
  * Width is the player's only free dimension; height always follows the source
  * aspect ratio so the webview fills the box without letterboxing. The player
- * never grows past the source's own size (the guest keeps its CSS viewport, so
- * going bigger would only upscale), and a tight container wins over the minimum.
+ * may upscale the source, and a tight container wins over the minimum.
  */
 function fitPreviewMiniPlayerWidth(
   desiredWidth: number,
@@ -158,7 +157,6 @@ function fitPreviewMiniPlayerWidth(
       PREVIEW_MINI_PLAYER_MIN_SIZE.width,
       PREVIEW_MINI_PLAYER_MIN_SIZE.height * aspectRatio,
     ),
-    source.width,
     Math.max(1, max.width),
     Math.max(1, max.height * aspectRatio),
   );
@@ -176,10 +174,10 @@ const clampToContainer = (
   position: PreviewMiniPlayerPosition,
   container: PreviewMiniPlayerSize,
   player: PreviewMiniPlayerSize,
-  bottom = container.height,
+  minimumX = PREVIEW_MINI_PLAYER_EDGE_GAP,
 ): PreviewMiniPlayerPosition => ({
   x: Math.min(
-    Math.max(position.x, PREVIEW_MINI_PLAYER_EDGE_GAP),
+    Math.max(position.x, minimumX, PREVIEW_MINI_PLAYER_EDGE_GAP),
     Math.max(
       PREVIEW_MINI_PLAYER_EDGE_GAP,
       container.width - player.width - PREVIEW_MINI_PLAYER_EDGE_GAP,
@@ -187,7 +185,10 @@ const clampToContainer = (
   ),
   y: Math.min(
     Math.max(position.y, PREVIEW_MINI_PLAYER_EDGE_GAP),
-    Math.max(PREVIEW_MINI_PLAYER_EDGE_GAP, bottom - player.height - PREVIEW_MINI_PLAYER_EDGE_GAP),
+    Math.max(
+      PREVIEW_MINI_PLAYER_EDGE_GAP,
+      container.height - player.height - PREVIEW_MINI_PLAYER_EDGE_GAP,
+    ),
   ),
 });
 
@@ -212,14 +213,16 @@ const overlapsObstacle = (
  * margin instead of stopping at its edge. When nothing leaves it clear it
  * keeps its columns and sits below the card; the composer is where the user
  * is typing, but a player under the card cannot be reached at all.
+ * minimumX reserves room to the player's left without changing its size.
  */
 export function clampPreviewMiniPlayerPosition(
   position: PreviewMiniPlayerPosition,
   container: PreviewMiniPlayerSize,
   player: PreviewMiniPlayerSize,
   obstacles: PreviewMiniPlayerObstacles = NO_PREVIEW_MINI_PLAYER_OBSTACLES,
+  minimumX = PREVIEW_MINI_PLAYER_EDGE_GAP,
 ): PreviewMiniPlayerPosition {
-  const inside = clampToContainer(position, container, player);
+  const inside = clampToContainer(position, container, player, minimumX);
   if (!overlapsObstacle(inside, player, container, obstacles)) return inside;
   const gap = PREVIEW_MINI_PLAYER_EDGE_GAP;
   // The rows open to a player at this x, holding y as close to the drag as they allow.
@@ -253,7 +256,7 @@ export function clampPreviewMiniPlayerPosition(
   for (const x of beside) {
     const candidate = fitRows(x);
     if (
-      clampToContainer(candidate, container, player).x !== x ||
+      clampToContainer(candidate, container, player, minimumX).x !== x ||
       overlapsObstacle(candidate, player, container, obstacles)
     ) {
       continue;
@@ -363,18 +366,16 @@ export function resizePreviewMiniPlayer(input: {
   const desiredHeight = start.height + (south ? delta.y : north ? -delta.y : 0);
   const horizontal = east || west;
   const vertical = north || south;
-  const widthLeads =
-    horizontal && !vertical
-      ? true
-      : vertical && !horizontal
-        ? false
-        : Math.abs(desiredWidth - start.width) / start.width >=
-          Math.abs(desiredHeight - start.height) / start.height;
-  const size = fitPreviewMiniPlayerWidth(
-    widthLeads ? desiredWidth : (desiredHeight * source.width) / source.height,
-    source,
-    max,
-  );
+  const aspectRatio = source.width / source.height;
+  // Project corner motion onto the aspect-ratio diagonal. Switching between
+  // dominant axes jumps when one axis grows while the other shrinks.
+  const desired =
+    horizontal && vertical
+      ? (desiredWidth + desiredHeight / aspectRatio) / (1 + 1 / aspectRatio ** 2)
+      : horizontal
+        ? desiredWidth
+        : desiredHeight * aspectRatio;
+  const size = fitPreviewMiniPlayerWidth(desired, source, max);
   const position = clampPreviewMiniPlayerPosition(
     { x: west ? right - size.width : start.x, y: north ? bottom - size.height : start.y },
     container,

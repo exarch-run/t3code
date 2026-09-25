@@ -23,11 +23,14 @@ const emitToolCalls = process.env.T3_ACP_EMIT_TOOL_CALLS === "1";
 const emitInterleavedAssistantToolCalls =
   process.env.T3_ACP_EMIT_INTERLEAVED_ASSISTANT_TOOL_CALLS === "1";
 const emitV2Fidelity = process.env.T3_ACP_EMIT_V2_FIDELITY === "1";
+const vibeRetryOutcome = process.env.T3_ACP_VIBE_RETRY_OUTCOME;
 const emitGenericToolPlaceholders = process.env.T3_ACP_EMIT_GENERIC_TOOL_PLACEHOLDERS === "1";
 const emitPostSettleMonitorFlow = process.env.T3_ACP_EMIT_POST_SETTLE_MONITOR_FLOW === "1";
 const emitInTurnTaskOutputThenLateDuplicate =
   process.env.T3_ACP_EMIT_IN_TURN_TASKOUTPUT_THEN_LATE_DUPLICATE === "1";
 const injectedReportTriggerPath = process.env.T3_ACP_INJECTED_REPORT_TRIGGER_PATH;
+const emitBackgroundToolDuringAnswer =
+  process.env.T3_ACP_EMIT_BACKGROUND_TOOL_DURING_ANSWER === "1";
 const emitAskQuestion = process.env.T3_ACP_EMIT_ASK_QUESTION === "1";
 const emitElicitation = process.env.T3_ACP_EMIT_ELICITATION === "1";
 const emitMcpToolApprovalElicitation =
@@ -864,6 +867,70 @@ const program = Effect.gen(function* () {
       beginAcpMockPrompt(cancelledSessions, requestedSessionId);
       promptCount += 1;
 
+      if (vibeRetryOutcome !== undefined) {
+        if (vibeRetryOutcome === "recovered") {
+          yield* Effect.sync(() =>
+            writeJsonRpcNotification("session/update", {
+              sessionId: requestedSessionId,
+              update: {
+                sessionUpdate: "tool_call",
+                toolCallId: "tool-before-retry",
+                title: "Read file",
+                kind: "read",
+                status: "in_progress",
+              },
+            }),
+          );
+        }
+        for (const [index, noticeSessionId] of [
+          "unrelated-session",
+          requestedSessionId,
+          requestedSessionId,
+        ].entries()) {
+          // Progress from an earlier tool must not end the retry.
+          if (index === 2 && vibeRetryOutcome === "recovered") {
+            yield* Effect.sync(() =>
+              writeJsonRpcNotification("session/update", {
+                sessionId: requestedSessionId,
+                update: {
+                  sessionUpdate: "tool_call_update",
+                  toolCallId: "tool-before-retry",
+                  status: "in_progress",
+                  rawOutput: { progress: "still reading" },
+                },
+              }),
+            );
+          }
+          yield* Effect.sync(() =>
+            writeJsonRpcNotification("_session/retrying", {
+              sessionId: noticeSessionId,
+              category: "rate_limited",
+              detail: "Rate limit reached. Retrying. api_key=private-key",
+            }),
+          );
+        }
+        if (vibeRetryOutcome === "failed") {
+          return yield* new AcpError.AcpRequestError({
+            code: -31001,
+            errorMessage: "Rate limit exceeded for mistral (model: mistral-vibe-cli-latest).",
+          });
+        }
+        if (vibeRetryOutcome === "completed") {
+          return yield* finishPrompt(requestedSessionId, "end_turn");
+        }
+        if (vibeRetryOutcome === "cancelled") {
+          return yield* finishPrompt(requestedSessionId, "cancelled");
+        }
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "Recovered answer" },
+          },
+        });
+        return yield* finishPrompt(requestedSessionId, "end_turn");
+      }
+
       if (emitV2Fidelity) {
         yield* agent.client.sessionUpdate({
           sessionId: `${requestedSessionId}-child`,
@@ -1498,6 +1565,47 @@ const program = Effect.gen(function* () {
           agentResult: null,
         });
         return yield* Effect.never;
+      }
+
+      if (emitBackgroundToolDuringAnswer) {
+        // A command backgrounded earlier reports progress and then finishes
+        // while the next answer is still streaming.
+        const toolCallId = "background-1";
+        const say = (text: string) =>
+          agent.client.sessionUpdate({
+            sessionId: requestedSessionId,
+            update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } },
+          });
+        const progress = (status: "in_progress" | "completed", stdout: string) =>
+          agent.client.sessionUpdate({
+            sessionId: requestedSessionId,
+            update: {
+              sessionUpdate: "tool_call_update",
+              toolCallId,
+              status,
+              rawOutput: { stdout },
+            },
+          });
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId,
+            title: "Terminal",
+            kind: "execute",
+            status: "in_progress",
+            rawInput: { command: "sleep 3 && echo done" },
+          },
+        });
+        yield* say("| a | b |\n|---|---|\n| 1 ");
+        yield* progress("in_progress", ".");
+        yield* say("| x |\n");
+        yield* progress("completed", "done");
+        yield* say("| 2 | y |\n");
+        // Agents can repeat a terminal update after the call finished.
+        yield* progress("completed", "done");
+        yield* say("| 3 | z |");
+        return yield* finishPrompt(requestedSessionId, "end_turn");
       }
 
       if (emitInterleavedAssistantToolCalls) {

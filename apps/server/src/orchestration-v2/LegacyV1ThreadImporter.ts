@@ -54,6 +54,7 @@ interface LegacyThreadRow {
   readonly snoozed_until: string | null;
   readonly snoozed_at: string | null;
   readonly pinned_at: string | null;
+  readonly auto_settle_disabled_at: string | null;
   readonly pin_order_key: string | null;
   readonly pull_requests_json: string;
   readonly linked_pull_request_json: string | null;
@@ -234,6 +235,7 @@ function importedThread(row: LegacyThreadRow): OrchestrationV2AppThread {
     snoozedUntil: nullableDateTime(row.snoozed_until),
     snoozedAt: nullableDateTime(row.snoozed_at),
     pinnedAt: nullableDateTime(row.pinned_at),
+    autoSettleDisabledAt: nullableDateTime(row.auto_settle_disabled_at),
     pinOrderKey: row.pin_order_key?.trim() || null,
     lastVisitedAt: null,
     deletedAt: nullableDateTime(row.deleted_at),
@@ -459,6 +461,7 @@ const make = Effect.gen(function* () {
         thread.snoozed_until,
         thread.snoozed_at,
         thread.pinned_at,
+        thread.auto_settle_disabled_at,
         thread.pin_order_key,
         (SELECT json_group_array(json_object('host', pr.host, 'repository', pr.repository, 'number', pr.number, 'url', pr.url, 'source', pr.source, 'linkedAt', pr.linked_at, 'snapshot', json(pr.snapshot_json), 'stack', json(pr.stack_json))) FROM projection_thread_pull_requests pr WHERE pr.thread_id = thread.thread_id) AS pull_requests_json,
         thread.linked_pull_request_json,
@@ -492,6 +495,10 @@ const make = Effect.gen(function* () {
       const repaired: OrchestrationV2AppThread = {
         ...current,
         pinnedAt: current.pinnedAt === undefined ? legacy.pinnedAt : current.pinnedAt,
+        autoSettleDisabledAt:
+          current.autoSettleDisabledAt === undefined
+            ? legacy.autoSettleDisabledAt
+            : current.autoSettleDisabledAt,
         pinOrderKey: current.pinOrderKey === undefined ? legacy.pinOrderKey : current.pinOrderKey,
         snoozedUntil:
           current.snoozedUntil === undefined ? legacy.snoozedUntil : current.snoozedUntil,
@@ -558,6 +565,7 @@ const make = Effect.gen(function* () {
         thread.snoozed_until,
         thread.snoozed_at,
         thread.pinned_at,
+        thread.auto_settle_disabled_at,
         thread.pin_order_key,
         (SELECT json_group_array(json_object('host', pr.host, 'repository', pr.repository, 'number', pr.number, 'url', pr.url, 'source', pr.source, 'linkedAt', pr.linked_at, 'snapshot', json(pr.snapshot_json), 'stack', json(pr.stack_json))) FROM projection_thread_pull_requests pr WHERE pr.thread_id = thread.thread_id) AS pull_requests_json,
         thread.linked_pull_request_json,
@@ -567,7 +575,7 @@ const make = Effect.gen(function* () {
       FROM projection_threads AS thread
       WHERE NOT EXISTS (
         SELECT 1
-        FROM orchestration_events AS event
+        FROM orchestration_events AS event INDEXED BY orchestration_events_v2_created_threads_idx
         WHERE event.application_event_version = 2
           AND event.aggregate_kind = 'thread'
           AND event.stream_id = thread.thread_id
@@ -658,7 +666,7 @@ const make = Effect.gen(function* () {
       FROM projection_threads AS thread
       WHERE NOT EXISTS (
         SELECT 1
-        FROM orchestration_events AS event
+        FROM orchestration_events AS event INDEXED BY orchestration_events_v2_created_threads_idx
         WHERE event.application_event_version = 2
           AND event.aggregate_kind = 'thread'
           AND event.stream_id = thread.thread_id

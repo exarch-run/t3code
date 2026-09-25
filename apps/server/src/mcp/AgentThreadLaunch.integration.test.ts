@@ -144,6 +144,7 @@ it.effect("launching an ordinary chat records its creator before its first run s
       const child = yield* threads.getThreadProjection(entry.threadId!);
       assert.equal(child.thread.createdBy, "agent");
       assert.isNull(child.thread.lineage.parentThreadId);
+      for (const message of child.messages) assert.equal(message.senderThreadId, parentId);
       assert.isTrue(
         links.some(
           (row) =>

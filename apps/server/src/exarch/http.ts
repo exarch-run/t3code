@@ -10,6 +10,10 @@ import {
 import { readExarchHost } from "../mcp/ExarchHostClient.ts";
 
 /** The application owns the address and per-launch token. Never accept a target or identity from the phone. */
+const encodeHeaders = Schema.encodeEffect(
+  Schema.fromJsonString(Schema.Record(Schema.String, Schema.String)),
+);
+
 export const forwardExarchRequest = Effect.fn("exarch.forward")(function* (
   sessionId: string,
   incoming: boolean,
@@ -41,9 +45,7 @@ export const forwardExarchRequest = Effect.fn("exarch.forward")(function* (
       )
         original[name] = value;
     }
-    headers["x-exarch-incoming-headers"] = yield* Schema.encodeEffect(
-      Schema.fromJsonString(Schema.Record(Schema.String, Schema.String)),
-    )(original);
+    headers["x-exarch-incoming-headers"] = yield* encodeHeaders(original);
   }
   let upstream = HttpClientRequest.make(request.method)(target.toString(), { headers });
   if (request.method === "POST")

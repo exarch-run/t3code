@@ -81,7 +81,7 @@ function makeAgentActivityRows(
   return {
     upsert: () => Effect.void,
     remove: () => Effect.void,
-    pruneTerminal: () => Effect.void,
+    pruneExpired: Effect.void,
     listForUser: () => {
       const activeState: RelayAgentActivityState = {
         environmentId: "env-1" as RelayAgentActivityState["environmentId"],
@@ -128,6 +128,7 @@ function makeDeliveryAttempts(
     record: () => Effect.void,
     claimSourceJob: () => Effect.succeed("claimed"),
     completeSourceJob: () => Effect.void,
+    pruneExpired: Effect.void,
     ...overrides,
   };
 }

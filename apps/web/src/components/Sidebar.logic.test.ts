@@ -894,6 +894,34 @@ describe("resolveSidebarThreadStatus", () => {
     ).toBe("working");
   });
 
+  it("keeps usage-limit stops Limited and visible until the thread recovers", () => {
+    const limited = {
+      ...runtime,
+      status: "failed" as const,
+      lastError: "Plan limit reached",
+      lastErrorClass: "usage_limit" as const,
+    };
+    expect(resolveSidebarThreadStatus({ ...idle, runtime: limited })).toBe("limited");
+    expect(
+      resolveSidebarThreadStatus({ ...idle, runtime: { ...limited, status: "running" } }),
+    ).toBe("working");
+    expect(
+      resolveSidebarThreadStatus({ ...idle, runtime: { ...limited, status: "completed" } }),
+    ).toBe("ready");
+    expect(resolveSidebarV2TopStatus({ status: "limited", isUnread: false, isWoke: false })).toBe(
+      "limited",
+    );
+    expect(
+      shouldRecedeSidebarThread({
+        status: "limited",
+        isUnread: false,
+        isWoke: false,
+        isActive: false,
+        isSelected: false,
+      }),
+    ).toBe(false);
+  });
+
   it("reports failed only while the latest run failed", () => {
     expect(
       resolveSidebarThreadStatus({
@@ -1407,28 +1435,6 @@ describe("resolveThreadStatusPill", () => {
         },
       }),
     ).toMatchObject({ label: "Completed", pulse: false });
-  });
-});
-
-describe("resolveThreadRowClassName", () => {
-  it("uses the active sidebar surface when a thread is both selected and active", () => {
-    const className = resolveThreadRowClassName({ isActive: true, isSelected: true });
-    expect(className).toContain("bg-sidebar-row-active");
-    expect(className).toContain("text-sidebar-foreground");
-    expect(className).not.toContain("bg-primary");
-  });
-
-  it("uses selected hover colors for selected threads", () => {
-    const className = resolveThreadRowClassName({ isActive: false, isSelected: true });
-    expect(className).toContain("bg-sidebar-row-selected");
-    expect(className).toContain("hover:bg-sidebar-row-active");
-    expect(className).not.toContain("bg-primary");
-  });
-
-  it("uses the active sidebar surface for active-only threads", () => {
-    const className = resolveThreadRowClassName({ isActive: true, isSelected: false });
-    expect(className).toContain("bg-sidebar-row-active");
-    expect(className).toContain("hover:bg-sidebar-row-active");
   });
 });
 

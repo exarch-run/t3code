@@ -23,6 +23,7 @@ describe("KeybindingsSettings.logic", () => {
       "composer.sendAlternate",
       "composer.sendBackground",
       "thread.steerQueuedMessage",
+      "thread.editQueuedMessage",
       "composer.host",
       "composer.effort",
       "composer.mode",
@@ -255,6 +256,7 @@ describe("KeybindingsSettings.logic", () => {
         "threadPanel.toggle",
         "rightPanel.toggleMaximized",
         "thread.stop",
+        "usage.open",
         "script.setup-db.run",
       ]),
     );

@@ -102,7 +102,7 @@ const dependencies = (input: {
   return Layer.mergeAll(
     NodeServices.layer,
     Layer.mock(ThreadManagementService)({
-      getThreadProjection: () => Effect.succeed(parentProjection),
+      getThreadRecords: () => Effect.succeed(parentProjection),
     }),
     Layer.mock(ProviderRegistry)({ getProviders: Effect.succeed(input.providers) }),
     Layer.succeed(

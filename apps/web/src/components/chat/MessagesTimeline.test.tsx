@@ -1451,7 +1451,7 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain('aria-label="Copy link"');
+    expect(markup).toContain('aria-label="Copy message"');
     expect(markup).toContain('data-user-message-collapsed="true"');
     expect(markup).toContain('data-user-message-footer="true"');
   });
@@ -1808,48 +1808,54 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain('aria-label="Hidden work includes a failure"');
   });
 
-  it.each([
-    {
-      status: "running",
-      progress: "Reading src/index.ts",
-      result: null,
-      preview: "Reading src/index.ts",
-    },
-    {
-      status: "completed",
-      progress: "Reading src/index.ts",
-      result: "Tests should be isolated.",
-      preview: "Tests should be isolated.",
-    },
-    {
-      status: "running",
-      progress: "Reading src/index.ts",
-      result: "Partial streamed answer",
-      preview: "Reading src/index.ts",
-    },
-    {
-      status: "running",
-      progress: undefined,
-      result: "Streaming answer so far",
-      preview: "Streaming answer so far",
-    },
-    {
-      status: "cancelled",
-      progress: "Reading src/index.ts",
-      result: "Partial output before cancel",
-      preview: "Partial output before cancel",
-    },
-    {
-      status: "completed",
-      progress: "Audited 12 packages",
-      result: "  \n\t  ",
-      preview: "Audited 12 packages",
-    },
-  ] as const)(
-    "folds a $status subagent and shows '$preview' when expanded",
-    async ({ status, progress, result, preview }) => {
+  it.each(
+    (
+      [
+        {
+          status: "running",
+          progress: "Reading src/index.ts",
+          result: null,
+          preview: "Reading src/index.ts",
+        },
+        {
+          status: "completed",
+          progress: "Reading src/index.ts",
+          result: "Tests should be isolated.",
+          preview: "Tests should be isolated.",
+        },
+        {
+          status: "running",
+          progress: "Reading src/index.ts",
+          result: "Partial streamed answer",
+          preview: "Reading src/index.ts",
+        },
+        {
+          status: "running",
+          progress: undefined,
+          result: "Streaming answer so far",
+          preview: "Streaming answer so far",
+        },
+        {
+          status: "cancelled",
+          progress: "Reading src/index.ts",
+          result: "Partial output before cancel",
+          preview: "Partial output before cancel",
+        },
+        {
+          status: "completed",
+          progress: "Audited 12 packages",
+          result: "  \n\t  ",
+          preview: "Audited 12 packages",
+        },
+      ] as const
+    ).flatMap((scenario) => [1, 2].map((count) => ({ ...scenario, count }))),
+  )(
+    "shows $count $status subagents with '$preview', grouping only multiple agents",
+    async ({ status, progress, result, preview, count }) => {
       activityTestState.expandedRuns = true;
       activityTestState.subagentTooltips = true;
+      vi.stubGlobal("HTMLElement", ElementStub);
+      window.HTMLElement = ElementStub as typeof HTMLElement;
       vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
       vi.stubGlobal("requestAnimationFrame", () => 0);
       vi.stubGlobal("cancelAnimationFrame", () => {});
@@ -1861,48 +1867,46 @@ describe("MessagesTimeline", () => {
             <MessagesTimeline
               {...buildProps()}
               onOpenThread={onOpenThread}
-              timelineEntries={[
-                {
-                  id: "subagent-progress",
-                  kind: "event",
-                  createdAt: MESSAGE_CREATED_AT,
-                  projectedItem: {
-                    position: 0,
-                    visibility: "local",
-                    sourceThreadId: "thread-1",
-                    sourceItemId: "subagent-progress",
-                    item: {
-                      id: "subagent-progress",
-                      threadId: "thread-1",
-                      runId: "run-1",
-                      nodeId: "node-subagent-1",
-                      providerThreadId: "provider-thread-1",
-                      providerTurnId: "provider-turn-1",
-                      nativeItemRef: null,
-                      parentItemId: null,
-                      ordinal: 1,
-                      status,
-                      title: "Package audit",
-                      startedAt: null,
-                      completedAt: null,
-                      updatedAt: {},
-                      type: "subagent",
-                      subagentId: "node-subagent-1",
-                      origin: "provider_native",
-                      driver: "claudeAgent",
-                      providerInstanceId: "claudeAgent",
-                      childThreadId: "thread-subagent-1",
-                      prompt: "Inspect the package",
-                      progress,
-                      result,
-                    },
-                  } as never,
-                },
-              ]}
+              timelineEntries={Array.from({ length: count }, (_, index) => ({
+                id: `subagent-progress-${index}`,
+                kind: "event",
+                createdAt: MESSAGE_CREATED_AT,
+                projectedItem: {
+                  position: 0,
+                  visibility: "local",
+                  sourceThreadId: "thread-1",
+                  sourceItemId: "subagent-progress",
+                  item: {
+                    id: `subagent-progress-${index}`,
+                    threadId: "thread-1",
+                    runId: "run-1",
+                    nodeId: `node-subagent-${index}`,
+                    providerThreadId: "provider-thread-1",
+                    providerTurnId: "provider-turn-1",
+                    nativeItemRef: null,
+                    parentItemId: null,
+                    ordinal: 1,
+                    status,
+                    title: "Package audit",
+                    startedAt: null,
+                    completedAt: null,
+                    updatedAt: {},
+                    type: "subagent",
+                    subagentId: `node-subagent-${index}`,
+                    origin: "provider_native",
+                    driver: "claudeAgent",
+                    providerInstanceId: "claudeAgent",
+                    childThreadId: "thread-subagent-1",
+                    prompt: "Inspect the package",
+                    progress,
+                    result,
+                  },
+                } as never,
+              }))}
             />,
           );
         });
-        const groupLabel = status === "running" ? "Kicked off 1 subagent" : "Ran 1 subagent";
+        const groupLabel = `${count} subagents`;
         const group = () =>
           renderer!.root.findAll(
             (node) => node.type === "button" && node.props["aria-label"] === groupLabel,
@@ -1911,20 +1915,30 @@ describe("MessagesTimeline", () => {
           renderer!.root.findAll(
             (node) => node.type === "button" && node.props["aria-label"] === "Open Package audit",
           );
-        expect(child()).toHaveLength(0);
-        await act(() => group().props.onClick());
-        expect(child()).toHaveLength(1);
-        const content = JSON.stringify(renderer!.toJSON());
+        if (count > 1) {
+          expect(child()).toHaveLength(0);
+          await act(() => group().props.onClick({ nativeEvent: new Event("click") }));
+        } else {
+          expect(group()).toBeUndefined();
+        }
+        expect(child()).toHaveLength(count);
+        const content = renderer!.root
+          .findAll((node) => typeof node.type === "string")
+          .flatMap((node) => node.children.filter((child) => typeof child === "string"))
+          .join("");
         expect(content).toContain(preview);
         expect(content).not.toContain("Inspect the package");
         if (result?.trim() && result !== preview) expect(content).not.toContain(result);
         if (progress && progress !== preview) expect(content).not.toContain(progress);
         await act(() => child()[0]!.props.onClick());
         expect(onOpenThread).toHaveBeenCalledWith("thread-subagent-1");
-        await act(() => group().props.onClick());
-        expect(child()).toHaveLength(0);
+        if (count > 1) {
+          await act(() => group().props.onClick({ nativeEvent: new Event("click") }));
+          expect(child()).toHaveLength(0);
+        }
       } finally {
         await act(() => renderer?.unmount());
+        vi.stubGlobal("HTMLElement", undefined);
       }
     },
   );

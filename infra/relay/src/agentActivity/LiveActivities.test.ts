@@ -7,6 +7,7 @@ import type { SQL } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as RelayDb from "../db.ts";
 import { relayLiveActivities } from "../persistence/schema.ts";
@@ -276,7 +277,7 @@ describe("LiveActivities", () => {
         liveActivities.register({ userId: "user-1", registration }),
       );
       const targetListError = yield* Effect.flip(liveActivities.listTargets({ userId: "user-1" }));
-      const deliveryErrors = yield* Effect.all(
+      const deliveryErrors = yield* Effect.forEach(
         [
           liveActivities.markDelivery({
             userId: "user-1",
@@ -297,7 +298,8 @@ describe("LiveActivities", () => {
             kind: "push_notification",
             invalidatedAt: "2026-05-25T00:00:10.000Z",
           }),
-        ].map(Effect.flip),
+        ],
+        (effect) => Effect.flip(effect),
         { concurrency: 1 },
       );
 
@@ -337,3 +339,36 @@ describe("LiveActivities", () => {
     );
   });
 });
+
+it.effect(
+  "expires cached titles without deleting device credentials or extending their lifetime",
+  () => {
+    let condition: SQL | undefined;
+    const db = {
+      update: (table: unknown) => {
+        expect(table).toBe(relayLiveActivities);
+        return {
+          set: (values: unknown) => {
+            expect(values).toEqual({ lastAggregateJson: null });
+            return {
+              where: (where: SQL) => {
+                condition = where;
+                return Effect.void;
+              },
+            };
+          },
+        };
+      },
+    } as unknown as RelayDb.RelayDb["Service"];
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse("2026-09-25T12:00:00.000Z"));
+      yield* LiveActivities.pruneExpiredContent;
+      const query = new PgDialect().sqlToQuery(condition!);
+      expect(query.params).toEqual(["2026-09-24T12:00:00.000Z"]);
+      expect(query.sql).toContain('"last_aggregate_json" is not null');
+      expect(query.sql).toContain(
+        'coalesce("relay_live_activities"."last_live_activity_delivery_at", "relay_live_activities"."updated_at")',
+      );
+    }).pipe(Effect.provideService(RelayDb.RelayDb, db));
+  },
+);

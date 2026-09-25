@@ -273,6 +273,18 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["combine matching repositories environments sidebar"],
   },
   {
+    id: "snooze-limited-threads",
+    title: "Snooze limited threads",
+    to: "/settings/general",
+    searchTerms: ["usage quota rate limit reset wake recover continue"],
+  },
+  {
+    id: "auto-resume-limited-threads",
+    title: "Auto-resume limited threads",
+    to: "/settings/general",
+    searchTerms: ["usage quota rate limit reset recover continue"],
+  },
+  {
     id: "auto-settle-inactive-threads",
     title: "Auto-settle inactive threads",
     to: "/settings/general",
@@ -407,6 +419,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/general",
     scope: "project-defaults",
     searchTerms: ["default workspace mode draft local worktree"],
+  },
+  {
+    id: "worktree-submodules",
+    title: "Submodules",
+    to: "/settings/general",
+    scope: "project-defaults",
+    searchTerms: ["git submodule init recursive top-level none worktree t3.json"],
   },
   {
     id: "start-from-origin",
@@ -623,6 +642,18 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/integrations",
   },
   {
+    id: "browser-recording-key-presses",
+    title: "Show key presses in recordings",
+    to: "/settings/integrations",
+    searchTerms: ["browser preview keyboard shortcuts keystrokes overlay capture"],
+  },
+  {
+    id: "browser-recording-mouse-presses",
+    title: "Show mouse presses in recordings",
+    to: "/settings/integrations",
+    searchTerms: ["browser preview clicks buttons drag overlay capture"],
+  },
+  {
     id: "browser-link-target",
     title: "Open links in",
     to: "/settings/integrations",
@@ -666,6 +697,14 @@ export const SETTINGS_SEARCH_ITEMS = [
     ],
     environmentOnly: true,
     scope: "environment-defaults",
+  },
+  {
+    id: "worktree-branch-naming",
+    title: "Worktree branch naming",
+    to: "/settings/source-control",
+    searchTerms: ["static semantic prefix custom prompt instructions feat fix refactor chore"],
+    environmentOnly: true,
+    scope: "project-defaults",
   },
   {
     id: "source-control-writing-style",

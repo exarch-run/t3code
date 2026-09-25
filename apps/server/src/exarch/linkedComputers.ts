@@ -37,6 +37,8 @@ type Session = {
 const sessions = new Map<string, Session>();
 const encode = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
+const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
+
 /** Uses the existing account, relay discovery, DPoP exchange, and remote Exarch route. No credential leaves this process. */
 export const linkedComputers = Effect.fn("exarch.linkedComputers")(function* (
   input: typeof linkedComputerRequest.Type,
@@ -71,7 +73,7 @@ export const linkedComputers = Effect.fn("exarch.linkedComputers")(function* (
       return yield* new LinkedComputerError({ status: response.status });
     const text = yield* response.text;
     if (Buffer.byteLength(text) > 24 * 1024 * 1024) return yield* new LinkedComputerError({});
-    return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(text);
+    return yield* decodeJson(text);
   });
   const now = yield* Clock.currentTimeMillis;
   const sessionKey =
@@ -91,10 +93,7 @@ export const linkedComputers = Effect.fn("exarch.linkedComputers")(function* (
     ).pipe(
       Effect.tapError((error) =>
         Effect.sync(() => {
-          if (
-            Schema.is(LinkedComputerError)(error) &&
-            (error.status === 401 || error.status === 403)
-          )
+          if (isLinkedComputerError(error) && (error.status === 401 || error.status === 403))
             sessions.delete(sessionKey);
         }),
       ),
@@ -230,3 +229,5 @@ function makeProof(
   }).toString("base64url");
   return `${header}.${payload}.${signature}`;
 }
+
+const isLinkedComputerError = Schema.is(LinkedComputerError);

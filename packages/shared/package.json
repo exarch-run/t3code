@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./orchestrationV2ThreadError": {
+      "types": "./src/orchestrationV2ThreadError.ts",
+      "import": "./src/orchestrationV2ThreadError.ts"
+    },
     "./legacyCliLauncher": {
       "types": "./src/legacyCliLauncher.ts",
       "import": "./src/legacyCliLauncher.ts"
@@ -58,6 +62,10 @@
     "./observability": {
       "types": "./src/observability.ts",
       "import": "./src/observability.ts"
+    },
+    "./otelEnvironment": {
+      "types": "./src/otelEnvironment.ts",
+      "import": "./src/otelEnvironment.ts"
     },
     "./httpObservability": {
       "types": "./src/httpObservability.ts",
@@ -130,10 +138,6 @@
     "./projectSettings": {
       "types": "./src/projectSettings.ts",
       "import": "./src/projectSettings.ts"
-    },
-    "./threadEnvMode": {
-      "types": "./src/threadEnvMode.ts",
-      "import": "./src/threadEnvMode.ts"
     },
     "./t3ProjectFile": {
       "types": "./src/t3ProjectFile.ts",

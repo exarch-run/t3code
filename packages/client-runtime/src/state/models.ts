@@ -5,6 +5,7 @@ import type {
   MessageId,
   OrchestrationProjectShell,
   OrchestrationV2RunStatus,
+  OrchestrationV2ProviderFailureClass,
   OrchestrationV2ThreadProjection,
   OrchestrationV2ThreadShell,
   PlanId,
@@ -53,6 +54,8 @@ export interface ThreadRuntimeSummary {
   readonly providerInstanceId: ProviderInstanceId;
   readonly providerName: string | null;
   readonly lastError: string | null;
+  readonly lastErrorClass?: OrchestrationV2ProviderFailureClass | null;
+  readonly usageLimitResetAt?: string | null;
   readonly updatedAt: string;
 }
 
@@ -116,7 +119,9 @@ export interface EnvironmentThreadShell {
   readonly unsettledAt: string | null;
   readonly snoozedUntil: string | null;
   readonly snoozedAt: string | null;
+  readonly limitRecovery?: import("@t3tools/contracts").OrchestrationV2LimitRecovery | null;
   readonly pinnedAt: string | null;
+  readonly autoSettleDisabledAt?: string | null;
   /** Slot in the user-arranged pinned order; null for keyless (legacy) pins. */
   readonly pinOrderKey: string | null;
   /** Slot in the user-arranged active order; null for keyless active threads. */
@@ -173,6 +178,8 @@ function shellRuntime(thread: OrchestrationV2ThreadShell): ThreadRuntimeSummary 
     providerInstanceId: thread.providerInstanceId,
     providerName: null,
     lastError: thread.lastError ?? null,
+    lastErrorClass: thread.lastErrorClass ?? null,
+    usageLimitResetAt: thread.usageLimitResetAt ?? null,
     updatedAt: iso(thread.updatedAt),
   };
 }
@@ -246,7 +253,9 @@ export function presentThreadShell(
     unsettledAt: nullableIso(thread.unsettledAt ?? null),
     snoozedUntil: nullableIso(thread.snoozedUntil ?? null),
     snoozedAt: nullableIso(thread.snoozedAt ?? null),
+    limitRecovery: thread.limitRecovery ?? null,
     pinnedAt: nullableIso(thread.pinnedAt ?? null),
+    autoSettleDisabledAt: nullableIso(thread.autoSettleDisabledAt ?? null),
     pinOrderKey: thread.pinOrderKey ?? null,
     activeOrderKey: thread.activeOrderKey ?? null,
     ...(thread.lastVisitedAt === undefined

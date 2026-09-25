@@ -378,6 +378,50 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
     ),
   );
 
+  for (const example of [
+    {
+      mode: "static",
+      output: "Add Search",
+      expected: "team/add-search",
+      instruction: "without a prefix or namespace",
+    },
+    {
+      mode: "semantic",
+      output: "feat/add-search",
+      expected: "feat/add-search",
+      instruction: "semantic prefix",
+    },
+    {
+      mode: "custom",
+      output: "Julius/ABC-123.v2",
+      expected: "Julius/ABC-123.v2",
+      instruction: "Preserve the issue ID and capitalization.",
+    },
+  ] as const) {
+    it.effect(`generates a branch using ${example.mode} naming`, () =>
+      withFakeCodexEnv(
+        {
+          output: JSON.stringify({ branch: example.output }),
+          stdinMustContain: example.instruction,
+        },
+        (textGeneration) =>
+          Effect.gen(function* () {
+            const generated = yield* textGeneration.generateBranchName({
+              cwd: process.cwd(),
+              message: "Add search",
+              modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+              naming: {
+                mode: example.mode,
+                prefix: "team/",
+                instructions: "Preserve the issue ID and capitalization.",
+              },
+            });
+            expect(generated.branch).toBe(example.expected);
+          }),
+      ),
+    );
+  }
+
   it.effect("generates branch names even when the ambient scope is already closed", () =>
     withFakeCodexEnv(
       {
@@ -586,7 +630,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
                   }),
                 ),
               ),
-              Effect.ensuring(fs.remove(imagePath).pipe(Effect.catch(() => Effect.void))),
+              Effect.ensuring(fs.remove(imagePath).pipe(Effect.ignore)),
             );
 
           expect(generated.branch).toBe("fix/ui-regression");
@@ -609,7 +653,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
           const { attachmentsDir } = yield* ServerConfig.ServerConfig;
           const missingAttachmentId = "thread-missing-attachment";
           const missingPath = path.join(attachmentsDir, `${missingAttachmentId}.png`);
-          yield* fs.remove(missingPath).pipe(Effect.catch(() => Effect.void));
+          yield* fs.remove(missingPath).pipe(Effect.ignore);
 
           const result = yield* textGeneration
             .generateBranchName({

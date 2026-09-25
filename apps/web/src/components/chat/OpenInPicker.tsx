@@ -1,3 +1,4 @@
+import { ThreadDetailsControl } from "./ThreadDetailsControl";
 import {
   buildRemoteOpenUrl,
   EditorId,
@@ -15,10 +16,20 @@ import {
   useRemoteOpenState,
 } from "../../remoteOpen";
 import { useEnvironment } from "../../state/environments";
-import { ChevronDownIcon, FolderClosedIcon } from "lucide-react";
-import { Button } from "../ui/button";
+import { ChevronDownIcon, FolderClosedIcon, SquareArrowOutUpRightIcon } from "lucide-react";
+
 import { Group, GroupSeparator } from "../ui/group";
-import { Menu, MenuItem, MenuPopup, MenuShortcut, MenuTrigger } from "../ui/menu";
+import {
+  Menu,
+  MenuItem,
+  MenuItemLabel,
+  MenuPopup,
+  MenuShortcut,
+  MenuSub,
+  MenuSubTrigger,
+  MenuSubPopup,
+  MenuTrigger,
+} from "../ui/menu";
 import {
   AntigravityIcon,
   CursorIcon,
@@ -52,10 +63,7 @@ import { useAtomCommand } from "~/state/use-atom-command";
 import {
   THREAD_DETAILS_PANEL_CHEVRON_CLASS,
   THREAD_DETAILS_PANEL_ICON_CLASS,
-  THREAD_DETAILS_PANEL_ROW_POPUP_CLASS,
   THREAD_DETAILS_PANEL_SPLIT_GROUP_CLASS,
-  THREAD_DETAILS_PANEL_SPLIT_PRIMARY_CLASS,
-  THREAD_DETAILS_PANEL_SPLIT_SECONDARY_CLASS,
   THREAD_DETAILS_PANEL_SPLIT_SEPARATOR_CLASS,
 } from "./threadDetailsPanelStyles";
 
@@ -196,6 +204,7 @@ export const OpenInPicker = memo(function OpenInPicker({
   keybindings,
   availableEditors,
   openInCwd,
+  presentation = "toolbar",
   compact = false,
   enableShortcut = true,
   displayMode = "toolbar",
@@ -204,6 +213,7 @@ export const OpenInPicker = memo(function OpenInPicker({
   keybindings: ResolvedKeybindingsConfig;
   availableEditors: ReadonlyArray<EditorId>;
   openInCwd: string | null;
+  presentation?: "toolbar" | "menu";
   compact?: boolean;
   enableShortcut?: boolean;
   displayMode?: "toolbar" | "panel";
@@ -289,6 +299,69 @@ export const OpenInPicker = memo(function OpenInPicker({
   }, [enableShortcut, keybindings, openInCwd, openInEditor, preferredEditor]);
   const primaryLabel = isPanel ? `Open in ${primaryOption?.label ?? "editor"}` : "Open";
 
+  const editorItems = (
+    <>
+      {remote.mode === "remote-unavailable" ? (
+        <MenuItem density={presentation === "menu" ? "touch" : "default"} disabled>
+          No SSH route to {environmentLabel}
+        </MenuItem>
+      ) : (
+        <>
+          {options.length === 0 && (
+            <MenuItem density={presentation === "menu" ? "touch" : "default"} disabled>
+              No installed editors found
+            </MenuItem>
+          )}
+          {options.map(({ label, Icon, value, kind }) => (
+            <MenuItem
+              density={presentation === "menu" ? "touch" : "default"}
+              key={value}
+              onClick={() => openInEditor(value)}
+            >
+              <Icon aria-hidden="true" className={getOpenInIconClass(kind)} />
+              <MenuItemLabel>{label}</MenuItemLabel>
+              {value === preferredEditor && openFavoriteEditorShortcutLabel && (
+                <MenuShortcut>{openFavoriteEditorShortcutLabel}</MenuShortcut>
+              )}
+            </MenuItem>
+          ))}
+          {remote.mode === "remote-links" && !remoteHintSeen && (
+            <MenuItem density={presentation === "menu" ? "touch" : "default"} disabled>
+              Opens over SSH. Needs your key on {environmentLabel}
+            </MenuItem>
+          )}
+        </>
+      )}
+    </>
+  );
+  if (presentation === "menu") {
+    return (
+      <>
+        {primaryOption && (
+          <MenuItem
+            density={presentation === "menu" ? "touch" : "default"}
+
+            disabled={!openInCwd || remote.mode === "remote-unavailable"}
+            onClick={() => openInEditor(preferredEditor)}
+          >
+            <primaryOption.Icon className={cn("size-4", getOpenInIconClass(primaryOption.kind))} />
+            <MenuItemLabel>Open in {primaryOption.label}</MenuItemLabel>
+            {openFavoriteEditorShortcutLabel && (
+              <MenuShortcut>{openFavoriteEditorShortcutLabel}</MenuShortcut>
+            )}
+          </MenuItem>
+        )}
+        <MenuSub>
+          <MenuSubTrigger density="touch">
+            <SquareArrowOutUpRightIcon className="size-4" />
+            <MenuItemLabel>Open in…</MenuItemLabel>
+          </MenuSubTrigger>
+          <MenuSubPopup>{editorItems}</MenuSubPopup>
+        </MenuSub>
+      </>
+    );
+  }
+
   return (
     <ActionGroup
       aria-label="Open in editor"
@@ -297,15 +370,16 @@ export const OpenInPicker = memo(function OpenInPicker({
         ? { className: THREAD_DETAILS_PANEL_SPLIT_GROUP_CLASS, ref: panelAnchorRef }
         : {})}
     >
-      <Button
+      <ThreadDetailsControl
         aria-label={compact ? "Open file in preferred editor" : primaryLabel}
         size={isPanel ? "sm" : "xs"}
         variant={isPanel ? "ghost" : "outline"}
-        className={isPanel ? THREAD_DETAILS_PANEL_SPLIT_PRIMARY_CLASS : "ps-[8.5px]"}
+        part="primary"
+        panel={isPanel}
         disabled={!preferredEditor || !openInCwd || remote.mode === "remote-unavailable"}
         onClick={() => openInEditor(preferredEditor)}
       >
-        {primaryOption?.Icon && (
+        {primaryOption?.Icon ? (
           <primaryOption.Icon
             aria-hidden="true"
             className={cn(
@@ -313,18 +387,23 @@ export const OpenInPicker = memo(function OpenInPicker({
               getOpenInIconClass(primaryOption.kind),
             )}
           />
-        )}
+        ) : isPanel ? (
+          <SquareArrowOutUpRightIcon
+            aria-hidden="true"
+            className={THREAD_DETAILS_PANEL_ICON_CLASS}
+          />
+        ) : null}
         <span
           className={cn(
             compact
               ? "sr-only"
               : "sr-only @3xl/header-actions:not-sr-only @3xl/header-actions:ml-0.5",
-            isPanel && "not-sr-only ml-0.5 min-w-0 truncate",
+            isPanel && "not-sr-only ml-0 min-w-0 truncate",
           )}
         >
           {primaryLabel}
         </span>
-      </Button>
+      </ThreadDetailsControl>
       {isPanel ? (
         <span aria-hidden="true" className={THREAD_DETAILS_PANEL_SPLIT_SEPARATOR_CLASS} />
       ) : (
@@ -333,11 +412,12 @@ export const OpenInPicker = memo(function OpenInPicker({
       <Menu>
         <MenuTrigger
           render={
-            <Button
+            <ThreadDetailsControl
               aria-label="Choose editor"
               size={isPanel ? "sm" : "icon-xs"}
               variant={isPanel ? "ghost" : "outline"}
-              className={isPanel ? THREAD_DETAILS_PANEL_SPLIT_SECONDARY_CLASS : undefined}
+              part="secondary"
+              panel={isPanel}
             />
           }
         >
@@ -349,27 +429,9 @@ export const OpenInPicker = memo(function OpenInPicker({
         <MenuPopup
           align="end"
           {...(isPanel ? { anchor: panelAnchorRef } : {})}
-          className={isPanel ? THREAD_DETAILS_PANEL_ROW_POPUP_CLASS : undefined}
+          className={isPanel ? "w-(--anchor-width)" : undefined}
         >
-          {remote.mode === "remote-unavailable" ? (
-            <MenuItem disabled>No SSH route to {environmentLabel}</MenuItem>
-          ) : (
-            <>
-              {options.length === 0 && <MenuItem disabled>No installed editors found</MenuItem>}
-              {options.map(({ label, Icon, value, kind }) => (
-                <MenuItem key={value} onClick={() => openInEditor(value)}>
-                  <Icon aria-hidden="true" className={getOpenInIconClass(kind)} />
-                  {label}
-                  {value === preferredEditor && openFavoriteEditorShortcutLabel && (
-                    <MenuShortcut>{openFavoriteEditorShortcutLabel}</MenuShortcut>
-                  )}
-                </MenuItem>
-              ))}
-              {remote.mode === "remote-links" && !remoteHintSeen && (
-                <MenuItem disabled>Opens over SSH. Needs your key on {environmentLabel}</MenuItem>
-              )}
-            </>
-          )}
+          {editorItems}
         </MenuPopup>
       </Menu>
     </ActionGroup>

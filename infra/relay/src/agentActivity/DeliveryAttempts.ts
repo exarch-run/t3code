@@ -3,7 +3,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, lt } from "drizzle-orm";
 import * as Crypto from "effect/Crypto";
 import * as Schema from "effect/Schema";
 
@@ -13,7 +13,7 @@ import { relayDeliveryAttempts } from "../persistence/schema.ts";
 export class DeliveryAttemptRecordPersistenceError extends Schema.TaggedError<DeliveryAttemptRecordPersistenceError>()(
   "DeliveryAttemptRecordPersistenceError",
   {
-    operation: Schema.Literals(["record", "claim-source-job", "complete-source-job"]),
+    operation: Schema.Literals(["record", "claim-source-job", "complete-source-job", "prune"]),
     sourceJobId: Schema.NullOr(Schema.String),
     userId: Schema.NullOr(Schema.String),
     environmentId: Schema.NullOr(Schema.String),
@@ -64,8 +64,14 @@ export class DeliveryAttempts extends Context.Service<
     readonly completeSourceJob: (
       input: DeliveryAttemptCompletionInput,
     ) => Effect.Effect<void, DeliveryAttemptRecordPersistenceError>;
+    /** Deletes attempts created more than the retention period before now. */
+    readonly pruneExpired: Effect.Effect<void, DeliveryAttemptRecordPersistenceError>;
   }
 >()("t3code-relay/agentActivity/DeliveryAttempts") {}
+
+// Signed APNs jobs expire after ten minutes and FCM jobs after five. One hour
+// preserves retry/deduplication state without keeping a history of user activity.
+export const DELIVERY_ATTEMPT_RETENTION_HOURS = 1;
 
 const SOURCE_JOB_CLAIM_LEASE_MINUTES = 10;
 
@@ -77,17 +83,17 @@ function insertValues(
   return {
     id,
     createdAt,
-    userId: input.userId,
-    environmentId: input.environmentId,
-    threadId: input.threadId,
-    deviceId: input.deviceId,
+    userId: null,
+    environmentId: null,
+    threadId: null,
+    deviceId: null,
     kind: input.kind,
     sourceJobId: input.sourceJobId ?? null,
-    tokenSuffix: input.token?.slice(-8) ?? null,
+    tokenSuffix: null,
     apnsStatus: input.apnsStatus ?? null,
-    apnsReason: input.apnsReason ?? null,
-    apnsId: input.apnsId ?? null,
-    transportError: input.transportError ?? null,
+    apnsReason: input.apnsReason ? "rejected" : null,
+    apnsId: null,
+    transportError: input.transportError ? "delivery_failed" : null,
   };
 }
 
@@ -107,7 +113,34 @@ export const make = Effect.gen(function* () {
     });
   };
 
+  const pruneExpired: DeliveryAttempts["Service"]["pruneExpired"] = Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    const before = DateTime.formatIso(
+      DateTime.subtract(now, { hours: DELIVERY_ATTEMPT_RETENTION_HOURS }),
+    );
+    yield* Effect.annotateCurrentSpan({ "relay.delivery_attempts.prune_before": before });
+    yield* db
+      .delete(relayDeliveryAttempts)
+      .where(lt(relayDeliveryAttempts.createdAt, before))
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new DeliveryAttemptRecordPersistenceError({
+              operation: "prune",
+              sourceJobId: null,
+              userId: null,
+              environmentId: null,
+              threadId: null,
+              deviceId: null,
+              kind: null,
+              cause,
+            }),
+        ),
+      );
+  }).pipe(Effect.withSpan("relay.delivery_attempts.prune_expired"));
+
   return DeliveryAttempts.of({
+    pruneExpired,
     record: Effect.fn("relay.delivery_attempts.record")(function* (input) {
       yield* Effect.annotateCurrentSpan({
         "relay.delivery.kind": input.kind,
@@ -225,9 +258,9 @@ export const make = Effect.gen(function* () {
         .set({
           createdAt: completedAt,
           apnsStatus: input.apnsStatus ?? null,
-          apnsReason: input.apnsReason ?? null,
-          apnsId: input.apnsId ?? null,
-          transportError: input.transportError ?? null,
+          apnsReason: input.apnsReason ? "rejected" : null,
+          apnsId: null,
+          transportError: input.transportError ? "delivery_failed" : null,
         })
         .where(eq(relayDeliveryAttempts.sourceJobId, input.sourceJobId))
         .pipe(

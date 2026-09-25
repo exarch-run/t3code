@@ -1,3 +1,4 @@
+import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import { SourceControlProviderRegistry } from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -11,7 +12,7 @@ import {
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as CodexResetCredit from "../provider/Layers/codexResetCredit.ts";
+import * as ResetCreditCoordinator from "../provider/Layers/resetCreditCoordinator.ts";
 import { FetchHttpClient } from "effect/unstable/http";
 import { describe } from "vite-plus/test";
 
@@ -69,6 +70,10 @@ const providerInstanceRegistryLayer = ProviderInstanceRegistryHydrationLive.pipe
     Layer.mergeAll(
       serverConfigLayer.pipe(Layer.provide(PlatformTestLayer)),
       serverSettingsLayer,
+      ServerSecretStore.layer.pipe(
+        Layer.provide(serverConfigLayer),
+        Layer.provide(PlatformTestLayer),
+      ),
       NodeServices.layer,
       FetchHttpClient.layer,
       OpenCodeRuntimeLive.pipe(Layer.provide(PlatformTestLayer)),
@@ -91,7 +96,7 @@ const liveLayer = OrchestrationV2LayerLive.pipe(
   Layer.provide(serverConfigLayer),
   Layer.provide(serverSettingsLayer),
   Layer.provide(providerInstanceRegistryLayer),
-  Layer.provide(CodexResetCredit.layer),
+  Layer.provide(ResetCreditCoordinator.layer),
   Layer.provide(backgroundPolicyLayer),
   Layer.provide(PlatformTestLayer),
 );

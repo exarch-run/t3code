@@ -162,6 +162,7 @@ for (const [name, testLayer] of [
           ["settled", { settledOverride: "settled" }],
           ["unsettled", { settledOverride: "active" }],
           ["pinned", { pinnedAt: old }],
+          ["auto-settle-disabled", { autoSettleDisabledAt: old }],
         ] satisfies ReadonlyArray<readonly [string, Partial<OrchestrationV2AppThread>]>) {
           yield* createRun(yield* createThread(name, overrides));
         }
@@ -261,7 +262,7 @@ for (const [name, testLayer] of [
         );
         assert.deepEqual(
           new Set(eligible.map((thread) => thread.id)),
-          new Set([idle, completed, queued, woke, persistent, rolledBack]),
+          new Set([idle, completed, queued, woke, background, persistent, rolledBack]),
         );
         assert.deepEqual(
           new Set(eligible.map((thread) => thread.id)),

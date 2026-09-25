@@ -49,7 +49,7 @@ const recordedCli0120ThreadStart = {
   },
   reasoningEffort: "xhigh",
 };
-const call = (tool: string, args: unknown = {}) => ({
+const call = (tool: string, args: Parameters<typeof handleCodexCardCall>[2]["arguments"] = {}) => ({
   tool,
   threadId: "root-thread",
   turnId: "turn-1",

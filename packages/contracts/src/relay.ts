@@ -43,11 +43,19 @@ export type RelayAgentAwarenessPreferences = typeof RelayAgentAwarenessPreferenc
 export const RelayApnsEnvironment = Schema.Literals(["sandbox", "production"]);
 export type RelayApnsEnvironment = typeof RelayApnsEnvironment.Type;
 
+// Ordinary APNs alerts work on every iOS a supported app runs on. Live
+// Activities (push-to-start tokens and activity updates) keep the iOS 18 floor
+// the relay has always required for them.
+export const RelayIosMinimumMajorVersion = 16;
+export const RelayIosLiveActivityMinimumMajorVersion = 18;
+
 export const RelayDeviceRegistrationRequest = Schema.Struct({
   deviceId: TrimmedNonEmptyString,
   label: TrimmedNonEmptyString,
   platform: RelayAgentAwarenessPlatform,
-  iosMajorVersion: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(18))),
+  iosMajorVersion: Schema.optional(
+    Schema.Int.check(Schema.isGreaterThanOrEqualTo(RelayIosMinimumMajorVersion)),
+  ),
   androidApiLevel: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(24))),
   appVersion: Schema.optional(TrimmedNonEmptyString),
   // APNs routing for this install: the topic must match the app's bundle id
@@ -62,7 +70,9 @@ export const RelayDeviceRegistrationRequest = Schema.Struct({
 }).check(
   Schema.makeFilter((device) =>
     device.platform === "ios"
-      ? device.iosMajorVersion !== undefined
+      ? device.iosMajorVersion !== undefined &&
+        (device.iosMajorVersion >= RelayIosLiveActivityMinimumMajorVersion ||
+          (device.pushToStartToken === undefined && !device.preferences.liveActivitiesEnabled))
       : device.androidApiLevel !== undefined &&
         device.iosMajorVersion === undefined &&
         device.apsEnvironment === undefined &&
@@ -186,6 +196,34 @@ export const RelayManagedEndpointRuntimeConfig = Schema.Struct({
 });
 export type RelayManagedEndpointRuntimeConfig = typeof RelayManagedEndpointRuntimeConfig.Type;
 
+export const RelayManagedEndpointRecoveryRequest = Schema.Struct({
+  cloudUserId: TrimmedNonEmptyString,
+  origin: RelayManagedEndpointOrigin,
+  proof: TrimmedNonEmptyString,
+});
+export type RelayManagedEndpointRecoveryRequest = typeof RelayManagedEndpointRecoveryRequest.Type;
+
+export const RelayManagedEndpointRecoveryRegistrationRequest = Schema.Struct({
+  cloudUserId: TrimmedNonEmptyString,
+  tunnelId: TrimmedNonEmptyString,
+  origin: RelayManagedEndpointOrigin,
+  proof: TrimmedNonEmptyString,
+});
+export type RelayManagedEndpointRecoveryRegistrationRequest =
+  typeof RelayManagedEndpointRecoveryRegistrationRequest.Type;
+
+export const RelayManagedEndpointRecoveryRegistrationResponse = Schema.Struct({
+  status: Schema.Literals(["ready", "recovery_required"]),
+});
+export type RelayManagedEndpointRecoveryRegistrationResponse =
+  typeof RelayManagedEndpointRecoveryRegistrationResponse.Type;
+
+export const RelayManagedEndpointRecoveryResponse = Schema.Struct({
+  endpoint: RelayManagedEndpoint,
+  endpointRuntime: RelayManagedEndpointRuntimeConfig,
+});
+export type RelayManagedEndpointRecoveryResponse = typeof RelayManagedEndpointRecoveryResponse.Type;
+
 export const RelayLinkProofRequest = Schema.Struct({
   challenge: Schema.String,
   relayIssuer: Schema.String,
@@ -212,6 +250,26 @@ const RelaySignedJwtRegisteredClaims = {
   iat: Schema.Int,
   exp: Schema.Int,
 } as const;
+
+export const RelayManagedEndpointRecoveryProofPayload = Schema.Union([
+  Schema.Struct({
+    ...RelaySignedJwtRegisteredClaims,
+    action: Schema.Literal("register"),
+    environmentId: EnvironmentId,
+    cloudUserId: TrimmedNonEmptyString,
+    tunnelId: TrimmedNonEmptyString,
+    origin: RelayManagedEndpointOrigin,
+  }),
+  Schema.Struct({
+    ...RelaySignedJwtRegisteredClaims,
+    action: Schema.Literal("recover"),
+    environmentId: EnvironmentId,
+    cloudUserId: TrimmedNonEmptyString,
+    origin: RelayManagedEndpointOrigin,
+  }),
+]);
+export type RelayManagedEndpointRecoveryProofPayload =
+  typeof RelayManagedEndpointRecoveryProofPayload.Type;
 
 export const RelayAgentActivityPublishProofPayload = Schema.Struct({
   ...RelaySignedJwtRegisteredClaims,
@@ -685,10 +743,13 @@ export type RelayEnvironmentConnectRequest = typeof RelayEnvironmentConnectReque
 export const RelayEnvironmentConnectScope = "environment:connect" as const;
 export const RelayEnvironmentStatusScope = "environment:status" as const;
 export const RelayMobileRegistrationScope = "mobile:registration" as const;
+// Requested only for the deletion call, so ordinary tokens can't delete the account.
+export const RelayAccountDeleteScope = "account:delete" as const;
 export const RelayDpopAccessTokenScope = Schema.Literals([
   RelayEnvironmentConnectScope,
   RelayEnvironmentStatusScope,
   RelayMobileRegistrationScope,
+  RelayAccountDeleteScope,
 ]);
 export type RelayDpopAccessTokenScope = typeof RelayDpopAccessTokenScope.Type;
 
@@ -1088,8 +1149,62 @@ const RelayDpopClientGroup = HttpApiGroup.make("dpopClient")
   .annotate(OpenApi.Description, "DPoP-authenticated client access to linked environments.")
   .middleware(RelayDpopClientAuth);
 
+export const RelayAccountDeletionRequest = Schema.Struct({
+  requestId: Schema.String.check(Schema.isUUID(4)).annotate({
+    description: "Client-chosen id. Repeating a request is safe and returns the same deletion.",
+  }),
+});
+export type RelayAccountDeletionRequest = typeof RelayAccountDeletionRequest.Type;
+
+export const RelayAccountDeletionResponse = Schema.Struct({
+  status: Schema.Literals(["pending", "completed"]),
+  requestedAt: TrimmedNonEmptyString,
+});
+export type RelayAccountDeletionResponse = typeof RelayAccountDeletionResponse.Type;
+
+export const RelayRequestAccountDeletionEndpoint = HttpApiEndpoint.post(
+  "requestAccountDeletion",
+  "/v1/account/deletion",
+  {
+    headers: RelayDpopRequestHeaders,
+    payload: RelayAccountDeletionRequest,
+    success: RelayAccountDeletionResponse,
+    error: RelayAuthAndInternalErrors,
+  },
+)
+  .annotate(OpenApi.Summary, "Delete the signed-in account")
+  .annotate(
+    OpenApi.Description,
+    "Blocks the account at once, then removes its relay records, tunnels and sign-in identity in the background. Repeating the call after acceptance returns the recorded status.",
+  );
+
+const RelayAccountGroup = HttpApiGroup.make("account")
+  .add(RelayRequestAccountDeletionEndpoint)
+  .annotate(OpenApi.Description, "Account lifecycle.")
+  .middleware(RelayDpopClientAuth);
+
 const RelayServerGroup = HttpApiGroup.make("server")
   .add(
+    HttpApiEndpoint.post(
+      "registerManagedEndpointRecovery",
+      "/v1/environments/:environmentId/tunnel/recovery",
+      {
+        params: Schema.Struct({
+          environmentId: EnvironmentId,
+        }),
+        payload: RelayManagedEndpointRecoveryRegistrationRequest,
+        success: RelayManagedEndpointRecoveryRegistrationResponse,
+        error: RelayAuthAndInternalErrors,
+      },
+    ).annotate(OpenApi.Summary, "Register managed tunnel recovery without provisioning"),
+    HttpApiEndpoint.post("recoverManagedEndpoint", "/v1/environments/:environmentId/tunnel", {
+      params: Schema.Struct({
+        environmentId: EnvironmentId,
+      }),
+      payload: RelayManagedEndpointRecoveryRequest,
+      success: RelayManagedEndpointRecoveryResponse,
+      error: RelayAuthAndInternalErrors,
+    }).annotate(OpenApi.Summary, "Recover an environment's managed tunnel"),
     HttpApiEndpoint.post(
       "publishAgentActivity",
       "/v1/environments/:environmentId/threads/:threadId/agent-activity",
@@ -1116,6 +1231,7 @@ export const RelayApi = HttpApi.make("RelayApi")
     RelayTokenGroup,
     RelayDpopClientGroup,
     RelayServerGroup,
+    RelayAccountGroup,
   )
   .annotate(OpenApi.Title, "T3 Code Relay API")
   .annotate(OpenApi.Version, "1.0.0")

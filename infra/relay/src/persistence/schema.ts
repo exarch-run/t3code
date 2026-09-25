@@ -2,6 +2,7 @@ import type {
   RelayAgentActivityAggregateState,
   RelayAgentActivityState,
   RelayAgentAwarenessPreferences,
+  RelayManagedEndpointOrigin,
 } from "@t3tools/contracts/relay";
 import {
   boolean,
@@ -94,6 +95,10 @@ export const relayManagedEndpointAllocations = pgTable(
     tunnelName: text("tunnel_name").notNull(),
     dnsRecordId: varchar("dns_record_id", { length: 191 }),
     readyAt: varchar("ready_at", { length: 64 }),
+    recoveryEnabledAt: varchar("recovery_enabled_at", { length: 64 }),
+    recoveryEnvironmentPublicKey: text("recovery_environment_public_key"),
+    origin: jsonb("origin").$type<RelayManagedEndpointOrigin>(),
+    generation: integer("generation").notNull().default(0),
     createdAt: varchar("created_at", { length: 64 }).notNull(),
     updatedAt: varchar("updated_at", { length: 64 }).notNull(),
   },
@@ -189,4 +194,48 @@ export const relayDpopProofs = pgTable(
     primaryKey({ columns: [table.thumbprint, table.jti] }),
     index("idx_relay_dpop_proofs_expires_at").on(table.expiresAt),
   ],
+);
+
+// One row per account being deleted. The row is also the tombstone: while it
+// exists, the relay refuses that user's tokens. Completed rows are pruned
+// after the relay's own tokens and Clerk sessions can no longer be valid.
+export const relayAccountDeletions = pgTable(
+  "relay_account_deletions",
+  {
+    userId: varchar("user_id", { length: 255 }).primaryKey(),
+    requestId: varchar("request_id", { length: 64 }).notNull(),
+    source: varchar("source", { length: 32 })
+      .notNull()
+      .$type<"user" | "identity_missing" | "operator">(),
+    status: varchar("status", { length: 16 }).notNull().$type<"pending" | "completed">(),
+    attempts: integer("attempts").notNull().default(0),
+    lastErrorCode: varchar("last_error_code", { length: 64 }),
+    requestedAt: varchar("requested_at", { length: 64 }).notNull(),
+    nextAttemptAt: varchar("next_attempt_at", { length: 64 }).notNull(),
+    completedAt: varchar("completed_at", { length: 64 }),
+    updatedAt: varchar("updated_at", { length: 64 }).notNull(),
+  },
+  (table) => [index("idx_relay_account_deletions_due").on(table.status, table.nextAttemptAt)],
+);
+
+// When each relay user was last confirmed to still exist in Clerk. Users
+// deleted outside the relay, such as in Clerk's account portal, are found here.
+export const relayIdentityChecks = pgTable("relay_identity_checks", {
+  userId: varchar("user_id", { length: 255 }).primaryKey(),
+  checkedAt: varchar("checked_at", { length: 64 }).notNull(),
+});
+
+// Reports of AI responses from the phone. No account, device or network
+// identity is stored with them. Resolved reports are deleted; the maximum is 7 days.
+export const relayAiReports = pgTable(
+  "relay_ai_reports",
+  {
+    id: varchar("id", { length: 36 }).primaryKey(),
+    reason: varchar("reason", { length: 32 }).notNull(),
+    excerpt: text("excerpt").notNull(),
+    notes: text("notes").notNull(),
+    contentHash: varchar("content_hash", { length: 64 }).notNull(),
+    receivedAt: varchar("received_at", { length: 64 }).notNull(),
+  },
+  (table) => [index("idx_relay_ai_reports_received_at").on(table.receivedAt)],
 );

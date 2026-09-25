@@ -99,6 +99,35 @@ describe("V2 session presentation", () => {
       },
     } satisfies Extract<OrchestrationV2TurnItem, { readonly type: "error" }>;
 
+    expect(
+      providerErrorPresentation({
+        ...retryItem,
+        status: "failed",
+        failure: { ...retryItem.failure, class: "usage_limit" },
+      }),
+    ).toMatchObject({ label: "Usage limit reached after 2/10 retries" });
+    const recoveredLimit = {
+      ...retryItem,
+      status: "completed" as const,
+      completedAt: now,
+      failure: { ...retryItem.failure, class: "usage_limit" as const },
+    };
+    const [recoveredEntry] = deriveTimelineEntriesFromVisibleTurnItems({
+      visibleTurnItems: [
+        {
+          item: recoveredLimit,
+          position: 0,
+          visibility: "local",
+          sourceThreadId: recoveredLimit.threadId,
+          sourceItemId: recoveredLimit.id,
+        },
+      ],
+      optimisticMessages: [],
+    });
+    if (recoveredEntry?.kind !== "work") throw new Error("Expected recovered provider work");
+    expect(recoveredEntry.entry.label).toBe("Provider recovered (2/10 retries)");
+    expect(recoveredEntry.entry.sourceActivityKind).not.toBe("runtime.warning");
+    expect(workEntryDisplayIndicatesToolFailure(recoveredEntry.entry)).toBe(false);
     expect(providerErrorPresentation(retryItem)).toEqual({
       label: "Retrying provider (2/10)",
       detail: "Claude API overloaded. Retrying in 1.5s.",
@@ -562,6 +591,7 @@ describe("V2 session presentation", () => {
       createdBy: "agent" as const,
       creationSource: "mcp" as const,
       scheduledTaskId: ScheduledTaskId.make("task-queued"),
+      senderThreadId: ThreadId.make("thread-agent-sender"),
     } satisfies OrchestrationV2TurnItem;
     const promotedEntries = deriveTimelineEntriesFromVisibleTurnItems({
       visibleTurnItems: [
@@ -580,6 +610,7 @@ describe("V2 session presentation", () => {
     if (promotedEntries[0]?.kind === "message") {
       expect(promotedEntries[0].message.inputIntent).toBe("turn_start");
       expect(promotedEntries[0].message.scheduledTaskId).toBe("task-queued");
+      expect(promotedEntries[0].message.senderThreadId).toBe("thread-agent-sender");
     }
   });
 

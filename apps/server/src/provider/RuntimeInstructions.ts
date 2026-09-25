@@ -79,6 +79,7 @@ Show useful evidence through accessible saved artifacts. Markdown absolute paths
 export interface RuntimeInstructionsInput {
   readonly harness: string;
   readonly model?: string | undefined;
+  readonly modelName?: string | undefined;
   readonly reasoningEffort?: string | undefined;
   /** The project's rendered session files (Exarch), placed after the runtime block. */
   readonly sessionContext?: string | undefined;
@@ -106,8 +107,11 @@ export function runtimeInstructionSections(
 ): RuntimeInstructionSections {
   const harness = toSingleLine(runtime.harness);
   const model = toSingleLine(runtime.model ?? "");
+  const modelName = toSingleLine(runtime.modelName ?? "");
   const effort = toSingleLine(runtime.reasoningEffort ?? "");
-  const modelInfo = model && model !== "auto" && model !== "default" ? `, as ${model}` : "";
+  const modelLabel =
+    modelName && modelName !== model ? `${modelName} (model slug: ${model})` : model;
+  const modelInfo = model && model !== "auto" && model !== "default" ? `, as ${modelLabel}` : "";
   const effortInfo = effort ? ` with ${effort} reasoning effort` : "";
   const capabilities = runtime.capabilities;
   const taskProgress =

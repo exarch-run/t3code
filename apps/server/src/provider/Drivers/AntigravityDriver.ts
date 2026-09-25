@@ -1,6 +1,7 @@
 import { withAgentDeviceEnvironment } from "../../mcp/McpProviderSession.ts";
 import { AntigravitySettings, ProviderDriverKind, ProviderSetupError } from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import { resolveSelfInvocation } from "@t3tools/shared/nodeRuntime";
 import {
   NodeRuntimeUnavailableError,
   nodeRuntimeUnavailableMessage,
@@ -33,8 +34,7 @@ import {
   buildAntigravityAcpSpawnInput,
   isAntigravitySignInRequiredError,
   prepareAntigravityProfile,
-  resolveAntigravityProfileDirectory,
-  resolveAntigravityRuntimeTempDirectory,
+  resolveAntigravityInstanceDirectories,
   type AntigravityAuthConfig,
 } from "../antigravityAuthSupport.ts";
 import {
@@ -94,6 +94,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
       const path = yield* Path.Path;
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const serverConfig = yield* ServerConfig;
+      const selfInvocation = yield* resolveSelfInvocation();
       const installation = yield* AntigravityInstallation;
       const loggers = yield* ProviderEventLoggers;
       const modelManifest = yield* ModelManifest.ModelManifest;
@@ -110,15 +111,34 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
       const authConfigIssue = antigravityAuthConfigIssue(auth);
       const processEnvironment = mergeProviderInstanceEnvironment(environment);
       const userHome = resolveAntigravityUserHome(yield* HostProcessPlatform, processEnvironment);
-      const profileDirectory = resolveAntigravityProfileDirectory(
+      const directories = yield* resolveAntigravityInstanceDirectories(
         serverConfig.stateDir,
         instanceId,
+      ).pipe(
+        Effect.provideService(Crypto.Crypto, crypto),
+        Effect.provideService(Path.Path, path),
+        Effect.mapError(
+          (cause) =>
+            new ProviderDriverError({
+              driver: DRIVER,
+              instanceId,
+              detail: "Could not resolve the Antigravity profile directory.",
+              cause,
+            }),
+        ),
       );
+      const profileDirectory = directories.profile;
       // No process of this instance exists yet, so every runtime temp
-      // directory left under the profile is an orphan from a killed server.
-      yield* removeAntigravityRuntimeTempDirs(
-        resolveAntigravityRuntimeTempDirectory(profileDirectory),
-      ).pipe(Effect.provideService(FileSystem.FileSystem, fileSystem));
+      // directory it owns is an orphan from a killed server. Older builds
+      // unpacked inside the profile.
+      for (const directory of [
+        directories.runtimeTemp,
+        path.join(profileDirectory, "antigravity-acp", "tmp"),
+      ]) {
+        yield* removeAntigravityRuntimeTempDirs(directory).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+        );
+      }
       const continuationIdentity = defaultProviderContinuationIdentity({
         driverKind: DRIVER,
         instanceId,
@@ -172,6 +192,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
           baseEnv: processEnvironment,
           auth,
           userHome,
+          tempDirectory: directories.runtimeTemp,
         }).pipe(
           Effect.provideService(FileSystem.FileSystem, fileSystem),
           Effect.provideService(Path.Path, path),
@@ -390,6 +411,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         path,
         idAllocator,
         serverConfig,
+        selfInvocation,
         makeRuntime,
         withProcess: authFlow.withProcess,
         defaultModel,

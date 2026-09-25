@@ -1,7 +1,5 @@
 import { SubagentStatusDot } from "./SubagentStatusDot";
-import { useAtomValue } from "@effect/atom-react";
-import { serverEnvironment } from "../../state/server";
-import { ProviderIcon } from "../../components/ProviderIcon";
+import { ThreadSubagentGroup } from "./thread-subagent-group";
 import {
   WorkLogLabel,
   WorkLogBlock,
@@ -20,11 +18,7 @@ import { type AppSymbolName, SymbolView } from "../../components/AppSymbol";
 import { MaskedView } from "@expo/ui/community/masked-view";
 import type { LegendListRef } from "@legendapp/list/react-native";
 import { AnimatedLegendList } from "@legendapp/list/reanimated";
-import { useIsFocused, useNavigation } from "@react-navigation/native";
-import {
-  formatSubagentDisplayTitle,
-  subagentGroupSummary,
-} from "@t3tools/client-runtime/state/subagent-display";
+import { useIsFocused } from "@react-navigation/native";
 import {
   memo,
   useCallback,
@@ -525,92 +519,6 @@ export function ThreadWorkLog(props: ThreadWorkLogProps) {
   );
 }
 
-function ThreadSubagentGroup(props: ThreadWorkLogProps) {
-  const config = useAtomValue(serverEnvironment.configValueAtom(props.environmentId));
-  const navigation = useNavigation();
-  const members = props.activities.flatMap(({ projectedItem }) =>
-    projectedItem.item.type === "subagent" ? [projectedItem.item] : [],
-  );
-  const summary = subagentGroupSummary(members);
-  const expanded = props.expandedRows[props.anchorKey] ?? false;
-  return (
-    <WorkLogBlock continues={props.continuesWorkLog}>
-      <WorkLogPressable
-        accessibilityRole="button"
-        accessibilityState={{ expanded }}
-        accessibilityLabel={summary.label}
-        onPress={() => props.onToggleRow(props.anchorKey, props.anchorKey)}
-        rowSizing={props.rowSizing}
-      >
-        <WorkLogIconSlot>
-          <SymbolView
-            name={workRowSymbolName("agent")}
-            size={14}
-            tintColor={props.iconSubtleColor}
-          />
-        </WorkLogIconSlot>
-        <WorkLogLabel tone={summary.failed ? "danger" : "default"}>{summary.label}</WorkLogLabel>
-        <ThreadDisclosureChevron
-          expanded={expanded}
-          collapsedDirection="down"
-          size={11}
-          tintColor={props.iconSubtleColor}
-        />
-      </WorkLogPressable>
-      {expanded ? (
-        <WorkLogRows>
-          {members.map((item) => {
-            const title = formatSubagentDisplayTitle(item.title ?? "Subagent");
-            const threadId = item.childThreadId;
-            return (
-              <WorkLogPressable
-                key={item.id}
-                accessibilityRole={threadId === null ? undefined : "button"}
-                accessibilityLabel={threadId === null ? title : `Open ${title}`}
-                accessibilityHint={item.status.replaceAll("_", " ")}
-                disabled={threadId === null}
-                onPress={() => {
-                  if (threadId !== null)
-                    navigation.navigate("Thread", {
-                      environmentId: String(props.environmentId),
-                      threadId: String(threadId),
-                    });
-                }}
-                rowSizing={props.rowSizing}
-              >
-                <WorkLogIconSlot>
-                  <ProviderIcon
-                    provider={item.driver}
-                    iconUrl={
-                      config?.providers.find(
-                        (provider) => provider.instanceId === item.providerInstanceId,
-                      )?.iconUrl
-                    }
-                    size={14}
-                  />
-                  <SubagentStatusDot
-                    placement="provider"
-                    tone={
-                      item.status === "failed"
-                        ? "failed"
-                        : item.status === "completed"
-                          ? "completed"
-                          : item.status === "cancelled" || item.status === "interrupted"
-                            ? "stopped"
-                            : "working"
-                    }
-                  />
-                </WorkLogIconSlot>
-                <WorkLogLabel>{title}</WorkLogLabel>
-              </WorkLogPressable>
-            );
-          })}
-        </WorkLogRows>
-      ) : null}
-    </WorkLogBlock>
-  );
-}
-
 function ThreadWorkGroupList(props: {
   readonly activities: ReadonlyArray<ThreadFeedActivity>;
   readonly edgeFadeColor: string;
@@ -876,6 +784,72 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
   },
 ) {
   const { row, expanded } = props;
+  const failureItem = row.projectedItem.item;
+  if (failureItem.type === "error" && failureItem.status === "failed") {
+    const warning = failureItem.failure.class === "usage_limit";
+    const timestamp = new Date(row.createdAt);
+    const resetAt = failureItem.failure.resetAt;
+    const resetTime = resetAt
+      ? new Date(resetAt).toLocaleString(undefined, {
+          month: "short",
+          day: "numeric",
+          hour: "numeric",
+          minute: "2-digit",
+        })
+      : null;
+    const label = warning
+      ? `Usage limit reached.${resetTime ? ` Retry after ${resetTime}.` : ""}`
+      : row.summary;
+    return (
+      <WorkLogPressable
+        accessibilityLabel={warning ? label : `${row.summary}: ${failureItem.failure.message}`}
+        accessibilityHint="Long press to copy."
+        onLongPress={() => props.onCopyRow(row.id, row.getCopyText())}
+      >
+        <View className="flex-1 py-1">
+          <View className="flex-row items-center gap-1.5">
+            <WorkLogIconSlot>
+              <WorkLogIcon
+                icon="exclamationmark.circle"
+                color={props.iconSubtleColor}
+                colorClassName={warning ? "accent-warning-foreground" : "accent-danger-foreground"}
+              />
+            </WorkLogIconSlot>
+            <Text
+              className={
+                warning
+                  ? "min-w-0 flex-1 font-t3-medium text-sm text-warning-foreground"
+                  : "min-w-0 flex-1 font-t3-medium text-sm text-adaptive-rose-600-400"
+              }
+            >
+              {label}
+            </Text>
+            {props.copied ? (
+              <Text className="pr-1 font-t3-medium text-3xs text-adaptive-emerald-600-400">
+                Copied
+              </Text>
+            ) : null}
+            <Text
+              accessibilityLabel={timestamp.toLocaleString()}
+              className="shrink-0 text-xs text-foreground-subtle"
+            >
+              {timestamp.toLocaleString(undefined, {
+                month: "short",
+                day: "numeric",
+                hour: "numeric",
+                minute: "2-digit",
+              })}
+            </Text>
+          </View>
+          {!warning ? (
+            <Text selectable className="ml-7 text-sm text-foreground">
+              {failureItem.failure.message}
+            </Text>
+          ) : null}
+        </View>
+      </WorkLogPressable>
+    );
+  }
   const canExpand = row.canExpand;
   const reasoning = row.projectedItem.item.type === "reasoning" ? row.projectedItem.item : null;
   const fullDetail = expanded && !reasoning ? row.getFullDetail() : null;
@@ -888,7 +862,12 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
   const accessiblePreview = [previewText, answerPreview].filter(Boolean).join(": ");
   const displayText = workEntryRowLabel(row.workEntry, expanded);
   const isSystemNotice = row.projectedItem.item.type === "system_notice";
-  const iconIsDestructive = !isSystemNotice && (row.icon === "alert" || row.icon === "warning");
+  const isUsageLimit =
+    row.projectedItem.item.type === "error" &&
+    row.projectedItem.item.failure.class === "usage_limit" &&
+    row.projectedItem.item.status !== "completed";
+  const iconIsDestructive =
+    !isSystemNotice && !isUsageLimit && (row.icon === "alert" || row.icon === "warning");
   const failed = row.status === "failure";
   const toolIcon = row.workEntry.toolIcon ?? row.workEntry.toolSource?.icon;
   const icon = reasoning ? "brain" : (toolPresentation?.icon ?? workRowSymbolName(row.icon));
@@ -942,16 +921,20 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
                   icon={icon}
                   color={props.iconSubtleColor}
                   colorClassName={
-                    iconIsDestructive
-                      ? "accent-adaptive-rose-600-400"
-                      : failed
-                        ? "accent-danger-foreground/40"
-                        : undefined
+                    isUsageLimit
+                      ? "accent-warning-foreground"
+                      : iconIsDestructive
+                        ? "accent-adaptive-rose-600-400"
+                        : failed
+                          ? "accent-danger-foreground/40"
+                          : undefined
                   }
                 />
               )}
             </WorkLogIconSlot>
-            <WorkLogLabel tone={iconIsDestructive ? "danger" : "default"}>
+            <WorkLogLabel
+              tone={isUsageLimit ? "warning" : iconIsDestructive ? "danger" : "default"}
+            >
               {isSystemNotice ? row.summary : displayText}
               {answerPreview ? (
                 <Text

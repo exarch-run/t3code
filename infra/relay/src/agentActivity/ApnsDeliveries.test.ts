@@ -184,7 +184,7 @@ function makeLayer(input: {
         Layer.succeed(AgentActivityRows.AgentActivityRows, {
           upsert: () => Effect.void,
           remove: () => Effect.void,
-          pruneTerminal: () => Effect.void,
+          pruneExpired: Effect.void,
           listForUser: () =>
             input.activityStates !== undefined
               ? Effect.succeed([...input.activityStates])
@@ -204,6 +204,7 @@ function makeLayer(input: {
             }),
         }),
         Layer.succeed(DeliveryAttempts.DeliveryAttempts, {
+          pruneExpired: Effect.void,
           record: (attempt) =>
             Effect.sync(() => {
               input.attempts.push(attempt);

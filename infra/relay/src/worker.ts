@@ -2,7 +2,7 @@ import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Drizzle from "alchemy/Drizzle/Postgres";
 import * as Config from "effect/Config";
-import * as DateTime from "effect/DateTime";
+import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -18,7 +18,9 @@ import * as HttpApiScalar from "effect/unstable/httpapi/HttpApiScalar";
 import { RelayApi } from "@t3tools/contracts/relay";
 
 import {
+  accountApi,
   clientApi,
+  environmentTeardownLayer,
   dpopClientApi,
   healthApi,
   metadataApi,
@@ -31,12 +33,11 @@ import {
   relayEnvironmentAuthLayer,
   relayNotFoundRoute,
   serverApi,
-  traceRelayHttpRequestWith,
+  privateRelayHttpRequest,
   tokenApi,
   withoutCapturedParentSpan,
 } from "./http/Api.ts";
 import { ManagedEndpointZone, RelayApiZone, RelayDeploymentConfig } from "./zone.ts";
-import { makeRelayTraceLayer, RelayObservability } from "./observability.ts";
 import * as DeliveryAttempts from "./agentActivity/DeliveryAttempts.ts";
 import * as AgentActivityRows from "./agentActivity/AgentActivityRows.ts";
 import * as Devices from "./agentActivity/Devices.ts";
@@ -69,8 +70,12 @@ import * as EnvironmentConnector from "./environments/EnvironmentConnector.ts";
 import * as EnvironmentLinker from "./environments/EnvironmentLinker.ts";
 import * as EnvironmentPublishSignatures from "./environments/EnvironmentPublishSignatures.ts";
 import * as ManagedEndpointProvider from "./environments/ManagedEndpointProvider.ts";
+import * as ManagedEndpointReaper from "./environments/ManagedEndpointReaper.ts";
 import * as ManagedTunnelLimits from "./environments/ManagedTunnelLimits.ts";
 import * as MobileRegistrations from "./agentActivity/MobileRegistrations.ts";
+import * as AccountDeletions from "./account/AccountDeletions.ts";
+import * as AiReports from "./reports/AiReports.ts";
+import { reportRoutes } from "./reports/routes.ts";
 
 const webcryptoLayer = Layer.succeed(
   Crypto.Crypto,
@@ -103,6 +108,7 @@ const relayApiLayer = Layer.mergeAll(
   tokenApi,
   dpopClientApi,
   serverApi,
+  accountApi,
 );
 
 const CloudMintKeyPair = Alchemy.KeyPair("CloudMintKeyPair");
@@ -121,6 +127,13 @@ export const ApiLive = Api.make(
         flags: ["nodejs_compat"],
       },
       domain: relayPublicDomain,
+      // Invocation logs contain request URLs. Do not persist routine user activity.
+      logpush: false,
+      observability: {
+        enabled: false,
+        logs: { enabled: false, invocationLogs: false, persist: false },
+        traces: { enabled: false, persist: false },
+      },
     })),
     Effect.orDie,
   ),
@@ -137,7 +150,6 @@ export const ApiLive = Api.make(
     const relayApiZone = yield* RelayApiZone;
     const managedEndpointZone = yield* ManagedEndpointZone;
     const randomApnsDeliveryJobSigningSecret = yield* ApnsDeliveryJobSigningSecret;
-    const observability = yield* RelayObservability;
 
     //
     // 2. Create bindings
@@ -162,11 +174,13 @@ export const ApiLive = Api.make(
     const apnsDeliveryQueueSender = yield* Cloudflare.Queues.WriteQueue(apnsDeliveryQueue);
     const fcmDeliveryQueueSender = yield* Cloudflare.Queues.WriteQueue(fcmDeliveryQueue);
 
-    const axiomDatasetName = yield* observability.traces.name;
-    const axiomIngestToken = yield* observability.workerIngestToken.token;
-    const axiomTracesEndpoint = yield* observability.traces.otelTracesEndpoint;
-
     const clerkSecretKey = yield* Config.Redacted("CLERK_SECRET_KEY");
+    const operatorToken = Option.getOrUndefined(
+      Option.filter(
+        yield* Config.option(Config.Redacted("RELAY_OPERATOR_TOKEN")),
+        (value) => Redacted.value(value).trim().length >= 32,
+      ),
+    );
     const clerkPublishableKey = yield* Config.String("CLERK_PUBLISHABLE_KEY");
     const clerkJwtAudience = yield* Config.String("CLERK_JWT_AUDIENCE");
 
@@ -180,6 +194,7 @@ export const ApiLive = Api.make(
     yield* yield* relayApiZone.zoneId;
     const managedEndpointDnsBinding = yield* Cloudflare.DNS.ReadWriteDns(managedEndpointZone);
     const managedEndpointZoneName = yield* managedEndpointZone.name;
+    const managedEndpointCleanupMode = yield* RelayConfiguration.managedEndpointCleanupModeConfig;
 
     //
     // 3. Runtime layers and app construction
@@ -199,23 +214,33 @@ export const ApiLive = Api.make(
         cloudMintPublicKey: yield* cloudMintPublicKey,
         managedEndpointBaseDomain: yield* managedEndpointZoneName,
         managedEndpointNamespace: stage,
+        managedEndpointCleanupMode,
+        ...(operatorToken ? { operatorToken } : {}),
       });
     });
 
-    const relayTraceLayer = Layer.unwrap(
-      Effect.all({
-        tracesDatasetName: axiomDatasetName,
-        tracesEndpoint: axiomTracesEndpoint,
-        ingestToken: axiomIngestToken,
-      }).pipe(Effect.map(makeRelayTraceLayer)),
-    );
-
     const runtimeLayer = Layer.empty.pipe(
-      Layer.provideMerge(MobileRegistrations.layer),
+      Layer.provideMerge(
+        Layer.mergeAll(
+          MobileRegistrations.layer,
+          AiReports.layer.pipe(Layer.provide(AiReports.storeLayer)),
+          AccountDeletions.layer.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                AccountDeletions.storeLayer,
+                AccountDeletions.clerkIdentitiesLayer,
+                environmentTeardownLayer,
+              ),
+            ),
+          ),
+        ),
+      ),
       Layer.provideMerge(AgentActivityPublisher.layer),
       Layer.provideMerge(EnvironmentConnector.layer),
       Layer.provideMerge(EnvironmentLinker.layer),
-      Layer.provideMerge(EnvironmentPublishSignatures.layer),
+      Layer.provideMerge(
+        Layer.merge(EnvironmentPublishSignatures.layer, ManagedEndpointReaper.layer),
+      ),
       Layer.provideMerge(
         ManagedEndpointProvider.layerCloudflareBindings(
           managedEndpointTunnelBinding,
@@ -296,6 +321,7 @@ export const ApiLive = Api.make(
             ),
           ),
           Effect.provide(runtimeLayer),
+          Effect.withTracerEnabled(false),
         ),
     );
 
@@ -313,25 +339,118 @@ export const ApiLive = Api.make(
           Stream.withSpan("relay.fcm_delivery_queue.process_batch"),
           Stream.runForEach(FcmDeliveryQueueConsumer.processMessage),
           Effect.provide(runtimeLayer),
+          Effect.withTracerEnabled(false),
         ),
     );
 
+    // Retries are exhausted before a message enters these queues. Acknowledge
+    // its content instead of retaining a second archive of names and push tokens.
+    for (const queue of [apnsDeliveryDeadLetterQueue, fcmDeliveryDeadLetterQueue]) {
+      yield* Cloudflare.Queues.consumeQueueMessages<unknown>(
+        queue,
+        { batchSize: 100, maxRetries: 0, maxWaitTime: "5 seconds" },
+        (stream) =>
+          stream.pipe(
+            Stream.runForEach((message) => Effect.sync(() => message.ack())),
+            Effect.withTracerEnabled(false),
+          ),
+      );
+    }
+
     yield* Cloudflare.Workers.cron("*/5 * * * *", () =>
-      DpopProofs.DpopProofReplay.pipe(
-        Effect.flatMap((dpopProofs) => dpopProofs.pruneExpired),
-        // Terminal thread rows are kept briefly so finished agents show as
-        // Done/Failed in the Live Activity; sweep them once they age out.
-        Effect.andThen(
-          Effect.all([AgentActivityRows.AgentActivityRows, DateTime.now]).pipe(
-            Effect.flatMap(([activityRows, now]) =>
-              activityRows.pruneTerminal({
-                updatedBefore: DateTime.formatIso(DateTime.subtract(now, { minutes: 30 })),
-              }),
+      Effect.all(
+        [
+          DpopProofs.DpopProofReplay.pipe(
+            Effect.flatMap((dpopProofs) => dpopProofs.pruneExpired),
+            // One failure must not prevent another category's privacy cleanup.
+            Effect.ignore,
+            Effect.andThen(
+              AgentActivityRows.AgentActivityRows.pipe(
+                Effect.flatMap((rows) => rows.pruneExpired),
+                Effect.ignore,
+              ),
+            ),
+            Effect.andThen(LiveActivities.pruneExpiredContent.pipe(Effect.ignore)),
+            Effect.andThen(
+              DeliveryAttempts.DeliveryAttempts.pipe(
+                Effect.flatMap((attempts) => attempts.pruneExpired),
+                Effect.ignore,
+              ),
             ),
           ),
-        ),
+          ManagedEndpointReaper.ManagedEndpointReaper.pipe(
+            Effect.flatMap((reaper) => reaper.sweep.pipe(Effect.timeout("2 minutes"))),
+            Effect.tap((result) =>
+              result.scanned > 0
+                ? Effect.logInfo("Finished managed tunnel cleanup", result)
+                : Effect.void,
+            ),
+            Effect.catchCause((cause) =>
+              Cause.hasInterrupts(cause)
+                ? Effect.interrupt
+                : Effect.logWarning("Failed to clean up inactive managed tunnels", { cause }),
+            ),
+          ),
+        ],
+        { concurrency: 2, discard: true },
+      ).pipe(
         Effect.withSpan("relay.cron.prune_expired_state"),
+        // Each job runs even when an earlier one fails.
+        Effect.ignore,
+        Effect.andThen(
+          AccountDeletions.AccountDeletions.pipe(
+            Effect.flatMap((deletions) =>
+              Effect.all(
+                [
+                  deletions.processDue.pipe(Effect.ignore),
+                  deletions.reconcileIdentities.pipe(Effect.ignore),
+                  deletions.pruneCompleted.pipe(Effect.ignore),
+                  deletions.summary.pipe(
+                    Effect.tap((summary) =>
+                      summary.stalled > 0
+                        ? Effect.logWarning("account deletions stalled", {
+                            "relay.account_deletion.pending": summary.pending,
+                            "relay.account_deletion.stalled": summary.stalled,
+                          })
+                        : Effect.void,
+                    ),
+                    Effect.ignore,
+                  ),
+                ],
+                { discard: true },
+              ),
+            ),
+            Effect.withSpan("relay.cron.account_deletions"),
+          ),
+        ),
+        Effect.andThen(
+          AiReports.AiReports.pipe(
+            Effect.flatMap((reports) =>
+              reports.prune.pipe(
+                Effect.andThen(reports.summary),
+                // Counts only. Report text never reaches logs.
+                Effect.tap((summary) =>
+                  Effect.annotateCurrentSpan({
+                    "relay.reports.stored": summary.stored,
+                    "relay.reports.last_hour": summary.lastHour,
+                  }),
+                ),
+                Effect.tap((summary) =>
+                  summary.stored >= summary.capacity * 0.8
+                    ? Effect.logWarning("report storage nearly full", {
+                        "relay.reports.stored": summary.stored,
+                        "relay.reports.capacity": summary.capacity,
+                      })
+                    : Effect.void,
+                ),
+              ),
+            ),
+            Effect.ignore,
+            Effect.withSpan("relay.cron.reports"),
+          ),
+        ),
         Effect.provide(runtimeLayer),
+        Effect.withTracerEnabled(false),
       ),
     );
 
@@ -342,13 +461,14 @@ export const ApiLive = Api.make(
         ),
         HttpApiScalar.layer(RelayApi, { path: "/docs" }),
         relayDocsRedirectRoute,
+        reportRoutes.pipe(Layer.provide(runtimeLayer)),
       ).pipe(Layer.provide([Etag.layerWeak, httpPlatformNotSupportedLayer, relayCors])),
       relayNotFoundRoute,
     ).pipe(
       HttpRouter.toHttpEffect,
       Effect.provideService(HttpRouter.RouterConfig, RELAY_HTTP_ROUTER_CONFIG),
       withoutCapturedParentSpan,
-      Effect.flatMap((httpEffect) => traceRelayHttpRequestWith(httpEffect, relayTraceLayer)),
+      Effect.map(privateRelayHttpRequest),
     );
 
     return { fetch };

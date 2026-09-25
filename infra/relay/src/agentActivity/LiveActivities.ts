@@ -13,7 +13,7 @@ import * as Effect from "effect/Effect";
 import * as Function from "effect/Function";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNotNull, sql } from "drizzle-orm";
 
 import * as RelayDb from "../db.ts";
 import { relayLiveActivities, relayMobileDevices } from "../persistence/schema.ts";
@@ -477,3 +477,20 @@ export const make = Effect.gen(function* () {
 });
 
 export const layer = Layer.effect(LiveActivities, make);
+
+// The last delivered summary contains project/chat names. It is a short-lived
+// delivery cache, not a history. Clear content even if a phone never returns.
+export const pruneExpiredContent = Effect.gen(function* () {
+  const db = yield* RelayDb.RelayDb;
+  const now = yield* DateTime.now;
+  const cutoff = DateTime.formatIso(DateTime.subtract(now, { hours: 24 }));
+  yield* db
+    .update(relayLiveActivities)
+    .set({ lastAggregateJson: null })
+    .where(
+      and(
+        isNotNull(relayLiveActivities.lastAggregateJson),
+        sql`coalesce(${relayLiveActivities.lastLiveActivityDeliveryAt}, ${relayLiveActivities.updatedAt}) < ${cutoff}`,
+      ),
+    );
+});

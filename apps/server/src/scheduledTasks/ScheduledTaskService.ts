@@ -21,7 +21,6 @@ import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
-import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -41,6 +40,7 @@ import {
   localTimeZoneName,
   nextScheduledRunAt,
 } from "./Schedule.ts";
+import * as Scheduler from "../scheduling/Scheduler.ts";
 
 const decodeTask = Schema.decodeUnknownEffect(ScheduledTask);
 const decodeTaskId = Schema.decodeUnknownOption(ScheduledTaskId);
@@ -236,6 +236,7 @@ export const layer = Layer.effect(
     const crypto = yield* Crypto.Crypto;
     const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
     const threadManagement = yield* ThreadManagementService.ThreadManagementService;
+    const scheduler = yield* Scheduler.Scheduler;
     const activeRuns = yield* Ref.make<ReadonlySet<ScheduledTaskId>>(new Set());
     // Sliding(1) coalesces the dirty-signal: every notification triggers a
     // full list() re-emit anyway, so a slow subscriber only ever needs the
@@ -859,12 +860,7 @@ export const layer = Layer.effect(
       ),
     );
 
-    yield* runDueTasks().pipe(
-      Effect.catch((cause) => Effect.logWarning("Scheduled task polling failed", { cause })),
-      Effect.delay(Duration.seconds(5)),
-      Effect.forever,
-      Effect.forkScoped,
-    );
+    yield* scheduler.register("scheduled-tasks", runDueTasks());
 
     const list: ScheduledTaskService["Service"]["list"] = () =>
       listRows().pipe(
