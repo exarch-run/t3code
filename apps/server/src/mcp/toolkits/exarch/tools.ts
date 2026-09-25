@@ -424,6 +424,38 @@ const ExarchLifecycleTool = exarchTool(
     .annotate(Tool.Idempotent, true),
 );
 
+export const ExarchGroupInput = Schema.Struct({
+  action: Schema.Literals(["join", "leave"]).annotate({
+    description:
+      "join moves each chat into target's Exarch group; leave gives each chat a group of its own.",
+  }),
+  threadIds: Schema.optional(
+    Schema.Array(Schema.String).annotate({
+      description: "Chats to move, in this chat's project; omit for the calling chat.",
+    }),
+  ),
+  target: Schema.optional(
+    Schema.String.annotate({
+      description: "For join: the chat whose group to join; omit for the calling chat's group.",
+    }),
+  ),
+});
+
+const ExarchGroupTool = exarchTool(
+  Tool.make("exarch_group", {
+    description:
+      "Move chats in this chat's project into another chat's Exarch group, or out into a group of their own, the way the owner drags chats together in the sidebar. Each named chat moves alone; its old groupmates stay put. Changes only the sidebar arrangement, never focus, tabs, or chat content. Returns one outcome per chat, moved or unchanged, and the joined group's member chats.",
+    parameters: ExarchGroupInput,
+    success: ExarchResult,
+    failure: ExarchToolError,
+    dependencies,
+  })
+    .annotate(Tool.Title, "Group or ungroup chats")
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true),
+);
+
 const ExarchSessionTool = exarchTool(
   Tool.make("exarch_session", {
     description:
@@ -491,5 +523,6 @@ export const ExarchToolkit = Toolkit.make(
   ExarchGuideTool,
   ExarchHtmlPrepareTool,
   ExarchLifecycleTool,
+  ExarchGroupTool,
   ExarchSessionTool,
 );
