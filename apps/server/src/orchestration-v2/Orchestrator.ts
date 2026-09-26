@@ -1,5 +1,6 @@
 import { bindTaskProgressCommands, nextTaskProgressRecord } from "../exarch/TaskProgressV2.ts";
 import { TaskProgress } from "../exarch/TaskProgressRuntime.ts";
+import { settledParentDisposesReports } from "../exarch/SettledParentReports.ts";
 import { latestRootProviderFailure } from "@t3tools/shared/orchestrationV2ThreadError";
 import { threadPullRequestsOf } from "@t3tools/shared/threadPullRequests";
 import {
@@ -8135,6 +8136,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       input.parentRun === undefined ||
       input.parentProjection.thread.archivedAt !== null ||
       input.parentProjection.thread.deletedAt !== null ||
+      settledParentDisposesReports(input.parentProjection.thread) ||
       (cohort !== undefined && cohort.disposition !== "open")
     ) {
       return {

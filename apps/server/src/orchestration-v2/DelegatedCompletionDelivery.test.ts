@@ -133,7 +133,7 @@ const seedParentWithTerminalTask = (input: {
   readonly runId: RunId;
   readonly rootNodeId: NodeId;
   readonly taskId: NodeId;
-  readonly deliveryState: "delivered" | "claimed" | "acknowledged" | "disposed";
+  readonly deliveryState: "pending" | "delivered" | "claimed" | "acknowledged" | "disposed";
   readonly completionWake?: "always" | "settled_only";
   readonly deliveryTaskIds?: ReadonlyArray<NodeId>;
   readonly now: DateTime.Utc;
@@ -649,4 +649,64 @@ it.layer(TestLayer)("delegated completion delivery repairs", (it) => {
         );
       }),
   );
+  // Exarch: a settled chat is done, so a helper report arriving afterward is
+  // recorded on the task and does not wake (and so unsettle) the parent.
+  for (const settled of [false, true]) {
+    it.effect(
+      settled
+        ? "disposes a finished helper's report when the parent is settled"
+        : "claims a finished helper's report when the parent is not settled",
+      () =>
+        Effect.gen(function* () {
+          const orchestrator = yield* OrchestratorV2;
+          const eventSink = yield* EventSinkV2;
+          const now = yield* DateTime.now;
+          const name = settled ? "settled" : "unsettled";
+          const threadId = ThreadId.make(`thread:delegated-delivery-${name}`);
+          const runId = RunId.make(`run:delegated-delivery-${name}`);
+          const taskId = NodeId.make(`node:delegated-delivery-${name}-task`);
+          yield* seedParentWithTerminalTask({
+            threadId,
+            projectId: ProjectId.make(`project:delegated-delivery-${name}`),
+            runId,
+            rootNodeId: NodeId.make(`node:delegated-delivery-${name}-root`),
+            taskId,
+            deliveryState: "pending",
+            completionWake: "settled_only",
+            now,
+          });
+          if (settled) {
+            const { thread } = yield* orchestrator.getThreadProjection(threadId);
+            yield* eventSink.write({
+              commandId: CommandId.make(`command:delegated-delivery-${name}:settle`),
+              events: [
+                {
+                  id: EventId.make(`event:delegated-delivery-${name}:settle`),
+                  type: "thread.settled",
+                  threadId,
+                  providerInstanceId: thread.providerInstanceId,
+                  occurredAt: now,
+                  payload: { ...thread, settledOverride: "settled", settledAt: now },
+                },
+              ],
+            });
+          }
+
+          yield* orchestrator.dispatch({
+            type: "delegated_task.wake-policy",
+            commandId: CommandId.make(`command:delegated-delivery-${name}:wake-policy`),
+            parentThreadId: threadId,
+            taskId,
+            completionWake: "always",
+          });
+
+          const projection = yield* orchestrator.getThreadProjection(threadId);
+          const task = projection.subagents.find((candidate) => candidate.id === taskId);
+          const parentRun = projection.runs.find((candidate) => candidate.id === runId);
+          assert.equal(task?.completionDelivery?.state, settled ? "disposed" : "claimed");
+          assert.equal(parentRun?.delegatedCompletion?.delivery == null, settled);
+          assert.equal(projection.thread.settledOverride, settled ? "settled" : null);
+        }),
+    );
+  }
 });
