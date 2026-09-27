@@ -1,3 +1,4 @@
+import { restoreClaudeHandoffContext } from "../exarch/ClaudeHandoffContext.ts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { formatQuestionResponseForProvider } from "../orchestration/questionResponseInput.ts";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
@@ -419,7 +420,7 @@ export const layer: Layer.Layer<
               providerAuth.tryHandlePromptCommand({
                 instanceId: authInstanceId,
                 text: projectComposerContextForProvider({
-                  text: message.questionResponse
+                  text: message.questionResponse?.answers.length
                     ? formatQuestionResponseForProvider(message.questionResponse)
                     : message.text,
                   records: message.context?.records ?? [],
@@ -671,12 +672,19 @@ export const layer: Layer.Layer<
             existingProviderThread: providerThread,
           });
         }
-        const uncertainDelivery = projection.contextHandoffs.some(
-          (handoff) =>
-            handoff.toProviderThreadId === providerThread.id &&
-            handoff.delivery?.nativeThreadId === providerThread.nativeThreadRef?.nativeId &&
-            handoff.delivery?.status === "pending",
-        );
+        const uncertainDelivery =
+          !(
+            session.driver === "claudeAgent" &&
+            message.attachments.length === 0 &&
+            message.text.trim().toLowerCase() === "/compact"
+          ) &&
+          !(message.createdBy === "agent" && message.creationSource === "provider") &&
+          projection.contextHandoffs.some(
+            (handoff) =>
+              handoff.toProviderThreadId === providerThread.id &&
+              handoff.delivery?.nativeThreadId === providerThread.nativeThreadRef?.nativeId &&
+              handoff.delivery?.status === "pending",
+          );
         const resumed = yield* Effect.result(
           uncertainDelivery
             ? Effect.fail(
@@ -965,7 +973,7 @@ export const layer: Layer.Layer<
         canRouteRelatedSubagent(subagent.status),
       );
       const userText = projectComposerContextForProvider({
-        text: message.questionResponse
+        text: message.questionResponse?.answers.length
           ? formatQuestionResponseForProvider(message.questionResponse)
           : message.text,
         records: message.context?.records ?? [],
@@ -1087,10 +1095,12 @@ export const layer: Layer.Layer<
         compact = false,
       ) =>
         Effect.gen(function* () {
+          const nativeContinuation =
+            message.createdBy === "agent" && message.creationSource === "provider";
           // A failed turn/start can leave the requested turn absent from
           // native history even when its preceding handoff was injected.
           const retryHandoff =
-            missedItems.length === 0
+            missedItems.length === 0 || nativeContinuation
               ? []
               : [
                   yield* contextHandoffService.prepareProviderHandoff({
@@ -1127,7 +1137,7 @@ export const layer: Layer.Layer<
           const delivery = yield* deliverContextHandoffs({
             ...(supplied ? { contextChannel } : {}),
             handoffs: [...effectiveHandoffs, ...retryHandoff],
-            deferInline: compact,
+            deferInline: compact || nativeContinuation,
             providerThread: runningProviderThread,
             budget: Effect.gen(function* () {
               return handoffBudget({
@@ -1143,7 +1153,7 @@ export const layer: Layer.Layer<
               });
             }),
             alreadyDeliveredItemIds: deliveredItemIds,
-            ...(inInstructions || session.injectHistory === undefined
+            ...(inInstructions || nativeContinuation || session.injectHistory === undefined
               ? {}
               : {
                   inject: (history: ProviderAdapterV2HistoricalContext) =>
@@ -1173,10 +1183,20 @@ export const layer: Layer.Layer<
               }),
           });
           if (!(yield* isCurrentAttemptInStatus("running"))) return;
+          const claudeHandoffContext =
+            session.driver === "claudeAgent" && compact
+              ? yield* restoreClaudeHandoffContext({
+                  handoffs: effectiveHandoffs,
+                  providerThread: runningProviderThread,
+                })
+              : session.driver === "claudeAgent" && inInstructions
+                ? delivery.context
+                : undefined;
           const start = compact ? session.compactThread! : session.startTurn;
           yield* start({
             ...turnInput,
-            ...(inInstructions
+            ...(claudeHandoffContext === undefined ? {} : { handoffContext: claudeHandoffContext }),
+            ...(inInstructions && session.driver !== "claudeAgent"
               ? {
                   runtimePolicy: {
                     ...turnInput.runtimePolicy,

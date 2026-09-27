@@ -1,3 +1,4 @@
+import { createClaudeHandoffContext } from "../../exarch/ClaudeHandoffContext.ts";
 import * as NodeCrypto from "node:crypto";
 
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
@@ -2516,6 +2517,7 @@ interface ActiveClaudeSubagent {
 }
 
 interface ClaudeLiveQueryContext {
+  readonly handoffContext: ReturnType<typeof createClaudeHandoffContext>;
   readonly nativeThreadId: string;
   readonly query: ClaudeAgentSdkQuerySession;
   readonly queryPolicyKey: string;
@@ -4261,6 +4263,20 @@ export function makeClaudeAdapterV2(
           readonly threadDisposition?: "reusable" | "broken";
           readonly result?: SDKResultMessage;
         }) {
+          const liveQuery = yield* Ref.get(queryContext);
+          if (
+            !isClaudeProviderContinuationTurn(input.context.input) &&
+            liveQuery !== null &&
+            liveQuery.nativeThreadId ===
+              input.context.input.providerThread.nativeThreadRef?.nativeId
+          ) {
+            liveQuery.handoffContext.complete(
+              input.status,
+              input.result?.num_turns,
+              input.context.input.message.attachments.length === 0 &&
+                input.context.input.message.text.trim().toLowerCase() === "/compact",
+            );
+          }
           yield* reasoningDeltas.flushTurn(input.context.nativeTurnId);
           for (const toolCall of input.context.toolCalls.values()) {
             const artifacts = buildToolCallArtifacts({
@@ -6138,6 +6154,13 @@ export function makeClaudeAdapterV2(
             existing.queryPolicyKey === queryPolicyKey &&
             existing.selectionKey === compiledSelection.queryIdentity
           ) {
+            if (
+              (turnInput.message.attachments.length > 0 ||
+                turnInput.message.text.trim().toLowerCase() !== "/compact") &&
+              !isClaudeProviderContinuationTurn(turnInput)
+            ) {
+              existing.handoffContext.update(turnInput.handoffContext);
+            }
             return existing;
           }
 
@@ -6166,6 +6189,10 @@ export function makeClaudeAdapterV2(
           const hasPersistedProviderTurn = turnInput.providerTurnOrdinal > 1;
           const shouldResume =
             resumeSessionAt !== undefined || openedWithResume || hasPersistedProviderTurn;
+          const handoffContext = createClaudeHandoffContext(
+            turnInput.handoffContext,
+            claudeTaskProgressHooks(turnInput.threadId, taskProgress),
+          );
           const querySession = yield* queryRunner
             .open({
               threadId: turnInput.threadId,
@@ -6175,7 +6202,7 @@ export function makeClaudeAdapterV2(
                 taskProgress: turnInput.runtimePolicy.taskProgress,
                 modelSelection: turnInput.modelSelection,
                 nativeThreadId,
-                taskCardHooks: claudeTaskProgressHooks(turnInput.threadId, taskProgress),
+                taskCardHooks: handoffContext.hooks,
                 resume: shouldResume,
                 ...(resumeSessionAt === undefined ? {} : { resumeSessionAt }),
                 cwd: turnInput.runtimePolicy.cwd,
@@ -6240,6 +6267,7 @@ export function makeClaudeAdapterV2(
           const context: ClaudeLiveQueryContext = {
             nativeThreadId,
             query: querySession,
+            handoffContext,
             queryPolicyKey,
             selectionKey: compiledSelection.queryIdentity,
             closed,
@@ -6376,7 +6404,14 @@ export function makeClaudeAdapterV2(
               // A user turn that races a wake leaves the buffer alone: the
               // continuation run the worker queued behind this run drains it
               // afterwards with correct attribution.
-              yield* querySession.query.offer(userMessage);
+              yield* querySession.query.offer(userMessage).pipe(
+                Effect.onExit((exit) =>
+                  Effect.sync(() => {
+                    if (Exit.isFailure(exit))
+                      querySession.handoffContext.complete("failed", undefined, false);
+                  }),
+                ),
+              );
               return;
             }
             const drained = yield* Ref.modify(wakeBuffers, (current) => {

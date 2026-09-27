@@ -2,6 +2,7 @@ import { expect, it, vi } from "vite-plus/test";
 import { it as effectIt } from "@effect/vitest";
 import {
   CommandId,
+  ContextHandoffId,
   CheckpointScopeId,
   MessageId,
   NodeId,
@@ -11,6 +12,7 @@ import {
   ProviderInstanceId,
   ProviderSetupError,
   RunAttemptId,
+  RuntimeRequestId,
   RunId,
   ThreadId,
   TurnItemId,
@@ -37,7 +39,9 @@ import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
-import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
+import { CLAUDE_PROVIDER, ClaudeProviderCapabilitiesV2 } from "./Adapters/ClaudeAdapterV2.ts";
+import type { ProviderAdapterV2TurnInput } from "./ProviderAdapter.ts";
+import { CODEX_DRIVER_KIND, CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 
 const isDomainEvent = Schema.is(OrchestrationV2DomainEvent);
 
@@ -105,6 +109,7 @@ it("does not commit running state when inherited background routing cannot be re
             ),
         }),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getTurnStartHistory: () => Effect.succeed([]),
           getTurnStartContext: () => {
             projectionReadCount += 1;
             return Effect.succeed({
@@ -154,6 +159,10 @@ it("does not commit running state when inherited background routing cannot be re
 
 function makeLocalCommandHarness(input: {
   readonly text: string;
+  readonly questionResponse?: OrchestrationV2ThreadProjection["messages"][number]["questionResponse"];
+  readonly captureNative?: ProviderDriverKind;
+  readonly handoffs?: OrchestrationV2ThreadProjection["contextHandoffs"];
+  readonly nativeContinuation?: boolean;
   readonly previousNativeSession?: boolean;
   readonly previousMessages?: ReadonlyArray<string>;
   readonly logoutFailure?: string;
@@ -196,12 +205,18 @@ function makeLocalCommandHarness(input: {
   };
   const providerThread: OrchestrationV2ThreadProjection["providerThreads"][number] = {
     id: providerThreadId,
-    driver: ProviderDriverKind.make("codex"),
+    driver: ProviderDriverKind.make(input.captureNative ?? "codex"),
     providerInstanceId: newInstanceId,
     providerSessionId,
     appThreadId: threadId,
     ownerNodeId: null,
-    nativeThreadRef: null,
+    nativeThreadRef: input.captureNative
+      ? {
+          driver: ProviderDriverKind.make(input.captureNative),
+          nativeId: "native-execution",
+          strength: "strong",
+        }
+      : null,
     nativeConversationHeadRef: null,
     status: "not_loaded",
     firstRunOrdinal: 2,
@@ -218,10 +233,11 @@ function makeLocalCommandHarness(input: {
     nodeId: rootNodeId,
     role: "user",
     text: input.text,
+    ...(input.questionResponse === undefined ? {} : { questionResponse: input.questionResponse }),
     attachments: [],
     streaming: false,
-    createdBy: "user",
-    creationSource: "web",
+    createdBy: input.nativeContinuation ? "agent" : "user",
+    creationSource: input.nativeContinuation ? "provider" : "web",
     createdAt: now,
     updatedAt: now,
   };
@@ -325,7 +341,7 @@ function makeLocalCommandHarness(input: {
     ],
     providerSessions: [],
     providerTurns: [],
-    contextHandoffs: [],
+    contextHandoffs: input.handoffs ?? [],
     contextTransfers: [],
     turnItems: [],
     visibleTurnItems: [],
@@ -336,8 +352,13 @@ function makeLocalCommandHarness(input: {
     updatedAt: now,
   };
   const events: Array<OrchestrationV2DomainEvent> = [];
+  const delivered: ProviderAdapterV2TurnInput[] = [];
+  const startTurn = (turn: ProviderAdapterV2TurnInput) =>
+    Effect.sync(() => {
+      delivered.push(turn);
+    });
   const open = vi.fn(() => {
-    if (input.executionFailure)
+    if (input.executionFailure || input.captureNative)
       return Effect.succeed({
         driver: providerThread.driver,
         providerSession: {
@@ -347,15 +368,25 @@ function makeLocalCommandHarness(input: {
           status: "ready",
           cwd: "/tmp/native-account-command",
           model: run.modelSelection.model,
-          capabilities: CodexProviderCapabilitiesV2,
+          capabilities:
+            input.captureNative === CLAUDE_PROVIDER
+              ? ClaudeProviderCapabilitiesV2
+              : CodexProviderCapabilitiesV2,
           createdAt: now,
           updatedAt: now,
           lastError: null,
         },
+        startTurn,
+        compactThread: startTurn,
+        resumeThread: () => Effect.succeed(providerThread),
         ensureThread: () =>
           Effect.succeed({
             ...providerThread,
-            nativeThreadRef: { driver: "codex", nativeId: "native-execution", strength: "strong" },
+            nativeThreadRef: {
+              driver: input.captureNative ?? "codex",
+              nativeId: "native-execution",
+              strength: "strong",
+            },
           }),
       } as never);
     if (input.startupFailure) {
@@ -399,51 +430,88 @@ function makeLocalCommandHarness(input: {
           )
         : Effect.die("A local command must not open a native session.");
   });
-  const startRootRun = vi.fn(() => {
-    if (!input.executionFailure) return Effect.die("A local command must not start a native turn.");
-    if (input.executionFailure === "current") {
-      projection = {
-        ...projection,
-        turnItems: [
-          {
-            id: TurnItemId.make("execution-setup-item"),
-            threadId,
-            runId,
-            nodeId: rootNodeId,
-            providerThreadId,
-            providerTurnId: null,
-            nativeItemRef: null,
-            parentItemId: null,
-            ordinal: 7,
-            type: "error",
-            title: "Setup diagnostic",
-            status: "failed",
-            failure: { class: "unknown", message: "Setup diagnostic", code: null, retryable: null },
-            startedAt: now,
-            completedAt: now,
-            updatedAt: now,
-          },
-        ],
-      };
-    }
-    if (input.executionFailure !== "current")
-      projection = {
-        ...projection,
-        runs: projection.runs.map((run) => ({
-          ...run,
-          ...(input.executionFailure === "stopped"
-            ? { status: "interrupted" as const }
-            : { activeAttemptId: RunAttemptId.make("replacement-attempt") }),
-        })),
-      };
-    return Effect.fail(
-      new RunExecutionService.RunExecutionStartError({
-        commandId: CommandId.make("checkpoint-start-failure"),
-        runId,
-        cause: "Synthetic checkpoint baseline failure",
-      }),
-    );
-  });
+  const startRootRun = vi.fn(
+    (start: RunExecutionService.RunExecutionServiceV2StartRootRunInput) => {
+      if (input.captureNative) {
+        const turn = {
+          appThread: start.appThread,
+          threadId,
+          runId,
+          runOrdinal: start.run.ordinal,
+          providerTurnOrdinal: start.providerTurnOrdinal,
+          attemptId,
+          rootNodeId,
+          providerThread: start.providerThread,
+          message: start.message,
+          modelSelection: start.modelSelection,
+          runtimePolicy: start.runtimePolicy,
+        };
+        return (
+          input.text === "/compact"
+            ? start.session.compactThread!(turn)
+            : start.session.startTurn(turn)
+        ).pipe(
+          Effect.mapError(
+            (cause) =>
+              new RunExecutionService.RunExecutionStartError({
+                commandId: start.commandId,
+                runId,
+                cause,
+              }),
+          ),
+        );
+      }
+      if (!input.executionFailure)
+        return Effect.die("A local command must not start a native turn.");
+      if (input.executionFailure === "current") {
+        projection = {
+          ...projection,
+          turnItems: [
+            {
+              id: TurnItemId.make("execution-setup-item"),
+              threadId,
+              runId,
+              nodeId: rootNodeId,
+              providerThreadId,
+              providerTurnId: null,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal: 7,
+              type: "error",
+              title: "Setup diagnostic",
+              status: "failed",
+              failure: {
+                class: "unknown",
+                message: "Setup diagnostic",
+                code: null,
+                retryable: null,
+              },
+              startedAt: now,
+              completedAt: now,
+              updatedAt: now,
+            },
+          ],
+        };
+      }
+      if (input.executionFailure !== "current")
+        projection = {
+          ...projection,
+          runs: projection.runs.map((run) => ({
+            ...run,
+            ...(input.executionFailure === "stopped"
+              ? { status: "interrupted" as const }
+              : { activeAttemptId: RunAttemptId.make("replacement-attempt") }),
+          })),
+        };
+      return Effect.fail(
+        new RunExecutionService.RunExecutionStartError({
+          commandId: CommandId.make("checkpoint-start-failure"),
+          runId,
+          cause: "Synthetic checkpoint baseline failure",
+        }),
+      );
+    },
+  );
   const tryHandlePromptCommand = vi.fn(() =>
     input.logoutFailure === undefined
       ? Effect.succeed(true)
@@ -483,12 +551,23 @@ function makeLocalCommandHarness(input: {
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({}),
-        Layer.mock(EventSink.EventSinkV2)({ writeIfRunCurrent }),
+        Layer.mock(EventSink.EventSinkV2)({
+          writeIfRunCurrent,
+          write: ({ events: incoming }) =>
+            Effect.sync(() => {
+              for (const event of incoming) {
+                events.push(event);
+                projection = ProjectionStore.applyToProjection(projection, event);
+              }
+              return { storedEvents: [] } as never;
+            }),
+        }),
         IdAllocator.layer,
         FileSystem.layerNoop({}),
         Layer.mock(GitWorkflow.GitWorkflowService)({}),
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getTurnStartHistory: () => Effect.succeed([]),
           getTurnStartContext: () =>
             Effect.succeed({
               ...projection,
@@ -518,6 +597,7 @@ function makeLocalCommandHarness(input: {
     ),
   );
   return {
+    delivered,
     open,
     writeIfRunCurrent,
     startRootRun,
@@ -795,3 +875,121 @@ for (const executionFailure of ["current", "stopped", "replaced"] as const) {
       }),
   );
 }
+
+it("classifies an edited queued answer from its current slash command", async () => {
+  const harness = makeLocalCommandHarness({
+    text: "/logout",
+    questionResponse: { requestId: RuntimeRequestId.make("edited-question"), answers: [] },
+  });
+  await Effect.runPromise(harness.start);
+  expect(harness.tryHandlePromptCommand).toHaveBeenCalledWith(
+    expect.objectContaining({ text: "/logout" }),
+  );
+});
+
+it("starts an edited queued answer from its exact current prose", async () => {
+  const harness = makeLocalCommandHarness({
+    text: "The corrected response",
+    questionResponse: { requestId: RuntimeRequestId.make("edited-question"), answers: [] },
+    captureNative: CODEX_DRIVER_KIND,
+  });
+  await Effect.runPromise(harness.start);
+  expect(harness.startRootRun).toHaveBeenCalledWith(
+    expect.objectContaining({
+      message: expect.objectContaining({ text: "The corrected response" }),
+    }),
+  );
+});
+
+function suppliedHandoff(
+  name: string,
+  accepted = false,
+): OrchestrationV2ThreadProjection["contextHandoffs"][number] {
+  const now = DateTime.makeUnsafe("2026-09-04T12:00:00Z");
+  return {
+    id: ContextHandoffId.make(name),
+    threadId: ThreadId.make("thread-native-account-command"),
+    targetRunId: RunId.make("run-native-account-command"),
+    fromProviderThreadIds: [],
+    toProviderThreadId: ProviderThreadId.make("new-provider-thread"),
+    coveredRunOrdinals: { from: 1, to: 1 },
+    strategy: "manual_context",
+    author: "verbatim",
+    createdByProviderInstanceId: ProviderInstanceId.make("codex-personal"),
+    status: "ready",
+    summaryMessageId: null,
+    summaryText: name,
+    createdAt: now,
+    updatedAt: now,
+    ...(accepted
+      ? {
+          delivery: {
+            nativeThreadId: "native-execution",
+            status: "inline",
+            contextChannel: "system",
+            itemIds: [],
+          } as const,
+        }
+      : {}),
+  };
+}
+
+it.each([CLAUDE_PROVIDER, CODEX_DRIVER_KIND])(
+  "routes supplied context through the existing %s channel",
+  async (driver) => {
+    const harness = makeLocalCommandHarness({
+      text: "Continue unchanged",
+      captureNative: driver,
+      handoffs: [suppliedHandoff("SUPPLIED_CONTEXT")],
+    });
+    await Effect.runPromise(harness.start);
+    expect(harness.delivered).toHaveLength(1);
+    expect(harness.delivered[0]?.message.text).toBe("Continue unchanged");
+    if (driver === CLAUDE_PROVIDER) {
+      expect(harness.delivered[0]?.handoffContext).toContain("SUPPLIED_CONTEXT");
+      expect(harness.delivered[0]?.runtimePolicy.sessionContext ?? "").not.toContain(
+        "SUPPLIED_CONTEXT",
+      );
+    } else {
+      expect(harness.delivered[0]?.handoffContext).toBeUndefined();
+      expect(harness.delivered[0]?.runtimePolicy.sessionContext).toContain("SUPPLIED_CONTEXT");
+    }
+  },
+);
+
+it("hydrates cold Claude compaction from accepted context without consuming pending packages", async () => {
+  const accepted = suppliedHandoff("ACCEPTED_CONTEXT", true);
+  const pending = suppliedHandoff("NEW_PENDING_CONTEXT");
+  const uncertain = {
+    ...suppliedHandoff("UNCERTAIN_CONTEXT", true),
+    delivery: { ...accepted.delivery!, status: "pending" as const },
+  };
+  const harness = makeLocalCommandHarness({
+    text: "/compact",
+    previousMessages: ["Earlier ordinary turn"],
+    captureNative: CLAUDE_PROVIDER,
+    handoffs: [accepted, pending, uncertain],
+  });
+  // The account command classifier must pass /compact onward to the native adapter.
+  harness.tryHandlePromptCommand.mockReturnValue(Effect.succeed(false));
+  await Effect.runPromise(harness.start);
+  expect(harness.delivered).toHaveLength(1);
+  expect(harness.delivered[0]?.handoffContext).toContain("ACCEPTED_CONTEXT");
+  expect(harness.delivered[0]?.handoffContext).not.toContain("NEW_PENDING_CONTEXT");
+  expect(harness.delivered[0]?.handoffContext).not.toContain("UNCERTAIN_CONTEXT");
+  expect(harness.projection().contextHandoffs).toEqual([accepted, pending, uncertain]);
+});
+
+it("defers supplied Claude handoffs during a native background continuation", async () => {
+  const pending = suppliedHandoff("NEW_PENDING_CONTEXT");
+  const harness = makeLocalCommandHarness({
+    text: "Native background wake",
+    captureNative: CLAUDE_PROVIDER,
+    handoffs: [pending],
+    nativeContinuation: true,
+  });
+  await Effect.runPromise(harness.start);
+  expect(harness.delivered).toHaveLength(1);
+  expect(harness.delivered[0]?.handoffContext).toBe("");
+  expect(harness.projection().contextHandoffs).toEqual([pending]);
+});

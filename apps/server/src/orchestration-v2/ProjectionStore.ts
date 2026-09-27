@@ -1,3 +1,4 @@
+import { linkedQueuedAnswerMessageIds } from "../exarch/QueuedAnswerEdit.ts";
 import {
   latestRootProviderFailure,
   threadErrorSummary,
@@ -2698,7 +2699,13 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               );
         const cohortProviderThreadIds = cohortJson("providerThreadId");
         const cohortProviderTurnIds = cohortJson("providerTurnId");
-        const cohortMessageIds = cohortJson("messageId");
+        const cohortMessageIds = encodeIdList([
+          ...turnItems.flatMap((item) => {
+            const value = nullableStringField(item, "messageId");
+            return value === null ? [] : [value];
+          }),
+          ...linkedQueuedAnswerMessageIds(turnItems),
+        ]);
         const cohortPlanIds = cohortJson("planId");
         const cohortCheckpointIds = cohortJson("checkpointId");
         const cohortHandoffIds = cohortJson("contextHandoffId");

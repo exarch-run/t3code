@@ -300,6 +300,134 @@ it.effect("memory recovery selection includes unfinished items from missing runs
 );
 
 it.layer(TestLayer)("ProjectionStoreV2", (it) => {
+  it.effect("retains only selected questions' canonical answers after queued cancellation", () =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStoreV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("bounded-linked-answer");
+      yield* store.apply({
+        id: EventId.make("linked:create"),
+        type: "thread.created",
+        threadId,
+        occurredAt: now,
+        payload: {
+          createdBy: "user",
+          creationSource: "web",
+          id: threadId,
+          projectId: ProjectId.make("linked:project"),
+          title: "Linked answers",
+          providerInstanceId,
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          activeProviderThreadId: null,
+          lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+          forkedFrom: null,
+          createdAt: now,
+          updatedAt: now,
+          archivedAt: null,
+          settledOverride: null,
+          settledAt: null,
+          lastVisitedAt: null,
+          deletedAt: null,
+        },
+      });
+      for (const [index, name] of ["outside", "selected"].entries()) {
+        const requestId = RuntimeRequestId.make(`linked:${name}`);
+        const runId = RunId.make(`linked:${name}:answer-run`);
+        const messageId = MessageId.make(`async-answer:${requestId}`);
+        yield* store.apply({
+          id: EventId.make(`linked:${name}:question`),
+          type: "turn-item.updated",
+          threadId,
+          occurredAt: now,
+          payload: {
+            id: TurnItemId.make(`linked:${name}:question`),
+            type: "user_input_request",
+            threadId,
+            runId: null,
+            nodeId: null,
+            providerThreadId: null,
+            providerTurnId: null,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: index + 1,
+            status: "completed",
+            title: null,
+            startedAt: now,
+            completedAt: now,
+            updatedAt: now,
+            requestId,
+            responseMode: "message",
+            questions: [{ id: "q", header: "Choice", question: "Which?", options: [] }],
+          },
+        });
+        yield* store.apply({
+          id: EventId.make(`linked:${name}:run`),
+          type: "run.updated",
+          threadId,
+          runId,
+          occurredAt: now,
+          payload: {
+            id: runId,
+            threadId,
+            ordinal: index + 1,
+            providerInstanceId,
+            modelSelection,
+            providerThreadId: null,
+            userMessageId: messageId,
+            rootNodeId: null,
+            activeAttemptId: null,
+            status: "cancelled",
+            requestedAt: now,
+            startedAt: null,
+            completedAt: now,
+            checkpointId: null,
+            contextHandoffId: null,
+          },
+        });
+        yield* store.apply({
+          id: EventId.make(`linked:${name}:message`),
+          type: "message.updated",
+          threadId,
+          runId,
+          occurredAt: now,
+          payload: {
+            id: messageId,
+            threadId,
+            runId,
+            nodeId: null,
+            role: "user",
+            text: `Edited ${name}`,
+            attachments: [],
+            streaming: false,
+            createdBy: "user",
+            creationSource: "web",
+            createdAt: now,
+            updatedAt: now,
+            questionResponse: { requestId, answers: [] },
+          },
+        });
+      }
+      const result = yield* store.getThreadSnapshotWindow(threadId, {
+        rowLimit: 1,
+        anchorItemId: TurnItemId.make("linked:selected:question"),
+      });
+      assert.deepEqual(
+        result.projection.messages.map((message) => message.id),
+        ["async-answer:linked:selected"],
+      );
+      assert.equal(result.projection.messages[0]?.text, "Edited selected");
+      assert.deepEqual(result.projection.messages[0]?.questionResponse, {
+        requestId: RuntimeRequestId.make("linked:selected"),
+        answers: [],
+      });
+      assert.deepEqual(result.projection.runtimeRequests, []);
+    }),
+  );
+
   it.effect("limits turn-start history to the requested runs, including an empty selection", () =>
     Effect.gen(function* () {
       const store = yield* ProjectionStoreV2;

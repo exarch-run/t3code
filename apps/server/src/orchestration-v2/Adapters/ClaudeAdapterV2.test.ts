@@ -1907,11 +1907,13 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       const sdkMessages = yield* Queue.unbounded<SDKMessage>();
       const offeredMessages: Array<SDKUserMessage> = [];
       const continuationRequests: Array<ProviderContinuationRequest> = [];
+      const continuationReceipts = yield* Queue.unbounded<ProviderContinuationRequest>();
       const terminalReceipts =
         yield* Queue.unbounded<Extract<ProviderAdapterV2Event, { type: "turn.terminal" }>>();
       const systemNoticeReceipts =
         yield* Queue.unbounded<Extract<ProviderAdapterV2Event, { type: "turn_item.updated" }>>();
       let openedOptions: ClaudeAgentSdkQueryOptions | undefined;
+      let queryOpens = 0;
       const adapter = makeClaudeAdapterV2({
         instanceId: CLAUDE_DEFAULT_INSTANCE_ID,
         settings: DEFAULT_CLAUDE_SETTINGS,
@@ -1922,8 +1924,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         idAllocator,
         continuationRequests: {
           offer: (request) =>
-            Effect.sync(() => {
+            Effect.gen(function* () {
               continuationRequests.push(request);
+              yield* Queue.offer(continuationReceipts, request);
             }),
         },
         queryRunner: {
@@ -1931,6 +1934,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           open: (input) =>
             Effect.sync(() => {
               openedOptions = input.options;
+              queryOpens++;
               return {
                 messages: Stream.fromQueue(sdkMessages),
                 offer: (message) =>
@@ -1989,15 +1993,128 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         sdkMessages,
         offeredMessages,
         continuationRequests,
+        continuationReceipts,
         events,
         terminalReceipts,
         systemNoticeReceipts,
         getOpenedOptions: () => openedOptions,
+        getQueryOpens: () => queryOpens,
         terminalEvents,
         hasPendingBackgroundWork,
       };
     });
   const makeWakeHarness = makeWakeHarnessWithOptions();
+
+  it.effect(
+    "delivers changing handoffs in the live query, preserving background work and compact retry",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeWakeHarness;
+          const text = "x".repeat(8_999) + "😀" + "handoff".repeat(6_000);
+          const invoke = (compact = false) =>
+            Effect.promise(async () => {
+              const hookInput = compact
+                ? {
+                    hook_event_name: "SessionStart" as const,
+                    source: "compact" as const,
+                    session_id: WAKE_NATIVE_SESSION,
+                    transcript_path: "/unused",
+                    cwd: "/workspace",
+                  }
+                : {
+                    hook_event_name: "UserPromptSubmit" as const,
+                    prompt: "/skill original words",
+                    session_id: WAKE_NATIVE_SESSION,
+                    transcript_path: "/unused",
+                    cwd: "/workspace",
+                  };
+              const outputs = await Promise.all(
+                harness
+                  .getOpenedOptions()!
+                  .hooks![hookInput.hook_event_name]!.at(-1)!
+                  .hooks.map((hook) =>
+                    hook(hookInput, undefined, { signal: new AbortController().signal }),
+                  ),
+              );
+              return outputs
+                .flatMap((output) =>
+                  "hookSpecificOutput" in output &&
+                  output.hookSpecificOutput &&
+                  "additionalContext" in output.hookSpecificOutput
+                    ? [output.hookSpecificOutput.additionalContext!]
+                    : [],
+                )
+                .map((part) => part.slice(part.indexOf("\n") + 1))
+                .join("");
+            });
+          for (let index = 0; index < 6; index++) {
+            const isCompact = index === 3;
+            const attemptId = RunAttemptId.make(`handoff-context-${index}`);
+            yield* harness.runtime.startTurn({
+              ...makeClaudeTestTurnInput({
+                threadId: harness.threadId,
+                providerThread: harness.providerThread,
+                now: yield* DateTime.now,
+                attemptId,
+                text: isCompact ? "/compact" : "/skill original words",
+                attachments: [],
+                providerTurnOrdinal: index + 1,
+              }),
+              handoffContext: isCompact ? undefined : index === 0 ? "first" : text,
+            });
+            const received = yield* invoke(isCompact);
+            assert.equal(received, index === 0 ? "first" : index === 2 || index === 4 ? "" : text);
+            if (index === 0)
+              yield* Queue.offer(
+                harness.sdkMessages,
+                claudeSdkFrame({
+                  ...wakeTaskStarted,
+                  user_message_uuid: claudePromptUuid(attemptId),
+                }),
+              );
+            yield* Queue.offer(
+              harness.sdkMessages,
+              claudeSdkFrame({
+                ...makeResultFrame({
+                  uuid: `handoff-result-${index}`,
+                  result: "",
+                  numTurns: isCompact || index === 4 ? 0 : 1,
+                }),
+                user_message_uuid: claudePromptUuid(attemptId),
+              }),
+            );
+            yield* Queue.take(harness.terminalReceipts);
+            assert.isTrue(yield* harness.hasPendingBackgroundWork);
+          }
+          yield* Queue.offer(harness.sdkMessages, wakeNotification);
+          yield* Queue.offer(harness.sdkMessages, wakeAssistant);
+          yield* Queue.offer(harness.sdkMessages, wakeResult);
+          yield* Queue.take(harness.continuationReceipts);
+          yield* harness.runtime.startTurn({
+            ...makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make("handoff-context-wake"),
+              text: "Native wake",
+              attachments: [],
+              messageCreatedBy: "agent",
+              messageCreationSource: "provider",
+              providerTurnOrdinal: 7,
+            }),
+            handoffContext: "MUST NOT REPLACE RETAINED CONTEXT",
+          });
+          yield* Queue.take(harness.terminalReceipts);
+          assert.isFalse(yield* harness.hasPendingBackgroundWork);
+          assert.equal(yield* invoke(true), text);
+          assert.equal(harness.getQueryOpens(), 1);
+          assert.equal(harness.offeredMessages.length, 6);
+          assert.isDefined(harness.getOpenedOptions()!.hooks!.PreToolUse);
+          assert.equal(harness.getOpenedOptions()!.hooks!.UserPromptSubmit!.length, 2);
+        }).pipe(Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
+      ),
+  );
 
   it.effect.each(["completed", "interrupted"] as const)(
     "projects Claude thinking blocks when %s",

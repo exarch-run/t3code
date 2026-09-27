@@ -718,6 +718,77 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
     }),
   );
 
+  it.effect("leaves pending Bring back transfers untouched by native continuation dispatch", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* OrchestratorV2;
+      const sink = yield* EventSinkV2;
+      const threadId = ThreadId.make("native-wake-pending-merge");
+      const now = yield* DateTime.now;
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("native-wake:create"),
+        createdBy: "user",
+        creationSource: "web",
+        threadId,
+        projectId: ProjectId.make("native-wake:project"),
+        title: "Native wake",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: process.cwd(),
+      });
+      const transfer = {
+        id: ContextTransferId.make("native-wake:pending-transfer"),
+        type: "merge_back" as const,
+        sourceThreadId: ThreadId.make("source-not-needed-for-native-wake"),
+        targetThreadId: threadId,
+        sourcePoint: {
+          threadId: ThreadId.make("source-not-needed-for-native-wake"),
+          runId: RunId.make("source-run"),
+        },
+        basePoint: null,
+        sourceProviderInstanceId: modelSelection.instanceId,
+        targetProviderInstanceId: modelSelection.instanceId,
+        targetRunId: null,
+        status: "pending" as const,
+        resolution: null,
+        createdBy: "user" as const,
+        error: null,
+        createdAt: now,
+        updatedAt: now,
+        consumedAt: null,
+      };
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make("native-wake:transfer-event"),
+            type: "context-transfer.created",
+            threadId,
+            occurredAt: now,
+            payload: transfer,
+          },
+        ],
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("native-wake:send"),
+        createdBy: "agent",
+        creationSource: "provider",
+        threadId,
+        messageId: MessageId.make("native-wake:message"),
+        text: "The background process completed",
+        attachments: [],
+        modelSelection,
+        dispatchMode: { type: "start_immediately" },
+      });
+      const projection = yield* orchestrator.getThreadProjection(threadId);
+      assert.deepEqual(projection.contextTransfers, [transfer]);
+      assert.deepEqual(projection.contextHandoffs, []);
+      assert.equal(projection.runs.length, 1);
+    }),
+  );
+
   it.effect("answers an async question after its provider exits and commits the answer once", () =>
     Effect.gen(function* () {
       const orchestrator = yield* OrchestratorV2;
@@ -2617,6 +2688,167 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
     );
   }
 
+  for (const questionCount of [1, 2]) {
+    it.effect(
+      `keeps edited ${questionCount}-question queued answers through event replay and promotion`,
+      () =>
+        Effect.gen(function* () {
+          const orchestrator = yield* OrchestratorV2;
+          const threadId = ThreadId.make(`queued-answer-edit-${questionCount}`);
+          const requestId = RuntimeRequestId.make(`${threadId}:request`);
+          const questionResponse = {
+            requestId,
+            answers: Array.from({ length: questionCount }, (_, i) => ({
+              questionId: `q${i}`,
+              question: `Question ${i}?`,
+              answer: `Old ${i}`,
+            })),
+          };
+          const attachment = {
+            type: "image" as const,
+            id: "answer-file",
+            name: "answer.png",
+            mimeType: "image/png",
+            sizeBytes: 128,
+          };
+          yield* orchestrator.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make(`${threadId}:create`),
+            createdBy: "user",
+            creationSource: "web",
+            threadId,
+            projectId: ProjectId.make(`${threadId}:project`),
+            title: "Queued answer",
+            modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: process.cwd(),
+          });
+          for (const [i, text] of ["Keep working", "Original answer"].entries()) {
+            yield* orchestrator.dispatch({
+              type: "message.dispatch",
+              commandId: CommandId.make(`${threadId}:send:${i}`),
+              createdBy: "user",
+              creationSource: "web",
+              threadId,
+              messageId: MessageId.make(`${threadId}:message:${i}`),
+              text,
+              attachments: i ? [attachment] : [],
+              ...(i ? { questionResponse } : {}),
+              modelSelection,
+              dispatchMode: { type: i ? "queue_after_active" : "start_immediately" },
+            });
+          }
+          const before = yield* orchestrator.getThreadProjection(threadId);
+          const run = before.runs.find((run) => run.status === "queued")!;
+          if (questionCount === 2) {
+            const activeItem = before.turnItems.find((item) => item.type === "user_message")!;
+            assert.equal(activeItem.type, "user_message");
+            if (activeItem.type === "user_message") {
+              const now = yield* DateTime.now;
+              yield* (yield* EventSinkV2).write({
+                events: [
+                  {
+                    id: EventId.make(`${threadId}:legacy-item-event`),
+                    type: "turn-item.updated",
+                    threadId,
+                    runId: run.id,
+                    occurredAt: now,
+                    payload: {
+                      ...activeItem,
+                      id: TurnItemId.make(`${threadId}:legacy-item`),
+                      runId: run.id,
+                      messageId: run.userMessageId,
+                      nodeId: run.rootNodeId,
+                      text: "Original answer",
+                      attachments: [attachment],
+                      questionResponse,
+                      ordinal: activeItem.ordinal + 1,
+                    },
+                  },
+                ],
+              });
+            }
+          }
+          const edit = (
+            id: string,
+            text: string,
+            extras: {
+              attachments?: (typeof attachment)[];
+              questionResponse?: typeof questionResponse;
+            } = {},
+          ) =>
+            orchestrator.dispatch({
+              type: "queued-run.edit",
+              commandId: CommandId.make(`${threadId}:edit:${id}`),
+              threadId,
+              runId: run.id,
+              text,
+              ...extras,
+            });
+          const saved = () =>
+            orchestrator
+              .getThreadProjection(threadId)
+              .pipe(
+                Effect.map((projection) =>
+                  projection.messages.find((message) => message.id === run.userMessageId)!,
+                ),
+              );
+          yield* edit("same", "Original answer", { attachments: [{ ...attachment }] });
+          assert.deepEqual((yield* saved()).questionResponse, questionResponse);
+          yield* edit("changed", "Corrected answer");
+          assert.deepEqual((yield* saved()).questionResponse, { requestId, answers: [] });
+          assert.deepEqual((yield* saved()).attachments, [attachment]);
+          if (questionCount === 2) {
+            const updated = (yield* orchestrator.getThreadProjection(threadId)).turnItems.find(
+              (item) => item.type === "user_message" && item.messageId === run.userMessageId,
+            );
+            assert.equal(updated?.type, "user_message");
+            if (updated?.type === "user_message") {
+              assert.equal(updated.text, "Corrected answer");
+              assert.deepEqual(updated.questionResponse, { requestId, answers: [] });
+            }
+          }
+          yield* edit("restored", "Original answer");
+          assert.deepEqual((yield* saved()).questionResponse, { requestId, answers: [] });
+          yield* edit("explicit", "Replacement", { questionResponse });
+          assert.deepEqual((yield* saved()).questionResponse, questionResponse);
+          yield* edit("remove-file", "Replacement", { attachments: [] });
+          assert.deepEqual((yield* saved()).questionResponse, { requestId, answers: [] });
+          assert.deepEqual((yield* saved()).attachments, []);
+          yield* edit("files-only", "", { attachments: [attachment] });
+          yield* edit("omitted-files", "");
+          assert.deepEqual((yield* saved()).attachments, [attachment]);
+          assert.equal(
+            (yield* edit("invalid-empty", "", { attachments: [] }).pipe(Effect.result))._tag,
+            "Failure",
+          );
+          assert.deepEqual((yield* saved()).attachments, [attachment]);
+          // Rebuild from durable events before dispatch. No existing turn item is required.
+          assert.isTrue((yield* (yield* ProjectionMaintenanceV2).rebuild).valid);
+          assert.deepEqual((yield* saved()).questionResponse, { requestId, answers: [] });
+          assert.equal((yield* saved()).text, "");
+          yield* (yield* ProviderRuntimeRecoveryService).reconcile("startup");
+          yield* orchestrator.dispatch({
+            type: "queue.resume",
+            commandId: CommandId.make(`${threadId}:resume`),
+            threadId,
+          });
+          const promoted = yield* orchestrator.getThreadProjection(threadId);
+          const item = promoted.turnItems.find(
+            (item) => item.type === "user_message" && item.messageId === run.userMessageId,
+          );
+          assert.equal(item?.type, "user_message");
+          if (item?.type === "user_message") {
+            assert.equal(item.text, "");
+            assert.deepEqual(item.attachments, [attachment]);
+            assert.deepEqual(item.questionResponse, { requestId, answers: [] });
+          }
+        }),
+    );
+  }
+
   it.effect("edits and removes queued runs", () =>
     Effect.gen(function* () {
       const orchestrator = yield* OrchestratorV2;
@@ -2730,6 +2962,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
           threadId,
           runId: queuedRun.id,
           text: "   ",
+          attachments: [],
         })
         .pipe(Effect.flip);
       assert.equal(emptyEditError._tag, "OrchestratorCommandRejectedError");

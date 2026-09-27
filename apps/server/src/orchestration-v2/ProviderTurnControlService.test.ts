@@ -1,6 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import {
   type ModelSelection,
+  MessageId,
   NodeId,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2ThreadProjection,
@@ -323,4 +324,69 @@ it.effect(
       assert.equal(interrupted?.id, providerThreadId);
       assert.equal(interrupted?.nativeThreadRef?.nativeId, "native-thread:restart-session");
     }),
+);
+
+it.effect("steers the persisted edited answer prose and current attachments", () =>
+  Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    const threadId = ThreadId.make("steer-edited-answer");
+    const providerThreadId = ProviderThreadId.make("steer-edited-answer:provider");
+    const providerSessionId = ProviderSessionId.make("steer-edited-answer:session");
+    const providerTurnId = ProviderTurnId.make("steer-edited-answer:turn");
+    const runId = RunId.make("steer-edited-answer:run");
+    const messageId = MessageId.make("async-answer:steer-question");
+    const attachments = [
+      {
+        type: "image" as const,
+        id: "new-file",
+        name: "new.png",
+        mimeType: "image/png",
+        sizeBytes: 12,
+      },
+    ];
+    const sent: Array<Parameters<ProviderAdapterV2SessionRuntime["steerTurn"]>[0]> = [];
+    const context = {
+      providerThread: { id: providerThreadId, providerSessionId },
+      providerTurn: { id: providerTurnId, providerThreadId, status: "running" },
+      run: { id: runId },
+      message: {
+        id: messageId,
+        text: "My edited answer",
+        attachments,
+        questionResponse: { requestId: "steer-question", answers: [] },
+        createdBy: "user",
+        creationSource: "web",
+        createdAt: now,
+        updatedAt: now,
+      },
+    } as unknown as import("./ProjectionStore.ts").ProjectionProviderControlContext;
+    const session = {
+      steerTurn: (input: Parameters<ProviderAdapterV2SessionRuntime["steerTurn"]>[0]) =>
+        Effect.sync(() => {
+          sent.push(input);
+        }),
+    } as unknown as ProviderAdapterV2SessionRuntime;
+    const layer = providerTurnControlLayer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(ProjectionStoreV2)({
+            getProviderControlContext: () => Effect.succeed(context),
+          }),
+          Layer.mock(ProviderSessionManagerV2)({ get: () => Effect.succeed(Option.some(session)) }),
+        ),
+      ),
+    );
+    yield* Effect.gen(function* () {
+      yield* (yield* ProviderTurnControlServiceV2).steer({
+        threadId,
+        providerSessionId,
+        providerThreadId,
+        providerTurnId,
+        messageId,
+      });
+    }).pipe(Effect.provide(layer));
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0]?.message.text, "My edited answer");
+    assert.deepEqual(sent[0]?.message.attachments, attachments);
+  }),
 );

@@ -1,3 +1,4 @@
+import { normalizeQueuedAnswerEdit } from "../exarch/QueuedAnswerEdit.ts";
 import { bindTaskProgressCommands, nextTaskProgressRecord } from "../exarch/TaskProgressV2.ts";
 import { TaskProgress } from "../exarch/TaskProgressRuntime.ts";
 import { settledParentDisposesReports } from "../exarch/SettledParentReports.ts";
@@ -4477,9 +4478,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             (candidate) => candidate.id === projection.thread.activeProviderThreadId,
           );
       const activeRun = projection.runs.find(isBlockingRun);
-      const pendingMergeBackTransfers = command.startClean
-        ? []
-        : pendingMergeBackTransfersForThread(projection);
+      const nativeContinuation =
+        command.createdBy === "agent" && command.creationSource === "provider";
+      const pendingMergeBackTransfers =
+        command.startClean || nativeContinuation
+          ? []
+          : pendingMergeBackTransfersForThread(projection);
       const shouldQueue =
         activeRun !== undefined &&
         (dispatchMode.type === "defer_start" ||
@@ -4762,9 +4766,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         }
         return;
       }
-      const pendingForkTransfer = command.startClean
-        ? undefined
-        : pendingForkTransferForThread(projection);
+      const pendingForkTransfer =
+        command.startClean || nativeContinuation
+          ? undefined
+          : pendingForkTransferForThread(projection);
       const pendingMergeBackSourceThreadIds = new Set(
         pendingMergeBackTransfers.map((transfer) => transfer.sourceThreadId),
       );
@@ -7262,13 +7267,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
   ) =>
     Effect.gen(function* () {
-      if (command.text.trim().length === 0) {
-        return yield* new OrchestratorDispatchError({
-          commandId: command.commandId,
-          commandType: command.type,
-          cause: `Queued run ${command.runId} cannot be edited to an empty message.`,
-        });
-      }
       const projection = yield* projectionStore
         .getThreadRecords(command.threadId, ["runs", "messages", "turnItems"], {
           turnItemTypes: ["user_message"],
@@ -7305,6 +7303,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: "Automatic completion deliveries cannot be edited.",
         });
       }
+      if (
+        command.text.trim().length === 0 &&
+        (command.attachments ?? queuedMessage.attachments).length === 0
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Queued run ${command.runId} cannot be edited to an empty message.`,
+        });
+      }
+      const questionResponse = normalizeQueuedAnswerEdit(queuedMessage, command);
       const queuedTurnItem = projection.turnItems.find(
         (candidate) =>
           candidate.type === "user_message" && candidate.messageId === queuedMessage.id,
@@ -7326,7 +7335,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           text: command.text,
           ...editedAttachments,
           ...(command.context ? { context: command.context } : {}),
-          ...(command.questionResponse ? { questionResponse: command.questionResponse } : {}),
+          ...(questionResponse === undefined ? {} : { questionResponse }),
           updatedAt: now,
         },
       });
@@ -7343,7 +7352,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             text: command.text,
             ...editedAttachments,
             ...(command.context ? { context: command.context } : {}),
-            ...(command.questionResponse ? { questionResponse: command.questionResponse } : {}),
+            ...(questionResponse === undefined ? {} : { questionResponse }),
             updatedAt: now,
           },
         });
