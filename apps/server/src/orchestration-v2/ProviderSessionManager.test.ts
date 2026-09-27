@@ -1,3 +1,4 @@
+import { providerEventSequence } from "../exarch/ChildThreadEventWrites.ts";
 import * as NetAddress from "effect/unstable/net/NetAddress";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -967,6 +968,8 @@ it.effect("ProviderSessionManagerV2 drains subscribers when the provider stops",
         events.map((event) => event.type),
         ["turn.terminal", "provider_session.updated"],
       );
+      // Exarch: fan-out stamps emission order for child-thread writes.
+      assert.isBelow(providerEventSequence(events[0]!)!, providerEventSequence(events[1]!)!);
       assert.isTrue(Option.isNone(yield* manager.get(providerSessionId)));
       assert.equal((yield* Ref.get(state)).closeCount, 1);
     });

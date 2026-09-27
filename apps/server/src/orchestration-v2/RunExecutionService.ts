@@ -1163,12 +1163,6 @@ export const layer: Layer.Layer<
                   event,
                   DateTime.toEpochMillis(yield* DateTime.now),
                 );
-                // Exarch: the first live run to reach a child-thread event writes it.
-                const ingestor = yield* childThreadEventWrites.ingestorFor(
-                  event,
-                  routeIdentity,
-                  deliveredEvent !== null,
-                );
                 if (deliveredEvent) {
                   // Root provider_thread.updated always uses an ownership gate:
                   // pre-terminal writeIfRunCurrent (attempt still running), or
@@ -1179,6 +1173,8 @@ export const layer: Layer.Layer<
                   const isRootProviderThreadUpdate =
                     event.type === "provider_thread.updated" &&
                     event.providerThread.id === input.providerThread.id;
+                  // Exarch: write a child-thread event once across live runs, in emission order.
+                  const ingestor = childThreadEventWrites.ingestorFor(event, routeIdentity);
                   const storedEvents = yield* ingestor.ingestNormalized({
                     analyticsContext: {
                       modelSelection: input.modelSelection,

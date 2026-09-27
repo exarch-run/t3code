@@ -16,6 +16,7 @@ import {
   ProviderThreadId,
   ProviderTurnId,
   RunAttemptId,
+  type ResponseStreamingMode,
   RunId,
   ThreadId,
   TurnItemId,
@@ -46,7 +47,10 @@ import {
   layer as runExecutionServiceLayer,
   RunExecutionServiceV2,
 } from "../orchestration-v2/RunExecutionService.ts";
-import { makeChildThreadEventWrites } from "./ChildThreadEventWrites.ts";
+import {
+  makeChildThreadEventWrites,
+  stampProviderEventSequence,
+} from "./ChildThreadEventWrites.ts";
 
 const driver = ProviderDriverKind.make("claudeAgent");
 const providerInstanceId = ProviderInstanceId.make("claudeAgent");
@@ -58,6 +62,7 @@ const childProviderThreadId = ProviderThreadId.make("provider-thread:child-write
 const childProviderTurnId = ProviderTurnId.make("provider-turn:child-writes:child");
 const childNodeId = NodeId.make("node:child-writes:child");
 const childItemId = TurnItemId.make("turn-item:child-writes:child");
+const childReasoningId = TurnItemId.make("turn-item:child-writes:reasoning");
 
 const runId = (ordinal: number) => RunId.make(`run:child-writes:${ordinal}`);
 const attemptId = (ordinal: number) => RunAttemptId.make(`attempt:child-writes:${ordinal}`);
@@ -78,11 +83,13 @@ interface Subscriber {
 }
 
 /**
- * A provider session that hands each subscriber the same event objects, as
- * the session manager does, with delivery controlled per subscriber so a test
- * can make one run lag behind another.
+ * A provider session that stamps each event once and hands every subscriber
+ * the same event object, as the session manager does, with delivery controlled
+ * per subscriber so a test can make one run lag behind another. Every run
+ * shares one run execution service, as in the engine.
  */
 function makeHarness(options?: {
+  readonly streamingMode?: ResponseStreamingMode;
   readonly duringWrite?: (input: IngestInput) => Effect.Effect<void, ProviderEventPublishError>;
 }) {
   return Effect.gen(function* () {
@@ -125,10 +132,15 @@ function makeHarness(options?: {
                 return [];
               }),
           }),
-          ServerSettingsService.layerTest(),
         ),
       ),
+      Layer.provideMerge(
+        ServerSettingsService.layerTest({
+          responseStreamingMode: options?.streamingMode ?? "paragraph",
+        }),
+      ),
     );
+    const services = yield* Layer.build(layer);
     const session = {
       driver,
       events: Stream.empty,
@@ -146,63 +158,74 @@ function makeHarness(options?: {
       startTurn: () => Effect.void,
     } as unknown as ProviderAdapterV2SessionRuntime;
 
-    /** Start live runs of the parent chat. Each has taken over the subagent's child thread. */
-    const startRuns = (count: number) =>
+    /** Start a live run of the parent chat that has taken over the subagent's child thread. */
+    const startRun = (ordinal: number) =>
       Effect.gen(function* () {
         const runExecution = yield* RunExecutionServiceV2;
-        for (let ordinal = 1; ordinal <= count; ordinal += 1) {
-          yield* runExecution.startRootRun({
-            commandId: CommandId.make(`command:child-writes:${ordinal}`),
-            appThread: { id: parentThreadId } as OrchestrationV2AppThread,
-            providerSessionId,
-            session,
-            run: {
-              id: runId(ordinal),
-              threadId: parentThreadId,
-              ordinal,
-              providerInstanceId,
-            } as OrchestrationV2Run,
-            rootNode: {
-              id: NodeId.make(`node:child-writes:${ordinal}`),
-            } as OrchestrationV2ExecutionNode,
-            checkpointScope: {
-              id: CheckpointScopeId.make("checkpoint-scope:child-writes"),
-            } as OrchestrationV2CheckpointScope,
-            providerThread: { id: providerThreadId, driver } as OrchestrationV2ProviderThread,
-            attempt: {
-              id: attemptId(ordinal),
-              providerTurnId: rootTurnId(ordinal),
-            } as OrchestrationV2RunAttempt,
-            attemptId: attemptId(ordinal),
-            providerTurnOrdinal: ordinal,
-            relatedThreadIds: [childThreadId],
-            relatedProviderThreadIds: [childProviderThreadId],
-            message: {
-              messageId: MessageId.make(`message:child-writes:${ordinal}`),
-              text: "Keep going while the subagent works.",
-              attachments: [],
-              createdBy: "user",
-              creationSource: "web",
+        yield* runExecution.startRootRun({
+          commandId: CommandId.make(`command:child-writes:${ordinal}`),
+          appThread: { id: parentThreadId } as OrchestrationV2AppThread,
+          providerSessionId,
+          session,
+          run: {
+            id: runId(ordinal),
+            threadId: parentThreadId,
+            ordinal,
+            providerInstanceId,
+          } as OrchestrationV2Run,
+          rootNode: {
+            id: NodeId.make(`node:child-writes:${ordinal}`),
+          } as OrchestrationV2ExecutionNode,
+          checkpointScope: {
+            id: CheckpointScopeId.make("checkpoint-scope:child-writes"),
+          } as OrchestrationV2CheckpointScope,
+          providerThread: { id: providerThreadId, driver } as OrchestrationV2ProviderThread,
+          attempt: {
+            id: attemptId(ordinal),
+            providerTurnId: rootTurnId(ordinal),
+          } as OrchestrationV2RunAttempt,
+          attemptId: attemptId(ordinal),
+          providerTurnOrdinal: ordinal,
+          relatedThreadIds: [childThreadId],
+          relatedProviderThreadIds: [childProviderThreadId],
+          message: {
+            messageId: MessageId.make(`message:child-writes:${ordinal}`),
+            text: "Keep going while the subagent works.",
+            attachments: [],
+            createdBy: "user",
+            creationSource: "web",
+          },
+          modelSelection: { instanceId: providerInstanceId, model: "claude-opus-5-5" },
+          runtimePolicy: {
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            cwd: process.cwd(),
+            approvalPolicy: "never",
+            sandboxPolicy: {
+              type: "readOnly",
+              access: { type: "fullAccess" },
+              networkAccess: false,
             },
-            modelSelection: { instanceId: providerInstanceId, model: "claude-opus-5-5" },
-            runtimePolicy: {
-              runtimeMode: "full-access",
-              interactionMode: "default",
-              cwd: process.cwd(),
-              approvalPolicy: "never",
-              sandboxPolicy: {
-                type: "readOnly",
-                access: { type: "fullAccess" },
-                networkAccess: false,
-              },
-            },
-          });
-        }
-      }).pipe(Effect.provide(layer));
+          },
+        });
+      }).pipe(Effect.provide(services));
+    const setStreamingMode = (mode: ResponseStreamingMode) =>
+      Effect.gen(function* () {
+        const settings = yield* ServerSettingsService;
+        yield* settings.updateSettings({ responseStreamingMode: mode });
+      }).pipe(Effect.provide(services));
 
+    const stamped = new WeakSet<ProviderAdapterV2Event>();
     const publish = (to: ReadonlyArray<number>, ...events: ReadonlyArray<ProviderAdapterV2Event>) =>
-      Effect.forEach(to, (index) => Queue.offerAll(subscribers[index]!.queue, events), {
-        discard: true,
+      Effect.gen(function* () {
+        for (const event of events) {
+          if (stamped.has(event)) continue;
+          stamped.add(event);
+          stampProviderEventSequence(event);
+        }
+        yield* Effect.forEach(to, (index) => Queue.offerAll(subscribers[index]!.queue, events), {
+          discard: true,
+        });
       });
     const endAndAwait = Effect.forEach(
       subscribers,
@@ -210,7 +233,25 @@ function makeHarness(options?: {
         Queue.end(subscriber.queue).pipe(Effect.andThen(Deferred.await(subscriber.closed))),
       { discard: true },
     );
-    return { attempts, writes, finalized, subscribers, startRuns, publish, endAndAwait };
+    const startRuns = (count: number) =>
+      Effect.forEach(
+        Array.from({ length: count }, (_, index) => index + 1),
+        startRun,
+        {
+          discard: true,
+        },
+      );
+    return {
+      attempts,
+      writes,
+      finalized,
+      subscribers,
+      startRun,
+      startRuns,
+      setStreamingMode,
+      publish,
+      endAndAwait,
+    };
   });
 }
 
@@ -268,6 +309,23 @@ const childTool = (status: "running" | "completed", ordinal: number): ProviderAd
       ordinal,
       type: "command_execution",
       status,
+    },
+  }) as ProviderAdapterV2Event;
+
+const childReasoning = (text: string, streaming: boolean): ProviderAdapterV2Event =>
+  ({
+    type: "turn_item.updated",
+    driver,
+    turnItem: {
+      id: childReasoningId,
+      threadId: childThreadId,
+      runId: null,
+      providerTurnId: childProviderTurnId,
+      ordinal: 3,
+      type: "reasoning",
+      status: streaming ? "running" : "completed",
+      text,
+      streaming,
     },
   }) as ProviderAdapterV2Event;
 
@@ -367,10 +425,100 @@ it.effect("a lagging run does not land a stale copy after the completed one", ()
   }),
 );
 
+it.effect("a run that subscribes behind another run's backlog never sends an item back", () =>
+  Effect.gen(function* () {
+    // Another child update holds the first run while its backlog builds up.
+    const blocker = childTurn("running");
+    const running = childTool("running", 1);
+    const completed = childTool("completed", 2);
+    const firstRunBusy = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const completedWriting = yield* Deferred.make<void>();
+    const harness = yield* makeHarness({
+      duringWrite: (input) => {
+        if (input.event === blocker) {
+          return Deferred.succeed(firstRunBusy, undefined).pipe(
+            Effect.andThen(Deferred.await(release)),
+          );
+        }
+        return input.event === completed
+          ? Deferred.succeed(completedWriting, undefined).pipe(Effect.asVoid)
+          : Effect.void;
+      },
+    });
+    yield* harness.startRun(1);
+    yield* harness.publish([0], blocker, running);
+    yield* Deferred.await(firstRunBusy);
+
+    // The new run joins after "running" was sent, so it only sees "completed".
+    yield* harness.startRun(2);
+    yield* harness.publish([0, 1], completed);
+    yield* Deferred.await(completedWriting);
+    yield* Deferred.succeed(release, undefined);
+    yield* harness.endAndAwait;
+
+    const writes = yield* Ref.get(harness.writes);
+    assert.deepEqual(toolWrites(writes), [`${runId(2)}:completed`]);
+    assert.deepEqual(
+      writesOf(writes, blocker).map((write) => write.runId),
+      [runId(1)],
+    );
+  }),
+);
+
+it.effect("a run whose streaming filter drops a preview leaves it for another run", () =>
+  Effect.gen(function* () {
+    const preview = childReasoning("First paragraph.\n\nSecond", true);
+    const final = childReasoning("First paragraph.\n\nSecond paragraph.", false);
+    // Child updates each run writes after the preview show when it is past it.
+    const firstMarker = childTool("running", 1);
+    const secondMarker = childTurn("running");
+    const firstRunPast = yield* Deferred.make<void>();
+    const secondRunPast = yield* Deferred.make<void>();
+    const harness = yield* makeHarness({
+      streamingMode: "turn",
+      duringWrite: (input) =>
+        input.event === firstMarker
+          ? Deferred.succeed(firstRunPast, undefined).pipe(Effect.asVoid)
+          : input.event === secondMarker
+            ? Deferred.succeed(secondRunPast, undefined).pipe(Effect.asVoid)
+            : Effect.void,
+    });
+    yield* harness.startRun(1);
+    yield* harness.setStreamingMode("paragraph");
+    yield* harness.startRun(2);
+
+    // The first run delivers whole turns only, so it drops the preview.
+    yield* harness.publish([0], preview, firstMarker);
+    yield* Deferred.await(firstRunPast);
+    yield* harness.publish([1], preview, secondMarker);
+    yield* Deferred.await(secondRunPast);
+    yield* harness.publish([0, 1], final);
+    yield* harness.endAndAwait;
+
+    const reasoningWrites = (yield* Ref.get(harness.writes)).flatMap((write) =>
+      write.event.type === "turn_item.updated" &&
+      write.event.turnItem.id === childReasoningId &&
+      write.event.turnItem.type === "reasoning"
+        ? [write.event.turnItem]
+        : [],
+    );
+    assert.deepEqual(
+      reasoningWrites.map((item) => [item.streaming, item.text]),
+      [
+        [true, "First paragraph.\n\n"],
+        [false, "First paragraph.\n\nSecond paragraph."],
+      ],
+    );
+  }),
+);
+
 it.effect("a run that reaches an event mid-write waits for it before writing later events", () =>
   Effect.gen(function* () {
     const running = childTool("running", 1);
     const completed = childTool("completed", 2);
+    stampProviderEventSequence(running);
+    stampProviderEventSequence(completed);
     const release = yield* Deferred.make<void>();
     const log: Array<string> = [];
     const label = (input: IngestInput) =>
@@ -389,17 +537,13 @@ it.effect("a run that reaches an event mid-write waits for it before writing lat
     });
     const run = { threadId: parentThreadId, providerThreadId };
     const write = (id: RunId, event: ProviderAdapterV2Event) =>
-      writes.ingestorFor(event, run, true).pipe(
-        Effect.flatMap((ingestor) =>
-          ingestor.ingestNormalized({
-            providerSessionId,
-            providerInstanceId,
-            threadId: parentThreadId,
-            runId: id,
-            event,
-          }),
-        ),
-      );
+      writes.ingestorFor(event, run).ingestNormalized({
+        providerSessionId,
+        providerInstanceId,
+        threadId: parentThreadId,
+        runId: id,
+        event,
+      });
 
     // Each run's work starts at once and runs until it has to wait.
     const first = yield* write(runId(1), running).pipe(

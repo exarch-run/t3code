@@ -1,3 +1,4 @@
+import { stampProviderEventSequence } from "../exarch/ChildThreadEventWrites.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   ModelSelection,
@@ -1465,6 +1466,7 @@ export const layerWithOptions = (
                     }).pipe(entry.requestEventPermit.withPermits(1));
                     return;
                   }
+                  stampProviderEventSequence(event); // Exarch: emission order for child writes.
                   yield* publishToSubscribers(entry.eventSubscribers, { type: "event", event });
                 }),
               ),
