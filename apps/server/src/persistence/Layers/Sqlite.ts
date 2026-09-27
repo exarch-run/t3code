@@ -8,6 +8,7 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { runMigrations } from "../Migrations.ts";
 import { initializeV2Database } from "../initializeV2Database.ts";
 import { ServerConfig } from "../../config.ts";
+import { applyExarchSqliteDurability } from "../../exarch/SqliteDurability.ts";
 
 // Size the -wal file is cut back to on the first commit after a WAL reset.
 export const WAL_SIZE_LIMIT_BYTES = 32 * 1024 * 1024;
@@ -22,6 +23,7 @@ const setup = Layer.effectDiscard(
     // PASSIVE checkpoints never shrink the -wal file, so it otherwise keeps its
     // largest size until the last connection closes.
     yield* sql.unsafe(`PRAGMA journal_size_limit = ${WAL_SIZE_LIMIT_BYTES};`);
+    yield* applyExarchSqliteDurability;
     yield* runMigrations();
   }),
 );

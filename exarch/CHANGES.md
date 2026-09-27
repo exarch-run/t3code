@@ -28,3 +28,11 @@ Policy lives in `apps/server/src/exarch/QueuedAnswerEdit.ts`. A generic content 
 | `orchestration-v2/ProjectionStore.ts`            | Extend the selected message cohort with only selected questions' canonical answer ids.                  | `ProjectionStore.test.ts`            |
 
 No public schema, persistent cache, provider-specific answer branch, or migration is introduced. Desktop consumers are owned by the Exarch repository.
+
+## Engine database durability
+
+Policy lives in `apps/server/src/exarch/SqliteDurability.ts`. Every persistence connection opens with `synchronous = NORMAL` and a page cache of about 64 MB, so commits stop waiting for the disk on the engine's only thread. The checkpoint interval stays at SQLite's default. The owner accepted that a power cut or kernel crash can lose the most recent commits; an app or engine crash loses nothing.
+
+| Hook                           | Reason                                                                                                              | Regression coverage                                                    |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `persistence/Layers/Sqlite.ts` | One import and one call in the shared setup, after upstream's `journal_size_limit` line so refreshes merge cleanly. | `exarch/SqliteDurability.test.ts`, `persistence/Layers/Sqlite.test.ts` |
