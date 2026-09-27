@@ -33,7 +33,25 @@ const snapshot = (
     models: models.map((slug) => ({ slug })),
     ...patch,
   }) as unknown as ServerProvider;
-const providers = [snapshot(codex, "codex", ["astra"]), snapshot(claude, "claudeAgent", ["fable"])];
+const effortModel = (slug: string, id: string, values: ReadonlyArray<string>) => ({
+  slug,
+  capabilities: {
+    optionDescriptors: [
+      {
+        id,
+        label: "Effort",
+        type: "select",
+        options: values.map((value) => ({ id: value, label: value })),
+      },
+    ],
+  },
+});
+const providers = [
+  snapshot(codex, "codex", ["astra"]),
+  snapshot(claude, "claudeAgent", ["fable"], {
+    models: [effortModel("fable", "effort", ["low", "high"])],
+  } as unknown as Partial<ServerProvider>),
+];
 const policy: HelperPolicy = {
   enabled: true,
   projectOverrides: {},
@@ -87,6 +105,44 @@ describe("helper task policy", () => {
       options: [{ id: "effort", value: "high" }],
     });
     expect(resolve().family).toBe("claude");
+  });
+  it("names effort with the option id the chosen model advertises", () => {
+    const opencode = ProviderInstanceId.make("opencode");
+    const pi = ProviderInstanceId.make("pi");
+    const onlyHelper = (provider: ServerProvider) =>
+      explain({
+        providers: [providers[0]!, provider],
+        availableInstanceIds: new Set([codex, provider.instanceId]),
+        policy: {
+          ...policy,
+          visibleModels: [{ instanceId: provider.instanceId, model: "claude-sonnet-4-6" }],
+          taskTypes: [
+            {
+              ...policy.taskTypes[0]!,
+              familyRule: { differentFromParent: true, allowedDrivers: [] },
+            },
+          ],
+        },
+      });
+    const optionsOf = (resolution: ReturnType<typeof explain>) =>
+      resolution.ok ? resolution.modelSelection.options : resolution.reason;
+    const models = (id: string, values: ReadonlyArray<string>) =>
+      ({
+        models: [effortModel("claude-sonnet-4-6", id, values)],
+      }) as unknown as Partial<ServerProvider>;
+    expect(
+      optionsOf(onlyHelper(snapshot(opencode, "opencode", [], models("variant", ["high"])))),
+    ).toEqual([{ id: "variant", value: "high" }]);
+    expect(optionsOf(onlyHelper(snapshot(pi, "pi", [], models("thinking", ["high"]))))).toEqual([
+      { id: "thinking", value: "high" },
+    ]);
+    // A model without that effort value, or with no effort option, runs at its default.
+    expect(
+      optionsOf(onlyHelper(snapshot(pi, "pi", [], models("thinking", ["low"])))),
+    ).toBeUndefined();
+    expect(
+      optionsOf(onlyHelper(snapshot(opencode, "opencode", [], models("agent", ["high"])))),
+    ).toBeUndefined();
   });
   it("refuses disabled and unknown task types", () => {
     expect(() => resolve({ policy: { ...policy, enabled: false } })).toThrow("turned off");

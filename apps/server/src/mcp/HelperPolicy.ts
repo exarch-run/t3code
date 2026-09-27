@@ -35,6 +35,38 @@ export function providerUnavailableReason(
   return null;
 }
 
+/** The option ids drivers use for effort: Claude and Cursor, Codex and Grok, Cursor, OpenCode, Pi. */
+const EFFORT_OPTION_IDS = new Set([
+  "effort",
+  "reasoningEffort",
+  "reasoning",
+  "variant",
+  "thinking",
+]);
+
+/**
+ * The chosen model's own effort option id when it offers the row's effort
+ * value, or null. Delegation refuses options the model does not advertise, so
+ * a model without a matching effort choice runs at its default effort instead.
+ * A model that advertises no options at all is not checked by delegation and
+ * keeps the driver's usual id.
+ */
+function helperEffortOptionId(candidate: Candidate, effort: string | null): string | null {
+  if (effort === null) return null;
+  const descriptors = candidate.provider.models.find(
+    (model) => model.slug === candidate.selection.model,
+  )?.capabilities?.optionDescriptors;
+  if (descriptors === undefined)
+    return candidate.provider.driver === "claudeAgent" ? "effort" : "reasoningEffort";
+  const descriptor = descriptors.find(
+    (descriptor) =>
+      descriptor.type === "select" &&
+      EFFORT_OPTION_IDS.has(descriptor.id) &&
+      descriptor.options.some((choice) => choice.id === effort),
+  );
+  return descriptor?.id ?? null;
+}
+
 type Candidate = {
   readonly selection: { readonly instanceId: ServerProvider["instanceId"]; readonly model: string };
   readonly provider: ServerProvider;
@@ -170,15 +202,11 @@ export function explainHelperTask(input: {
   }
   // The table names a model, not an account; an override names an exact account.
   if (!input.override) selected = roomiestHelperAccount(selected, allowed);
+  const effortOptionId = helperEffortOptionId(selected, row.effort);
   const options =
-    row.effort === null
+    row.effort === null || effortOptionId === null
       ? undefined
-      : [
-          {
-            id: selected.provider.driver === "claudeAgent" ? "effort" : "reasoningEffort",
-            value: row.effort,
-          },
-        ];
+      : [{ id: effortOptionId, value: row.effort }];
   return {
     ok: true,
     row,
