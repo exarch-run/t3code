@@ -1,3 +1,4 @@
+import { makeChildThreadEventWrites } from "../exarch/ChildThreadEventWrites.ts";
 import { makeAssistantStreamingFilter } from "./assistantStreaming.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
@@ -538,6 +539,7 @@ export const layer: Layer.Layer<
     const providerEventIngestor = yield* ProviderEventIngestorV2;
     const serverSettings = yield* ServerSettingsService;
     const finalizationObserver = yield* RunFinalizationObserver;
+    const childThreadEventWrites = makeChildThreadEventWrites(providerEventIngestor);
 
     const writeFinalRunEvents = (input: {
       readonly run: OrchestrationV2Run;
@@ -1161,6 +1163,12 @@ export const layer: Layer.Layer<
                   event,
                   DateTime.toEpochMillis(yield* DateTime.now),
                 );
+                // Exarch: the first live run to reach a child-thread event writes it.
+                const ingestor = yield* childThreadEventWrites.ingestorFor(
+                  event,
+                  routeIdentity,
+                  deliveredEvent !== null,
+                );
                 if (deliveredEvent) {
                   // Root provider_thread.updated always uses an ownership gate:
                   // pre-terminal writeIfRunCurrent (attempt still running), or
@@ -1171,7 +1179,7 @@ export const layer: Layer.Layer<
                   const isRootProviderThreadUpdate =
                     event.type === "provider_thread.updated" &&
                     event.providerThread.id === input.providerThread.id;
-                  const storedEvents = yield* providerEventIngestor.ingestNormalized({
+                  const storedEvents = yield* ingestor.ingestNormalized({
                     analyticsContext: {
                       modelSelection: input.modelSelection,
                       runtimeMode: input.runtimePolicy.runtimeMode,
