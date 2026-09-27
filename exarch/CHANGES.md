@@ -36,3 +36,11 @@ Policy lives in `apps/server/src/exarch/SqliteDurability.ts`. Every persistence 
 | Hook                           | Reason                                                                                                              | Regression coverage                                                    |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
 | `persistence/Layers/Sqlite.ts` | One import and one call in the shared setup, after upstream's `journal_size_limit` line so refreshes merge cleanly. | `exarch/SqliteDurability.test.ts`, `persistence/Layers/Sqlite.test.ts` |
+
+## Usage-limit recovery query, upstream backport
+
+No policy file. Node 24.20, which Exarch bundles, refuses to bind JS booleans to SQLite, so the recovery sweep failed on every scheduler tick. The fix is upstream's own text, so the refresh that contains it merges without a conflict.
+
+| Hook                                  | Reason                                                                                                                                                                            | Regression coverage                                                  |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `orchestration-v2/ProjectionStore.ts` | Bind the two recovery switches as 1/0 with the existing `booleanInt` helper. Text identical to upstream e32db91325, PR #13877; remove this entry at the refresh that contains it. | `exarch/UsageLimitRecoverySqlite.test.ts`, `ProjectionStore.test.ts` |
