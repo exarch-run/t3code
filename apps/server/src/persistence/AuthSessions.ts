@@ -20,6 +20,7 @@ import {
   type PersistenceErrorCorrelation,
   PersistenceSqlError,
 } from "./Errors.ts";
+import { fullySyncedAuthSessions } from "../exarch/SqliteDurability.ts";
 
 export const AuthSessionClientMetadataRecord = Schema.Struct({
   label: Schema.NullOr(Schema.String),
@@ -521,4 +522,7 @@ export const make = Effect.gen(function* () {
   } satisfies AuthSessionRepository["Service"];
 });
 
-export const layer = Layer.effect(AuthSessionRepository, make);
+export const layer = Layer.effect(
+  AuthSessionRepository,
+  make.pipe(Effect.flatMap(fullySyncedAuthSessions)),
+);

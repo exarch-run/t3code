@@ -14,6 +14,7 @@ import {
   type PersistenceErrorCorrelation,
   PersistenceSqlError,
 } from "./Errors.ts";
+import { fullySyncedAuthPairingLinks } from "../exarch/SqliteDurability.ts";
 
 export const AuthPairingLinkRecord = Schema.Struct({
   id: Schema.String,
@@ -354,4 +355,7 @@ export const make = Effect.gen(function* () {
   } satisfies AuthPairingLinkRepository["Service"];
 });
 
-export const layer = Layer.effect(AuthPairingLinkRepository, make);
+export const layer = Layer.effect(
+  AuthPairingLinkRepository,
+  make.pipe(Effect.flatMap(fullySyncedAuthPairingLinks)),
+);

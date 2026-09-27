@@ -31,11 +31,13 @@ No public schema, persistent cache, provider-specific answer branch, or migratio
 
 ## Engine database durability
 
-Policy lives in `apps/server/src/exarch/SqliteDurability.ts`. Every persistence connection opens with `synchronous = NORMAL` and a page cache of about 64 MB, so commits stop waiting for the disk on the engine's only thread. The checkpoint interval stays at SQLite's default. The owner accepted that a power cut or kernel crash can lose the most recent commits; an app or engine crash loses nothing.
+Policy lives in `apps/server/src/exarch/SqliteDurability.ts`. Every persistence connection opens with `synchronous = NORMAL` and a page cache of about 64 MB, so commits stop waiting for the disk on the engine's only thread. The checkpoint interval stays at SQLite's default. The owner accepted that a power cut or kernel crash can lose the most recent agent events; an app or engine crash loses nothing. Auth writes are the exception. Every session and pairing-link write commits with `synchronous = FULL`, one at a time, so a revocation or a consumed pairing link can't come back after a power cut. Server secrets are files, not SQLite, and are unaffected.
 
-| Hook                           | Reason                                                                                                              | Regression coverage                                                    |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| `persistence/Layers/Sqlite.ts` | One import and one call in the shared setup, after upstream's `journal_size_limit` line so refreshes merge cleanly. | `exarch/SqliteDurability.test.ts`, `persistence/Layers/Sqlite.test.ts` |
+| Hook                              | Reason                                                                                                              | Regression coverage                                                    |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `persistence/Layers/Sqlite.ts`    | One import and one call in the shared setup, after upstream's `journal_size_limit` line so refreshes merge cleanly. | `exarch/SqliteDurability.test.ts`, `persistence/Layers/Sqlite.test.ts` |
+| `persistence/AuthSessions.ts`     | One import, and the layer wraps the repository so all seven write methods commit with FULL sync.                    | `exarch/SqliteDurability.test.ts`                                      |
+| `persistence/AuthPairingLinks.ts` | One import, and the layer wraps the repository so its three write methods commit with FULL sync.                    | `exarch/SqliteDurability.test.ts`                                      |
 
 ## Usage-limit recovery query, upstream backport
 
