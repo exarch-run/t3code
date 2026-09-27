@@ -1,4 +1,4 @@
-import type { ProviderThreadId, ThreadId } from "@t3tools/contracts";
+import type { ProviderSessionId, ProviderThreadId, ThreadId } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -17,11 +17,13 @@ type ChildEntity = {
   /** Settles when the write in flight for this entity finishes. */
   writing: Deferred.Deferred<void> | undefined;
 };
-
-// Recently written entities to remember. A run lagging further behind than
-// this is not expected; an entity dropped from memory only loses the
-// never-go-backwards check.
-const MAX_REMEMBERED_ENTITIES = 4096;
+type SessionWrites = {
+  /** Live runs subscribed to the session, the only ones that can deliver its older events. */
+  live: number;
+  /** Events already written in this session. */
+  readonly written: WeakSet<ProviderAdapterV2Event>;
+  readonly entities: Map<string, ChildEntity>;
+};
 
 let lastSequence = 0;
 const sequenceByEvent = new WeakMap<ProviderAdapterV2Event, number>();
@@ -57,54 +59,54 @@ export function providerEventSequence(event: ProviderAdapterV2Event): number | u
  * track every event themselves, so starting, stopping, and settling are
  * unchanged. The run's own provider-thread snapshot and every other
  * root-thread event are never claimed.
+ *
+ * What was written is remembered per provider session while any run
+ * subscribed to it is live. Only those runs can deliver the session's older
+ * events; a run that subscribes later receives only newer ones. The last run
+ * to leave releases the session's memory.
  */
 export function makeChildThreadEventWrites(ingestor: ProviderEventIngestorV2Shape) {
-  const written = new WeakSet<ProviderAdapterV2Event>();
-  const entities = new Map<string, ChildEntity>();
-
-  const remember = (key: string, entity: ChildEntity) => {
-    entities.delete(key);
-    entities.set(key, entity);
-    if (entities.size <= MAX_REMEMBERED_ENTITIES) return;
-    for (const [oldKey, old] of entities) {
-      if (old.writing === undefined) {
-        entities.delete(oldKey);
-        return;
-      }
-    }
-  };
+  const sessions = new Map<ProviderSessionId, SessionWrites>();
 
   const writeInOrder = (
+    session: SessionWrites,
     event: ProviderAdapterV2Event,
     key: string,
     input: IngestInput,
   ): ReturnType<ProviderEventIngestorV2Shape["ingestNormalized"]> =>
     Effect.uninterruptibleMask((restore) =>
       Effect.suspend(() => {
-        const entity = entities.get(key) ?? { lastWritten: 0, writing: undefined };
-        if (entity.writing !== undefined) {
+        let entity = session.entities.get(key);
+        if (entity?.writing !== undefined) {
           return restore(
             Deferred.await(entity.writing).pipe(
-              Effect.andThen(() => writeInOrder(event, key, input)),
+              Effect.andThen(() => writeInOrder(session, event, key, input)),
             ),
           );
         }
         const sequence = sequenceByEvent.get(event);
-        if (written.has(event) || (sequence !== undefined && sequence <= entity.lastWritten)) {
+        if (
+          session.written.has(event) ||
+          (sequence !== undefined && entity !== undefined && sequence <= entity.lastWritten)
+        ) {
           return Effect.succeed([]);
         }
+        if (entity === undefined) {
+          entity = { lastWritten: 0, writing: undefined };
+          session.entities.set(key, entity);
+        }
+        const current = entity;
         const writing = Deferred.makeUnsafe<void>();
-        entity.writing = writing;
-        remember(key, entity);
+        current.writing = writing;
         return restore(ingestor.ingestNormalized(input)).pipe(
           Effect.onExit((exit) => {
             if (Exit.isSuccess(exit)) {
-              written.add(event);
+              session.written.add(event);
               if (sequence !== undefined) {
-                entity.lastWritten = Math.max(entity.lastWritten, sequence);
+                current.lastWritten = Math.max(current.lastWritten, sequence);
               }
             }
-            entity.writing = undefined;
+            current.writing = undefined;
             return Deferred.succeed(writing, undefined);
           }),
         );
@@ -112,16 +114,41 @@ export function makeChildThreadEventWrites(ingestor: ProviderEventIngestorV2Shap
     );
 
   return {
-    /** The ingestor a run uses to write this event. */
-    ingestorFor: (
-      event: ProviderAdapterV2Event,
-      run: ChildThreadEventRun,
-    ): ProviderEventIngestorV2Shape => {
-      const key = childEntityKey(event, run);
-      if (key === null) return ingestor;
+    /**
+     * Join a provider session when a run subscribes to its events. The run
+     * writes through `ingestorFor` and calls `leave` once its subscription
+     * closes.
+     */
+    join: (providerSessionId: ProviderSessionId) => {
+      let session = sessions.get(providerSessionId);
+      if (session === undefined) {
+        session = { live: 0, written: new WeakSet(), entities: new Map() };
+        sessions.set(providerSessionId, session);
+      }
+      const joined = session;
+      joined.live += 1;
+      let left = false;
       return {
-        ...ingestor,
-        ingestNormalized: (input: IngestInput) => writeInOrder(event, key, input),
+        /** The ingestor the run uses to write this event. */
+        ingestorFor: (
+          event: ProviderAdapterV2Event,
+          run: ChildThreadEventRun,
+        ): ProviderEventIngestorV2Shape => {
+          const key = childEntityKey(event, run);
+          if (key === null) return ingestor;
+          return {
+            ...ingestor,
+            ingestNormalized: (input: IngestInput) => writeInOrder(joined, event, key, input),
+          };
+        },
+        leave: Effect.sync(() => {
+          if (left) return;
+          left = true;
+          joined.live -= 1;
+          if (joined.live === 0 && sessions.get(providerSessionId) === joined) {
+            sessions.delete(providerSessionId);
+          }
+        }),
       };
     },
   };

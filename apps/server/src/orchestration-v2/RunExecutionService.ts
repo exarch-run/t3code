@@ -900,10 +900,12 @@ export const layer: Layer.Layer<
             input.session.subscribeEvents === undefined
               ? { events: input.session.events, close: Effect.void }
               : yield* input.session.subscribeEvents;
+          // Exarch: while subscribed, this run shares the session's child-thread write order.
+          const childWrites = childThreadEventWrites.join(input.providerSessionId);
           const inheritedBackgroundTurnItems = yield* (
             input.loadInheritedBackgroundTurnItems?.() ?? Effect.succeed([])
           ).pipe(
-            Effect.onError(() => eventSubscription.close),
+            Effect.onError(() => Effect.andThen(eventSubscription.close, childWrites.leave)),
             Effect.mapError(
               (cause) =>
                 new RunExecutionStartError({
@@ -1174,7 +1176,7 @@ export const layer: Layer.Layer<
                     event.type === "provider_thread.updated" &&
                     event.providerThread.id === input.providerThread.id;
                   // Exarch: write a child-thread event once across live runs, in emission order.
-                  const ingestor = childThreadEventWrites.ingestorFor(event, routeIdentity);
+                  const ingestor = childWrites.ingestorFor(event, routeIdentity);
                   const storedEvents = yield* ingestor.ingestNormalized({
                     analyticsContext: {
                       modelSelection: input.modelSelection,
@@ -1312,6 +1314,7 @@ export const layer: Layer.Layer<
               ),
             ),
             Effect.ensuring(eventSubscription.close),
+            Effect.ensuring(childWrites.leave),
             Effect.forkDetach,
           );
 

@@ -297,12 +297,16 @@ const childTurn = (status: "running" | "completed"): ProviderAdapterV2Event =>
     },
   }) as ProviderAdapterV2Event;
 
-const childTool = (status: "running" | "completed", ordinal: number): ProviderAdapterV2Event =>
+const childTool = (
+  status: "running" | "completed",
+  ordinal: number,
+  id: TurnItemId = childItemId,
+): ProviderAdapterV2Event =>
   ({
     type: "turn_item.updated",
     driver,
     turnItem: {
-      id: childItemId,
+      id,
       threadId: childThreadId,
       runId: null,
       providerTurnId: childProviderTurnId,
@@ -425,6 +429,48 @@ it.effect("a lagging run does not land a stale copy after the completed one", ()
   }),
 );
 
+it.effect("a lagging run's older update stays skipped after thousands of other writes", () =>
+  Effect.gen(function* () {
+    // Another child update holds the first run while its backlog builds up.
+    const blocker = childTurn("running");
+    const running = childTool("running", 1);
+    const completed = childTool("completed", 2);
+    const others = Array.from({ length: 4096 }, (_, index) =>
+      childTool("completed", 10 + index, TurnItemId.make(`turn-item:child-writes:other:${index}`)),
+    );
+    const lastOther = others.at(-1)!;
+    const firstRunBusy = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const othersWritten = yield* Deferred.make<void>();
+    const harness = yield* makeHarness({
+      duringWrite: (input) => {
+        if (input.event === blocker) {
+          return Deferred.succeed(firstRunBusy, undefined).pipe(
+            Effect.andThen(Deferred.await(release)),
+          );
+        }
+        return input.event === lastOther
+          ? Deferred.succeed(othersWritten, undefined).pipe(Effect.asVoid)
+          : Effect.void;
+      },
+    });
+    yield* harness.startRun(1);
+    yield* harness.publish([0], blocker, running);
+    yield* Deferred.await(firstRunBusy);
+
+    // A newer run writes the item's completion, then 4,096 other items.
+    yield* harness.startRun(2);
+    yield* harness.publish([0, 1], completed);
+    yield* harness.publish([1], ...others);
+    yield* Deferred.await(othersWritten);
+    // The first run then works through its backlog: the older update, then its completion copy.
+    yield* Deferred.succeed(release, undefined);
+    yield* harness.endAndAwait;
+
+    assert.deepEqual(toolWrites(yield* Ref.get(harness.writes)), [`${runId(2)}:completed`]);
+  }),
+);
+
 it.effect("a run that subscribes behind another run's backlog never sends an item back", () =>
   Effect.gen(function* () {
     // Another child update holds the first run while its backlog builds up.
@@ -536,8 +582,9 @@ it.effect("a run that reaches an event mid-write waits for it before writing lat
         }),
     });
     const run = { threadId: parentThreadId, providerThreadId };
+    const joined = new Map([runId(1), runId(2)].map((id) => [id, writes.join(providerSessionId)]));
     const write = (id: RunId, event: ProviderAdapterV2Event) =>
-      writes.ingestorFor(event, run).ingestNormalized({
+      joined.get(id)!.ingestorFor(event, run).ingestNormalized({
         providerSessionId,
         providerInstanceId,
         threadId: parentThreadId,
