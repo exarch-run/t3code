@@ -27,6 +27,7 @@ describe("expiry cleanup", () => {
         Effect.sync(() => {
           expect(ran).toEqual(["agent-activity", "live-activities", "delivery-attempts"]);
           expect(warnings).toHaveLength(1);
+          // @effect-diagnostics-next-line preferSchemaOverJson:off
           expect(JSON.stringify(warnings[0])).toContain("Failed to prune expired DPoP proofs");
         }),
       ),

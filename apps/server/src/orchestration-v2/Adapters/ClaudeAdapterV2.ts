@@ -1621,6 +1621,7 @@ const CLAUDE_KNOWN_TOOL_CLASSIFICATIONS: Record<
   read: { itemType: "dynamic_tool", requestKind: "file-read" },
   sendmessage: { itemType: "dynamic_tool", requestKind: "command" },
   task: { itemType: "dynamic_tool", requestKind: "command" },
+  taskoutput: { itemType: "dynamic_tool", requestKind: "command" },
   taskstop: { itemType: "dynamic_tool", requestKind: "command" },
   todowrite: { itemType: "dynamic_tool", requestKind: "command" },
   toolsearch: { itemType: "dynamic_tool", requestKind: "command" },
