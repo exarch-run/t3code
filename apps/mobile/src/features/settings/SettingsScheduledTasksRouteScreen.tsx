@@ -610,6 +610,8 @@ function TaskForm({
       schedule,
       enabled: draft.enabled,
       threadId: draft.task?.threadId ?? null,
+      // Exarch: a plugin schedule keeps its plugin; the form can't edit it.
+      ...(draft.task?.pluginId === undefined ? {} : { pluginId: draft.task.pluginId }),
       workspaceStrategy:
         draft.workspace === "root"
           ? { type: "root" }

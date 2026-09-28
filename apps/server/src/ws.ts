@@ -2,6 +2,7 @@ import * as Clock from "effect/Clock";
 import { ADOPTION_RPC, AdoptionError } from "@t3tools/contracts";
 import * as AdoptionOrchestrator from "./mcp/OrchestratorMcpService.ts";
 import * as AdoptionWorktree from "./mcp/WorktreeMcpService.ts";
+import { checkScheduledTaskSaveWorkspace } from "./exarch/ScheduledTaskWorkspace.ts";
 import * as AdoptionSwitch from "./orchestration-v2/ProviderSwitchService.ts";
 import { ProviderAdapterRegistryV2 } from "./orchestration-v2/ProviderAdapterRegistry.ts";
 import { handoffPlan } from "./orchestration-v2/HandoffPlan.ts";
@@ -2069,9 +2070,11 @@ const makeWsRpcLayer = (
             "rpc.aggregate": "scheduledTasks",
           }),
         [WS_METHODS.scheduledTasksUpsert]: (input) =>
-          observeRpcEffect(WS_METHODS.scheduledTasksUpsert, scheduledTasks.upsert(input), {
-            "rpc.aggregate": "scheduledTasks",
-          }),
+          observeRpcEffect(
+            WS_METHODS.scheduledTasksUpsert,
+            checkScheduledTaskSaveWorkspace(input).pipe(Effect.flatMap(scheduledTasks.upsert)),
+            { "rpc.aggregate": "scheduledTasks" },
+          ),
         [WS_METHODS.scheduledTasksSetEnabled]: (input) =>
           observeRpcEffect(WS_METHODS.scheduledTasksSetEnabled, scheduledTasks.setEnabled(input), {
             "rpc.aggregate": "scheduledTasks",

@@ -71,6 +71,8 @@ export interface DraftState {
    * (reasoning, temperature, …) when the model itself is left unchanged.
    */
   readonly baseModelSelection: ModelSelection | null;
+  /** Exarch: not editable here; kept so saving a plugin schedule doesn't turn it into an agent run. */
+  readonly pluginId?: string;
 }
 
 export function taskToDraft(task: ScheduledTask): DraftState {
@@ -105,6 +107,7 @@ export function taskToDraft(task: ScheduledTask): DraftState {
     runtimeMode: task.runtimeMode,
     interactionMode: task.interactionMode,
     baseModelSelection: task.modelSelection,
+    ...(task.pluginId === undefined ? {} : { pluginId: task.pluginId }),
   };
 }
 

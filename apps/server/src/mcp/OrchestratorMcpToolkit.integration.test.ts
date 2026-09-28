@@ -508,6 +508,7 @@ function scheduledTaskFromUpsert(input: ScheduledTaskUpsertInput): ScheduledTask
     schedule: input.schedule,
     projectId: input.projectId,
     threadId: input.threadId ?? null,
+    ...(input.pluginId === undefined ? {} : { pluginId: input.pluginId }),
     workspaceStrategy: input.workspaceStrategy,
     modelSelection: input.modelSelection,
     runtimeMode: input.runtimeMode,
@@ -1694,6 +1695,42 @@ describe("orchestrator MCP toolkit", () => {
                 ?.workspaceStrategy,
             ).toEqual({ type: "worktree", baseRef: "main", startFromOrigin: true });
             yield* invoke("delete_scheduled_task", { scheduledTaskId: chosenId });
+
+            // Renaming or rescheduling a plugin schedule keeps its plugin, so
+            // the next run still runs the plugin rather than an agent.
+            const pluginTaskId = ScheduledTaskId.make("scheduled-task:plugin-backup");
+            yield* Ref.update(scheduledStore, (all) => [
+              ...all,
+              scheduledTaskFromUpsert({
+                id: pluginTaskId,
+                title: "Backup",
+                prompt: "Run plugin backup",
+                enabled: true,
+                schedule: { type: "interval", everyMs: 60_000 },
+                projectId,
+                threadId: null,
+                pluginId: "backup",
+                workspaceStrategy: { type: "root" },
+                modelSelection: { instanceId: ProviderInstanceId.make("plugin"), model: "plugin" },
+                runtimeMode: "full-access",
+                interactionMode: "default",
+              }),
+            ]);
+            const pluginUpdate = yield* invoke("update_scheduled_task", {
+              scheduledTaskId: pluginTaskId,
+              title: "Nightly backup",
+              schedule: { type: "fixed_time", timeOfDay: "02:00", timeZone: "UTC" },
+            });
+            expect(pluginUpdate.isError).toBe(false);
+            expect(
+              (yield* Ref.get(scheduledStore)).find((task) => task.id === pluginTaskId),
+            ).toMatchObject({
+              title: "Nightly backup",
+              pluginId: "backup",
+              runtimeMode: "full-access",
+              interactionMode: "default",
+            });
+            yield* invoke("delete_scheduled_task", { scheduledTaskId: pluginTaskId });
 
             // OpenCode 1.15 has emitted this exact nested-object-as-JSON-string
             // shape. Decode it at the MCP boundary rather than failing a task

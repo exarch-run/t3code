@@ -603,6 +603,7 @@ function ScheduledTaskEditorDialog({
       schedule,
       projectId: selectedProjectId as ProjectId,
       threadId: draft.threadId ? (draft.threadId as ThreadId) : null,
+      ...(draft.pluginId === undefined ? {} : { pluginId: draft.pluginId }),
       workspaceStrategy,
       modelSelection,
       runtimeMode: draft.runtimeMode,

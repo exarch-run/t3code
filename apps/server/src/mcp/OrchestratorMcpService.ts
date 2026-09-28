@@ -1296,6 +1296,8 @@ const make = Effect.gen(function* () {
           enabled: input.enabled ?? existing.enabled,
           schedule: input.schedule ?? existing.schedule,
           startClean: input.startClean ?? existing.startClean ?? false,
+          // Upsert saves a plugin only when it is sent, so an edit carries it.
+          ...(existing.pluginId === undefined ? {} : { pluginId: existing.pluginId }),
           projectId: existing.projectId,
           threadId,
           workspaceStrategy,

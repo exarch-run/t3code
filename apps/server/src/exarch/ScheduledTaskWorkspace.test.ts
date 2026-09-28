@@ -1,6 +1,12 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import { ProjectId } from "@t3tools/contracts";
+import {
+  type OrchestrationV2ThreadLaunchWorkspaceStrategy,
+  ProjectId,
+  ProviderInstanceId,
+  type ScheduledTaskUpsertInput,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -11,6 +17,7 @@ import { ProjectService } from "../project/ProjectService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import {
+  checkScheduledTaskSaveWorkspace,
   chooseScheduledTaskWorkspace,
   makeScheduledTaskWorkspaceResolver,
 } from "./ScheduledTaskWorkspace.ts";
@@ -133,4 +140,67 @@ it.effect("keeps, refuses, or resolves a workspace by where runs land", () =>
       resolved,
     );
   }),
+);
+
+it.effect("checks a Library save's fresh-chat workspace and saves it as chosen", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-schedule-save-" });
+      const elsewhere = yield* fs.makeTempDirectoryScoped({ prefix: "t3-schedule-save-" });
+      yield* git(root, ["init", "--initial-branch=master"]);
+      yield* git(root, ["config", "user.email", "test@example.com"]);
+      yield* git(root, ["config", "user.name", "Test User"]);
+      yield* git(root, ["commit", "--allow-empty", "-m", "first"]);
+      const side = `${elsewhere}/side`;
+      yield* git(root, ["worktree", "add", "-b", "side", side]);
+
+      yield* Effect.gen(function* () {
+        const save = (
+          workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy,
+          extra: Partial<ScheduledTaskUpsertInput> = {},
+        ) =>
+          checkScheduledTaskSaveWorkspace({
+            title: "Nightly",
+            prompt: "Review the day's changes",
+            enabled: true,
+            schedule: { type: "interval", everyMs: 60_000 },
+            projectId,
+            threadId: null,
+            workspaceStrategy,
+            modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            ...extra,
+          });
+
+        assert.include(
+          yield* failureMessage(save({ type: "worktree", baseRef: "main" })),
+          "Branch or ref main does not exist",
+        );
+        assert.include(
+          yield* failureMessage(save({ type: "worktree", baseRef: "master", branch: "nightly" })),
+          "Omit branch",
+        );
+        assert.include(
+          yield* failureMessage(save({ type: "existing_worktree", worktreePath: elsewhere })),
+          "Launch workspace",
+        );
+
+        // Exarch's Library starts a separate copy from HEAD by default.
+        for (const chosen of [
+          { type: "worktree", baseRef: "HEAD" },
+          { type: "root" },
+          { type: "existing_worktree", worktreePath: side },
+        ] as const) {
+          assert.deepEqual((yield* save(chosen)).workspaceStrategy, chosen);
+        }
+
+        // Runs that post into a chat, and plugin runs, never launch from it.
+        const unused = { type: "worktree", baseRef: "main" } as const;
+        yield* save(unused, { threadId: ThreadId.make("thread-schedule") });
+        yield* save(unused, { pluginId: "backup" });
+      }).pipe(Effect.provide(projectAt(root)));
+    }),
+  ).pipe(Effect.provide(gitLayer)),
 );

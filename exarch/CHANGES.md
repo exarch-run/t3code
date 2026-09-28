@@ -119,3 +119,17 @@ Policy lives in `infra/relay/src/exarch/cleanup.ts`. The fork's five-minute cron
 | `infra/relay/src/worker.ts` | The cron runs the policy's expiry cleanup and wraps the tombstone and report pruning in its failure log. | `infra/relay/src/exarch/cleanup.test.ts` |
 
 A relay deployment is needed before this reaches the live relay.
+
+## Schedule edits and saves
+
+Policy lives in `apps/server/src/exarch/ScheduledTaskWorkspace.ts`. Every editor that saves an existing schedule sends its plugin, so a rename or reschedule still runs the plugin. The service itself keeps saving a plugin only when it's sent, because Exarch's Library turns a plugin schedule back into an agent schedule by leaving it out. Library and settings saves of a fresh chat per run get the agent tools' workspace checks and are saved as chosen, so a missing local ref, a fixed worktree branch, or a checkout outside the project is refused at save instead of at launch. Runs that post into a chat, and plugin runs, don't launch from the workspace and aren't checked. `exarch_personal_setup` configure passes `keys`, Exarch's key-sharing choice, which the tool used to drop, so an agent's configure turned key sharing off.
+
+| Hook                                                                                                                        | Reason                                                            | Regression coverage                                                     |
+| --------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `ws.ts`                                                                                                                     | The schedule save handler runs the workspace check before upsert. | `exarch/ScheduledTaskWorkspace.test.ts`                                 |
+| `mcp/OrchestratorMcpService.ts`                                                                                             | `update_scheduled_task` carries the saved plugin.                 | `mcp/OrchestratorMcpToolkit.integration.test.ts`                        |
+| `apps/web/src/components/settings/scheduledTasksSettings.logic.ts`, `ScheduledTasksSettings.tsx` (from the repository root) | The settings form keeps the plugin it can't edit and sends it.    | `apps/web/src/components/settings/scheduledTasksSettings.logic.test.ts` |
+| `apps/mobile/src/features/settings/SettingsScheduledTasksRouteScreen.tsx` (from the repository root)                        | The phone form sends the edited task's plugin.                    | Mobile typecheck only                                                   |
+| `mcp/toolkits/exarch/tools.ts`                                                                                              | The `keys` choice in the personal-setup tool schema.              | `mcp/toolkits/exarch/handlers.test.ts`                                  |
+
+Existing saved tasks are not migrated. A saved schedule that fails the workspace check is refused on its next save until its workspace is changed.

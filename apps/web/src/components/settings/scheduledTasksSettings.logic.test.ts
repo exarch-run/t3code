@@ -166,6 +166,11 @@ describe("editing scheduled task branch settings", () => {
     });
     expect(draft.startFromOrigin).toBe(startFromOrigin);
   });
+
+  it("keeps a plugin schedule's plugin, which the form can't edit", () => {
+    expect(taskToDraft({ ...legacyTask, pluginId: "backup" }).pluginId).toBe("backup");
+    expect(taskToDraft(legacyTask)).not.toHaveProperty("pluginId");
+  });
 });
 
 describe("scheduled task model defaults", () => {

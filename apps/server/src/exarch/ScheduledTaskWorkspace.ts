@@ -2,6 +2,8 @@ import {
   OrchestratorMcpFailure,
   type OrchestrationV2ThreadLaunchWorkspaceStrategy,
   type ProjectId,
+  ScheduledTaskError,
+  type ScheduledTaskUpsertInput,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -116,3 +118,19 @@ export const chooseScheduledTaskWorkspace = (input: {
   if (input.requested === undefined && input.keep !== undefined) return Effect.succeed(input.keep);
   return input.resolve(input.projectId, input.requested);
 };
+
+/**
+ * Library and settings saves reach the schedule service directly, not through
+ * the agent tools, so their fresh-chat-per-run workspace gets the same checks
+ * here and is saved as chosen. Runs that post into a chat, and plugin runs,
+ * never launch from the workspace.
+ */
+export const checkScheduledTaskSaveWorkspace = (input: ScheduledTaskUpsertInput) =>
+  Effect.gen(function* () {
+    if (input.pluginId !== undefined || (input.threadId ?? null) !== null) return input;
+    const resolve = yield* makeScheduledTaskWorkspaceResolver;
+    yield* resolve(input.projectId, input.workspaceStrategy).pipe(
+      Effect.mapError((error) => new ScheduledTaskError({ message: error.message })),
+    );
+    return input;
+  });

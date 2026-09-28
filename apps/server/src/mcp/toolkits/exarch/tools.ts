@@ -268,9 +268,10 @@ const ExarchPersonalSetupTool = exarchTool(
           enabled: Schema.Boolean,
           plugins: Schema.Array(Schema.String),
           credentials: Schema.Array(Schema.Struct({ id: Schema.String, path: Schema.String })),
+          keys: Schema.optional(Schema.Boolean),
         }).annotate({
           description:
-            "For configure: enabled, plugins (ids), credentials (id and absolute local path).",
+            "For configure, which replaces every choice: enabled, plugins (ids), credentials (id and absolute local path), keys (true shares API keys with approved computers, each held in that computer's encrypted store; left out turns it off). Copy unchanged choices from status.",
         }),
       ),
       name: Schema.optional(
@@ -312,10 +313,16 @@ const ExarchPersonalSetupTool = exarchTool(
 
 const ExarchSpeechTool = exarchTool(
   Tool.make("exarch_speech", {
-    description: "Inspect shared speech and recover recordings captured on this computer. Recovery automatically uses the calling chat's ordinary or private storage. Recordings on a phone are retried from that phone. Never chooses a model or sends recovered text to a chat. Use exarch_plugins for integration lifecycle and configuration.",
+    description:
+      "Inspect shared speech and recover recordings captured on this computer. Recovery automatically uses the calling chat's ordinary or private storage. Recordings on a phone are retried from that phone. Never chooses a model or sends recovered text to a chat. Use exarch_plugins for integration lifecycle and configuration.",
     parameters: Schema.Struct({
-      action: Schema.Literals(["status", "recordings", "retry", "result", "remove"]).annotate({ description: "Read speech status or recordings, retry saved audio, read its result, or remove a recording." }),
-      id: Schema.optional(Schema.String.annotate({ description: "Recording id for retry, result, or remove." })),
+      action: Schema.Literals(["status", "recordings", "retry", "result", "remove"]).annotate({
+        description:
+          "Read speech status or recordings, retry saved audio, read its result, or remove a recording.",
+      }),
+      id: Schema.optional(
+        Schema.String.annotate({ description: "Recording id for retry, result, or remove." }),
+      ),
     }),
     success: ExarchResult,
     failure: ExarchToolError,

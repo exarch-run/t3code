@@ -130,6 +130,19 @@ describe("exarch toolkit handlers", () => {
             },
           });
           expect(host.received[0]?.authorization).toBe("Bearer secret-token");
+          // configure replaces every choice, so key sharing must reach Exarch.
+          const setup = yield* harness.call("exarch_personal_setup", {
+            action: "configure",
+            choices: { enabled: true, plugins: [], credentials: [], keys: true },
+          });
+          expect(setup).toMatchObject({
+            echo: {
+              input: {
+                action: "configure",
+                choices: { enabled: true, plugins: [], credentials: [], keys: true },
+              },
+            },
+          });
           const library = yield* harness.call("exarch_library", {});
           expect(library).toMatchObject({ tool: "/tools/exarch_library" });
           const documents = yield* harness.call("exarch_open_documents", {});
