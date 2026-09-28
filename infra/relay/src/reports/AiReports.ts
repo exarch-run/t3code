@@ -179,6 +179,8 @@ export const make = (options?: { readonly capacity?: number; readonly hourlyLimi
         }
         const inserted = yield* store.withAdmissionLock(
           Effect.gen(function* () {
+            // A concurrent request for this id may have been admitted while this one waited.
+            if (yield* matchExisting(report.id, contentHash)) return false;
             const current = yield* counts;
             if (current.since >= hourlyLimit) return yield* rejected("rate_limited");
             if (current.total >= capacity) return yield* rejected("unavailable");
@@ -187,7 +189,7 @@ export const make = (options?: { readonly capacity?: number; readonly hourlyLimi
           }),
         );
         if (!inserted) {
-          // A concurrent submission of the same id won the insert.
+          // A concurrent submission of the same id was admitted first.
           yield* matchExisting(report.id, contentHash);
           return { id: report.id, created: false };
         }
@@ -258,13 +260,14 @@ export const storeLayer = Layer.effect(
         ),
       pruneBefore: (before) =>
         db.delete(t).where(lt(t.receivedAt, before)).pipe(storage("prune"), Effect.asVoid),
-      // A transaction-scoped advisory lock, so it is released at commit and works
-      // through Hyperdrive's transaction pooling. Readers and pruning never wait on it.
+      // Hyperdrive pools by transaction and refuses advisory locks, so admissions
+      // take a table lock that ends with the transaction. The mode conflicts with
+      // itself and with writes, never with reads, so listing and counts don't wait.
       withAdmissionLock: (effect) =>
         db.$client
           .withTransaction(
             db
-              .execute(sql`SELECT pg_advisory_xact_lock(hashtext('relay_ai_reports.admission'))`)
+              .execute(sql`LOCK TABLE ${t} IN SHARE ROW EXCLUSIVE MODE`)
               .pipe(storage("admission"), Effect.andThen(effect)),
           )
           .pipe(

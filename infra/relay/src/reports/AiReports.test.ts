@@ -1,5 +1,6 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { describe, expect, it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
@@ -16,17 +17,27 @@ import { reportRoutes } from "./routes.ts";
 
 type Stored = AiReports.StoredReport & { contentHash: string };
 
-function memoryStore() {
+/** `heldLookups` makes that many first lookups wait for each other, so concurrent requests all miss. */
+function memoryStore(options?: { readonly heldLookups?: number }) {
   const rows = new Map<string, Stored>();
   const calls = { count: 0 };
   // Stands in for the database's admission lock.
   const admission = Semaphore.makeUnsafe(1);
+  const lookupsDone = Deferred.makeUnsafe<void>();
+  let lookups = 0;
   const store = AiReports.AiReportStore.of({
     find: (id) =>
       Effect.sync(() => {
         calls.count++;
         return rows.get(id) ?? null;
-      }),
+      }).pipe(
+        Effect.tap(() => {
+          const held = options?.heldLookups ?? 0;
+          if (++lookups > held) return Effect.void;
+          if (lookups === held) Deferred.doneUnsafe(lookupsDone, Effect.void);
+          return Deferred.await(lookupsDone);
+        }),
+      ),
     insert: (row) =>
       Effect.sync(() => {
         calls.count++;
@@ -181,6 +192,41 @@ describe("AiReports", () => {
         );
         expect(results.filter((result) => result._tag === "Success")).toHaveLength(1);
         expect(rows.size).toBe(3);
+      }),
+    );
+  });
+
+  for (const limit of [{ hourlyLimit: 1 }, { capacity: 1 }]) {
+    it.effect(
+      `a retry racing its own report at the last slot gets the receipt (${Object.keys(limit)[0]})`,
+      () => {
+        const { rows, layer } = memoryStore({ heldLookups: 2 });
+        return withReports(reportsLayer(layer, limit), (reports) =>
+          Effect.gen(function* () {
+            const results = yield* Effect.all(
+              [reports.submit(report(ids[0]!)), reports.submit(report(ids[0]!))],
+              { concurrency: "unbounded" },
+            );
+            expect(results.map((result) => result.created).sort()).toEqual([false, true]);
+            expect(rows.size).toBe(1);
+          }),
+        );
+      },
+    );
+  }
+
+  it.effect("changed content racing for the last slot is a conflict, not a limit", () => {
+    const { rows, layer } = memoryStore({ heldLookups: 2 });
+    return withReports(reportsLayer(layer, { hourlyLimit: 1 }), (reports) =>
+      Effect.gen(function* () {
+        const results = yield* Effect.all(
+          [reports.submit(report(ids[0]!)), reports.submit(report(ids[0]!, "different"))],
+          { concurrency: "unbounded", mode: "result" },
+        );
+        const refused = results.filter((result) => result._tag === "Failure");
+        expect(refused).toHaveLength(1);
+        expect(refused[0]!.failure).toMatchObject({ reason: "conflict" });
+        expect(rows.size).toBe(1);
       }),
     );
   });
