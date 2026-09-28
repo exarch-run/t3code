@@ -58,6 +58,7 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { McpSchema, McpServer } from "effect/unstable/ai";
+import { ExitCode } from "effect/unstable/process/ChildProcessSpawner";
 
 import { ClaudeProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
@@ -689,7 +690,22 @@ describe("orchestrator MCP toolkit", () => {
             }),
           );
           const launchExternal = Layer.mergeAll(
-            Layer.mock(GitVcsDriver)({}),
+            // Schedule writes read the project's branch; the project checkout
+            // is on master and has no main.
+            Layer.mock(GitVcsDriver)({
+              execute: (input) =>
+                Effect.succeed({
+                  stdout: input.args[0] === "symbolic-ref" ? "master\n" : "",
+                  stderr: "",
+                  exitCode: ExitCode(
+                    input.args[0] === "symbolic-ref" || input.args.at(-1) === "master^{commit}"
+                      ? 0
+                      : 1,
+                  ),
+                  stdoutTruncated: false,
+                  stderrTruncated: false,
+                }),
+            }),
             WorktreeSetupTracker.layer,
             Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({
               get: () => Effect.succeed(null),
@@ -1529,6 +1545,155 @@ describe("orchestrator MCP toolkit", () => {
               deleted: true,
             });
             expect(yield* Ref.get(scheduledStore)).toHaveLength(0);
+
+            // Chosen run settings are saved as given. A fresh chat per run
+            // defaults to a worktree from the project's local branch, unfetched.
+            const chosenCall = yield* invoke("schedule_task", {
+              prompt: "nightly review",
+              schedule: { type: "fixed_time", timeOfDay: "03:00", timeZone: "UTC" },
+              bindToCurrentThread: false,
+              target: { providerInstanceId: claudeInstanceId, model: claudeModel },
+              runtimeMode: "auto",
+              interactionMode: "plan",
+            });
+            expect(chosenCall.isError).toBe(false);
+            expect(chosenCall.structuredContent).toMatchObject({
+              boundThreadId: null,
+              modelSelection: { instanceId: claudeInstanceId, model: claudeModel },
+              runtimeMode: "auto",
+              interactionMode: "plan",
+              workspaceStrategy: { type: "worktree", baseRef: "master" },
+            });
+            const chosenId = (chosenCall.structuredContent as { scheduledTaskId: string })
+              .scheduledTaskId;
+            expect(
+              (yield* Ref.get(scheduledStore)).find((task) => task.id === chosenId),
+            ).toMatchObject({
+              modelSelection: { instanceId: claudeInstanceId, model: claudeModel },
+              runtimeMode: "auto",
+              interactionMode: "plan",
+              workspaceStrategy: { type: "worktree", baseRef: "master" },
+            });
+            expect(
+              (yield* Ref.get(scheduledStore)).find((task) => task.id === chosenId)
+                ?.workspaceStrategy,
+            ).not.toHaveProperty("startFromOrigin");
+
+            // update_scheduled_task applies workspace, options, and modes, and
+            // keeps the saved account and model when target names only options.
+            const chosenUpdate = yield* invoke("update_scheduled_task", {
+              scheduledTaskId: chosenId,
+              workspaceStrategy: { type: "worktree", baseRef: "main", startFromOrigin: true },
+              target: { model: codexModel, providerInstanceId: codexInstanceId },
+              interactionMode: "default",
+            });
+            expect(chosenUpdate.isError).toBe(false);
+            expect(chosenUpdate.structuredContent).toMatchObject({
+              modelSelection: { instanceId: codexInstanceId, model: codexModel },
+              runtimeMode: "auto",
+              interactionMode: "default",
+              workspaceStrategy: { type: "worktree", baseRef: "main", startFromOrigin: true },
+            });
+            const optionsUpdate = yield* invoke("update_scheduled_task", {
+              scheduledTaskId: chosenId,
+              target: { options: [{ id: "reasoningEffort", value: "high" }] },
+            });
+            expect(optionsUpdate.structuredContent).toMatchObject({
+              modelSelection: {
+                instanceId: codexInstanceId,
+                model: codexModel,
+                options: [{ id: "reasoningEffort", value: "high" }],
+              },
+              workspaceStrategy: { type: "worktree", baseRef: "main", startFromOrigin: true },
+            });
+
+            // Access is capped at the calling chat's; Build or Plan is taken as
+            // asked, and an edit that leaves access out keeps the saved level.
+            yield* orchestrator.dispatch({
+              type: "thread.runtime-mode.set",
+              commandId: CommandId.make("command:mcp-parent:schedule-narrow-access"),
+              threadId: parentThreadId,
+              runtimeMode: "auto-accept-edits",
+            });
+            yield* orchestrator.dispatch({
+              type: "thread.interaction-mode.set",
+              commandId: CommandId.make("command:mcp-parent:schedule-plan"),
+              threadId: parentThreadId,
+              interactionMode: "plan",
+            });
+            const fromPlanChat = yield* invoke("update_scheduled_task", {
+              scheduledTaskId: chosenId,
+              title: "Renamed from a plan chat",
+              interactionMode: "default",
+            });
+            expect(fromPlanChat.structuredContent).toMatchObject({
+              title: "Renamed from a plan chat",
+              runtimeMode: "auto",
+              interactionMode: "default",
+            });
+
+            // Refused, never dropped: unknown fields, a missing local branch,
+            // a workspace for runs that post into this thread, broader access.
+            for (const [name, args, reason] of [
+              [
+                "update_scheduled_task",
+                { scheduledTaskId: chosenId, workspace: { type: "root" } },
+                "This tool does not accept this field",
+              ],
+              [
+                "update_scheduled_task",
+                {
+                  scheduledTaskId: chosenId,
+                  workspaceStrategy: { type: "worktree", baseRef: "main" },
+                },
+                "Branch or ref main does not exist",
+              ],
+              [
+                "update_scheduled_task",
+                {
+                  scheduledTaskId: chosenId,
+                  bindToCurrentThread: true,
+                  workspaceStrategy: { type: "root" },
+                },
+                "applies only to a fresh chat per run",
+              ],
+              [
+                "update_scheduled_task",
+                { scheduledTaskId: chosenId, runtimeMode: "full-access" },
+                "can't be broader than this chat's auto-accept-edits",
+              ],
+              [
+                "schedule_task",
+                {
+                  prompt: "x",
+                  schedule: { type: "interval", everyMs: 60_000 },
+                  model: claudeModel,
+                },
+                "This tool does not accept this field",
+              ],
+            ] as const) {
+              const refused = yield* invoke(name, args);
+              expect((refused.content[0] as { readonly text: string }).text, name).toContain(
+                reason,
+              );
+            }
+            yield* orchestrator.dispatch({
+              type: "thread.runtime-mode.set",
+              commandId: CommandId.make("command:mcp-parent:schedule-restore-access"),
+              threadId: parentThreadId,
+              runtimeMode: "full-access",
+            });
+            yield* orchestrator.dispatch({
+              type: "thread.interaction-mode.set",
+              commandId: CommandId.make("command:mcp-parent:schedule-restore-build"),
+              threadId: parentThreadId,
+              interactionMode: "default",
+            });
+            expect(
+              (yield* Ref.get(scheduledStore)).find((task) => task.id === chosenId)
+                ?.workspaceStrategy,
+            ).toEqual({ type: "worktree", baseRef: "main", startFromOrigin: true });
+            yield* invoke("delete_scheduled_task", { scheduledTaskId: chosenId });
 
             // OpenCode 1.15 has emitted this exact nested-object-as-JSON-string
             // shape. Decode it at the MCP boundary rather than failing a task

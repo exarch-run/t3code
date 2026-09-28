@@ -1,6 +1,7 @@
 import { OrchestratorToolkit } from "./tools.ts";
 import * as Effect from "effect/Effect";
 
+import { makeScheduledTaskWorkspaceResolver } from "../../../exarch/ScheduledTaskWorkspace.ts";
 import { McpInvocationContext } from "../../McpInvocationContext.ts";
 import { OrchestratorMcpService } from "../../OrchestratorMcpService.ts";
 import { ThreadMetadataMcpService } from "../../ThreadMetadataMcpService.ts";
@@ -34,7 +35,7 @@ const handlers = {
     Effect.gen(function* () {
       const scope = yield* McpInvocationContext;
       const service = yield* OrchestratorMcpService;
-      return yield* service.scheduleTask(scope, input);
+      return yield* service.scheduleTask(scope, input, yield* makeScheduledTaskWorkspaceResolver);
     }),
   list_scheduled_tasks: () =>
     Effect.gen(function* () {
@@ -46,7 +47,11 @@ const handlers = {
     Effect.gen(function* () {
       const scope = yield* McpInvocationContext;
       const service = yield* OrchestratorMcpService;
-      return yield* service.updateScheduledTask(scope, input);
+      return yield* service.updateScheduledTask(
+        scope,
+        input,
+        yield* makeScheduledTaskWorkspaceResolver,
+      );
     }),
   delete_scheduled_task: (input) =>
     Effect.gen(function* () {

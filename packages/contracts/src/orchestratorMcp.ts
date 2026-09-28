@@ -28,8 +28,10 @@ import {
   OrchestrationV2Actor,
   OrchestrationV2CreationSource,
   OrchestrationV2RunStatus,
+  OrchestrationV2ThreadLaunchWorkspaceStrategy,
   OrchestrationV2TurnItemStatus,
 } from "./orchestrationV2.ts";
+import { ModelSelection } from "./modelSelection.ts";
 import {
   ProviderOptionDescriptor,
   ProviderOptionSelection,
@@ -483,39 +485,89 @@ export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
 });
 export type OrchestratorMcpCapabilitiesResult = typeof OrchestratorMcpCapabilitiesResult.Type;
 
-export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
-  startClean: Schema.optional(
-    Schema.Boolean.annotate({
-      description:
-        "True starts each run in a fresh provider session inside its destination thread, with no context from earlier turns; default false. Independent of bindToCurrentThread, which chooses the thread.",
+/**
+ * Run settings an agent may choose for a scheduled task, matching the app's
+ * Schedules page. The schedule inputs decode strictly, so a field the tool
+ * does not know is refused instead of silently dropped.
+ */
+const scheduledTaskRunChoices = (omitted: string) => ({
+  target: Schema.optional(
+    OrchestratorMcpTarget.annotate({
+      description: `Account (providerInstanceId), model, and model options every run uses, from orchestrator_capabilities. ${omitted}`,
     }),
   ),
-  prompt: OrchestratorMcpPrompt.annotate({
-    description: "Prompt executed on every scheduled run.",
-  }),
-  schedule: OrchestratorMcpSchedule,
-  title: Schema.optional(OrchestratorMcpTitle),
-  enabled: Schema.optional(
-    Schema.Boolean.annotate({ description: "Whether the schedule starts enabled; defaults true." }),
-  ),
-  /**
-   * When true (the default), the scheduled task fires into the calling thread
-   * on each run instead of launching a fresh thread. This is the recurring
-   * "wake up in this thread" behaviour reserved for agent-created tasks.
-   */
-  bindToCurrentThread: Schema.optional(
-    Schema.Boolean.annotate({
-      description:
-        "True (default) posts each run into this thread; false creates a fresh top-level thread per run. Either way a run that comes due while this task's previous run is still active is skipped and recorded, never queued.",
+  runtimeMode: Schema.optional(
+    OrchestratorMcpRuntimeMode.annotate({
+      description: `Access level for every run; 'inherit' uses this thread's. It cannot be broader than this thread's. ${omitted}`,
     }),
   ),
-  clientRequestId: Schema.optional(
-    OrchestratorMcpClientRequestId.annotate({
-      description:
-        "Stable key for this request. Repeating a call with the same key returns the task it already created instead of a duplicate.",
+  interactionMode: Schema.optional(
+    OrchestratorMcpInteractionMode.annotate({
+      description: `'default' (build) or 'plan' for every run; 'inherit' uses this thread's. ${omitted}`,
+    }),
+  ),
+  workspaceStrategy: Schema.optional(
+    OrchestrationV2ThreadLaunchWorkspaceStrategy.annotate({
+      description: `Where each fresh-chat run works; only for bindToCurrentThread=false. {type:'worktree', baseRef:'master'} makes a new worktree per run from that local branch; add startFromOrigin:true to fetch baseRef from origin first. Do not pass branch for a worktree: each run gets its own. {type:'root'} works in the project folder itself; {type:'existing_worktree', worktreePath} reuses one checkout. ${omitted}`,
     }),
   ),
 });
+/**
+ * Refuse keys the struct does not model; a plain Struct drops them silently.
+ * The tool's published JSON schema is unchanged.
+ */
+const rejectUnknownFields = <S extends Schema.Struct<Schema.Struct.Fields>>(
+  schema: S,
+): Schema.Codec<S["Type"], S["Encoded"]> => {
+  const known = new Set(Object.keys(schema.fields));
+  return Schema.StructWithRest(schema, [
+    Schema.Record(
+      Schema.String.check(Schema.makeFilter((key: string) => !known.has(key))),
+      Schema.Never.annotate({ message: "This tool does not accept this field" }),
+    ),
+  ]) as unknown as Schema.Codec<S["Type"], S["Encoded"]>;
+};
+
+export const OrchestratorMcpScheduleTaskInput = rejectUnknownFields(
+  Schema.Struct({
+    ...scheduledTaskRunChoices(
+      "Omit to use this thread's; an omitted workspaceStrategy for a fresh chat per run means a new worktree from the project's current local branch, not fetched.",
+    ),
+    startClean: Schema.optional(
+      Schema.Boolean.annotate({
+        description:
+          "True starts each run in a fresh provider session inside its destination thread, with no context from earlier turns; default false. Independent of bindToCurrentThread, which chooses the thread.",
+      }),
+    ),
+    prompt: OrchestratorMcpPrompt.annotate({
+      description: "Prompt executed on every scheduled run.",
+    }),
+    schedule: OrchestratorMcpSchedule,
+    title: Schema.optional(OrchestratorMcpTitle),
+    enabled: Schema.optional(
+      Schema.Boolean.annotate({
+        description: "Whether the schedule starts enabled; defaults true.",
+      }),
+    ),
+    /**
+     * When true (the default), the scheduled task fires into the calling thread
+     * on each run instead of launching a fresh thread. This is the recurring
+     * "wake up in this thread" behaviour reserved for agent-created tasks.
+     */
+    bindToCurrentThread: Schema.optional(
+      Schema.Boolean.annotate({
+        description:
+          "True (default) posts each run into this thread; false creates a fresh top-level thread per run. Either way a run that comes due while this task's previous run is still active is skipped and recorded, never queued.",
+      }),
+    ),
+    clientRequestId: Schema.optional(
+      OrchestratorMcpClientRequestId.annotate({
+        description:
+          "Stable key for this request. Repeating a call with the same key returns the task it already created instead of a duplicate.",
+      }),
+    ),
+  }),
+);
 export type OrchestratorMcpScheduleTaskInput = typeof OrchestratorMcpScheduleTaskInput.Type;
 
 /** Summary of a scheduled task returned by the schedule/list/update tools. */
@@ -542,6 +594,14 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
   }),
   lastRunStatus: ScheduledTaskRunStatus,
   lastOutcome: Schema.optional(ScheduledTaskRunOutcome),
+  modelSelection: ModelSelection.annotate({
+    description: "Saved account (instanceId), model, and model options every run uses.",
+  }),
+  runtimeMode: RuntimeMode,
+  interactionMode: ProviderInteractionMode,
+  workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy.annotate({
+    description: "Saved workspace for fresh-chat runs; unused while boundThreadId is set.",
+  }),
 });
 export type OrchestratorMcpScheduledTask = typeof OrchestratorMcpScheduledTask.Type;
 
@@ -554,41 +614,46 @@ export const OrchestratorMcpListScheduledTasksResult = Schema.Struct({
 export type OrchestratorMcpListScheduledTasksResult =
   typeof OrchestratorMcpListScheduledTasksResult.Type;
 
-export const OrchestratorMcpUpdateScheduledTaskInput = Schema.Struct({
-  startClean: Schema.optional(
-    Schema.Boolean.annotate({
-      description:
-        "True starts each run in a fresh provider session inside its destination thread, with no context from earlier turns; default false. Independent of bindToCurrentThread, which chooses the thread.",
-    }),
-  ),
-  scheduledTaskId: ScheduledTaskId,
-  prompt: Schema.optional(OrchestratorMcpPrompt),
-  title: Schema.optional(OrchestratorMcpTitle),
-  schedule: Schema.optional(
-    OrchestratorMcpSchedule.annotate({
-      description:
-        "Replacement schedule. Changing the cadence, time, weekdays, or timeZone recomputes nextRunAt; omitting it keeps the current schedule and the pending run.",
-    }),
-  ),
-  enabled: Schema.optional(
-    Schema.Boolean.annotate({
-      description:
-        "False pauses future runs and clears nextRunAt; a run already dispatched keeps going. True resumes from the next occurrence.",
-    }),
-  ),
-  bindToCurrentThread: Schema.optional(
-    Schema.Boolean.annotate({
-      description:
-        "True moves future runs into this thread; false makes each future run launch a fresh thread.",
-    }),
-  ),
-});
+export const OrchestratorMcpUpdateScheduledTaskInput = rejectUnknownFields(
+  Schema.Struct({
+    ...scheduledTaskRunChoices("Omit to keep the task's current setting."),
+    startClean: Schema.optional(
+      Schema.Boolean.annotate({
+        description:
+          "True starts each run in a fresh provider session inside its destination thread, with no context from earlier turns; default false. Independent of bindToCurrentThread, which chooses the thread.",
+      }),
+    ),
+    scheduledTaskId: ScheduledTaskId,
+    prompt: Schema.optional(OrchestratorMcpPrompt),
+    title: Schema.optional(OrchestratorMcpTitle),
+    schedule: Schema.optional(
+      OrchestratorMcpSchedule.annotate({
+        description:
+          "Replacement schedule. Changing the cadence, time, weekdays, or timeZone recomputes nextRunAt; omitting it keeps the current schedule and the pending run.",
+      }),
+    ),
+    enabled: Schema.optional(
+      Schema.Boolean.annotate({
+        description:
+          "False pauses future runs and clears nextRunAt; a run already dispatched keeps going. True resumes from the next occurrence.",
+      }),
+    ),
+    bindToCurrentThread: Schema.optional(
+      Schema.Boolean.annotate({
+        description:
+          "True moves future runs into this thread; false makes each future run launch a fresh thread.",
+      }),
+    ),
+  }),
+);
 export type OrchestratorMcpUpdateScheduledTaskInput =
   typeof OrchestratorMcpUpdateScheduledTaskInput.Type;
 
-export const OrchestratorMcpDeleteScheduledTaskInput = Schema.Struct({
-  scheduledTaskId: ScheduledTaskId,
-});
+export const OrchestratorMcpDeleteScheduledTaskInput = rejectUnknownFields(
+  Schema.Struct({
+    scheduledTaskId: ScheduledTaskId,
+  }),
+);
 export type OrchestratorMcpDeleteScheduledTaskInput =
   typeof OrchestratorMcpDeleteScheduledTaskInput.Type;
 

@@ -97,3 +97,15 @@ Policy lives in `apps/server/src/exarch/speech.ts`, `linkedComputers.ts` and `ht
 | `apps/server/src/http.ts` | The existing speech-bridge dispatch also accepts the `computer-bridge` prefix, behind the same `relay:write` check. | `apps/server/src/exarch/speech.test.ts` |
 
 No provider adapter changes. An installed app gets this only after an authorized engine package.
+
+## Agent schedule controls
+
+Policy lives in `apps/server/src/exarch/ScheduledTaskWorkspace.ts`. `schedule_task` and `update_scheduled_task` accept the settings the app's Schedules page sets: account, model and options (`target`, checked like `delegate_task`'s), `runtimeMode`, `interactionMode`, and `workspaceStrategy`. Access can't be broader than the calling chat's, and a left-out access level keeps the saved one without a check. Build or Plan is a working style, not a permission, so it is taken as asked. A fresh chat per run defaults to a new worktree from the project's current local branch, not fetched; upstream fetched `main` from origin. A named local ref must exist, and a fixed branch for a new worktree is refused because the second run would collide with it. A workspace for runs that post into a chat is refused, not stored unused. The schedule tool inputs refuse unknown fields instead of dropping them.
+
+| Hook                                                                        | Reason                                                                                                                               | Regression coverage                                                                       |
+| --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------- |
+| `packages/contracts/src/orchestratorMcp.ts` (path from the repository root) | New schedule tool fields, the saved settings in the task summary, and unknown-field refusal on the create, update and delete inputs. | `mcp/OrchestratorMcpToolkit.integration.test.ts`                                          |
+| `mcp/OrchestratorMcpService.ts`                                             | Replace the hard-coded `main`-from-origin default with the policy, and resolve target and modes on create and update.                | `mcp/OrchestratorMcpToolkit.integration.test.ts`, `exarch/ScheduledTaskWorkspace.test.ts` |
+| `mcp/toolkits/orchestrator/tools.ts`, `handlers.ts`                         | Tool descriptions, and the project and git services the workspace check needs.                                                       | `mcp/OrchestratorMcpToolkit.integration.test.ts`                                          |
+
+Existing saved tasks are not migrated.

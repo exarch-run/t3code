@@ -25,13 +25,24 @@ import {
   ThreadMetadataMcpUpdateInput,
   ThreadMetadataMcpUpdateResult,
 } from "@t3tools/contracts";
+import * as FileSystem from "effect/FileSystem";
 import { Tool, Toolkit } from "effect/unstable/ai";
+
+import { ProjectService } from "../../../project/ProjectService.ts";
+import { GitVcsDriver } from "../../../vcs/GitVcsDriver.ts";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { OrchestratorMcpService } from "../../OrchestratorMcpService.ts";
 import { ThreadMetadataMcpService } from "../../ThreadMetadataMcpService.ts";
 
 const dependencies = [McpInvocationContext.McpInvocationContext, OrchestratorMcpService];
+// Schedule writes read the project's git checkout to check or default the workspace.
+const scheduleWriteDependencies = [
+  ...dependencies,
+  ProjectService,
+  GitVcsDriver,
+  FileSystem.FileSystem,
+];
 const threadMetadataDependencies = [
   McpInvocationContext.McpInvocationContext,
   ThreadMetadataMcpService,
@@ -91,12 +102,12 @@ const TaskCancelTool = Tool.make("task_cancel", {
 
 export const ScheduleTaskTool = Tool.make("schedule_task", {
   description:
-    "Create persistent recurring work in the app scheduler, which runs even when no turn is active. Pass schedule as a STRUCTURED OBJECT, never JSON text: {type:'interval', everyMs:3600000} means hourly; {type:'fixed_time', timeOfDay:'09:00', weekdays:[1,2,3,4,5]} means weekday mornings. A fixed_time is read in the schedule's timeZone; omit it to record the engine computer's zone, and confirm the zone from the returned schedule. By default (bindToCurrentThread=true) each run posts into THIS thread; use false only when the user wants a fresh top-level thread per run. startClean starts each run in a fresh provider session without creating a new thread. Provider, model, and access level inherit from this thread and cannot be raised here. Enforced rules: runs of one task never overlap (a run due while the previous is active is skipped and recorded, not queued); a fixed-time run missed by more than ten minutes while the engine was off is skipped and recorded, not replayed; an overdue interval task runs once; a failed run is recorded with its error and not retried. Repeating a call with the same clientRequestId returns the existing task. Report the returned schedule, its timeZone, boundThreadId, and nextRunAt after success.",
+    "Create persistent recurring work in the app scheduler, which runs even when no turn is active. Pass schedule as a STRUCTURED OBJECT, never JSON text: {type:'interval', everyMs:3600000} means hourly; {type:'fixed_time', timeOfDay:'09:00', weekdays:[1,2,3,4,5]} means weekday mornings. A fixed_time is read in the schedule's timeZone; omit it to record the engine computer's zone, and confirm the zone from the returned schedule. By default (bindToCurrentThread=true) each run posts into THIS thread; use false only when the user wants a fresh top-level thread per run. startClean starts each run in a fresh provider session without creating a new thread. target sets the account, model, and model options, and runtimeMode and interactionMode set access and build or plan; each defaults to this thread's, and access cannot be broader than this thread's. With bindToCurrentThread=false, workspaceStrategy sets where each run works; the default is a new worktree per run from the project's current local branch, not fetched from origin. A field this tool does not accept is refused, never ignored. Enforced rules: runs of one task never overlap (a run due while the previous is active is skipped and recorded, not queued); a fixed-time run missed by more than ten minutes while the engine was off is skipped and recorded, not replayed; an overdue interval task runs once; a failed run is recorded with its error and not retried. Repeating a call with the same clientRequestId returns the existing task. Report the returned schedule, its timeZone, boundThreadId, model, workspaceStrategy, and nextRunAt after success.",
   parameters: OrchestratorMcpScheduleTaskInput,
   success: OrchestratorMcpScheduleTaskResult,
   failure: OrchestratorMcpFailure,
   failureMode: "return",
-  dependencies,
+  dependencies: scheduleWriteDependencies,
 })
   .annotate(Tool.Title, "Schedule a recurring task")
   .annotate(Tool.Destructive, true)
@@ -104,7 +115,7 @@ export const ScheduleTaskTool = Tool.make("schedule_task", {
 
 const ListScheduledTasksTool = Tool.make("list_scheduled_tasks", {
   description:
-    "List the recurring scheduled tasks in the calling thread's project, including their id, schedule with timeZone, prompt, enabled state, bound thread, startClean, next run time, last run time, and lastOutcome (ran, skipped_overlap, skipped_missed, or failed with its message and time). Report a skipped or failed outcome to the user; nothing retries it. Use the returned scheduledTaskId with update_scheduled_task or delete_scheduled_task.",
+    "List the recurring scheduled tasks in the calling thread's project, including their id, schedule with timeZone, prompt, enabled state, bound thread, startClean, model selection, access and interaction modes, workspaceStrategy, next run time, last run time, and lastOutcome (ran, skipped_overlap, skipped_missed, or failed with its message and time). Report a skipped or failed outcome to the user; nothing retries it. Use the returned scheduledTaskId with update_scheduled_task or delete_scheduled_task.",
   success: OrchestratorMcpListScheduledTasksResult,
   failure: OrchestratorMcpFailure,
   failureMode: "return",
@@ -117,12 +128,12 @@ const ListScheduledTasksTool = Tool.make("list_scheduled_tasks", {
 
 const UpdateScheduledTaskTool = Tool.make("update_scheduled_task", {
   description:
-    "Update an existing scheduled task in place by scheduledTaskId (from list_scheduled_tasks); this never creates a second task. Only the provided fields change; omit a field to leave it as-is. A new schedule or timeZone recomputes nextRunAt; other edits keep the pending run. enabled=false pauses future runs only: a run already dispatched into its thread keeps going, and interrupting that thread is a separate action. Set bindToCurrentThread to move future runs between this thread and a fresh thread per run.",
+    "Update an existing scheduled task in place by scheduledTaskId (from list_scheduled_tasks); this never creates a second task. Only the provided fields change; omit a field to leave it as-is. A new schedule or timeZone recomputes nextRunAt; other edits keep the pending run. enabled=false pauses future runs only: a run already dispatched into its thread keeps going, and interrupting that thread is a separate action. Set bindToCurrentThread to move future runs between this thread and a fresh thread per run; moving a task to fresh chats without workspaceStrategy uses a new worktree per run from the project's current local branch. target, runtimeMode, interactionMode, and workspaceStrategy change the account, model and options, access, build or plan, and where fresh-chat runs work, as in schedule_task; access cannot be broader than this thread's. A field this tool does not accept is refused, never ignored.",
   parameters: OrchestratorMcpUpdateScheduledTaskInput,
   success: OrchestratorMcpScheduleTaskResult,
   failure: OrchestratorMcpFailure,
   failureMode: "return",
-  dependencies,
+  dependencies: scheduleWriteDependencies,
 })
   .annotate(Tool.Title, "Update a scheduled task")
   .annotate(Tool.Destructive, true);
