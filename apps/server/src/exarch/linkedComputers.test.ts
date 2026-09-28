@@ -1,8 +1,9 @@
 import { expect, it } from "@effect/vitest";
 import * as NodeCrypto from "node:crypto";
 import { EnvironmentId } from "@t3tools/contracts";
+import { verifyDpopProof } from "@t3tools/shared/dpop";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
-import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
 import * as ConfigProvider from "effect/ConfigProvider";
 import { HttpClient, HttpClientResponse, type HttpClientRequest } from "effect/unstable/http";
@@ -105,46 +106,27 @@ it.effect("excludes itself and reuses a signed session without repeating enrollm
     expect(f.calls).toHaveLength(count + 1);
     const request = f.calls.at(-1)!;
     expect(request.headers.authorization).toBe("DPoP remote-token");
-    const [header, payload, signature] = request.headers.dpop!.split(".");
-    const decoded = yield* Schema.decodeUnknownEffect(
-      Schema.fromJsonString(Schema.Struct({ jwk: Schema.Unknown })),
-    )(Buffer.from(header!, "base64url").toString());
     expect(
-      NodeCrypto.verify(
-        "sha256",
-        Buffer.from(`${header}.${payload}`),
-        {
-          key: NodeCrypto.createPublicKey({
-            key: decoded.jwk as NodeCrypto.JsonWebKey,
-            format: "jwk",
-          }),
-          dsaEncoding: "ieee-p1363",
-        },
-        Buffer.from(signature!, "base64url"),
-      ),
-    ).toBe(true);
-    expect(
-      yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(
-        Buffer.from(payload!, "base64url").toString(),
-      ),
-    ).toMatchObject({
-      htm: "POST",
-      htu: "https://remote.test/api/exarch/personal-setup",
-    });
+      verifyDpopProof({
+        proof: request.headers.dpop,
+        method: request.method,
+        url: request.url,
+        nowEpochSeconds: Math.floor((yield* Clock.currentTimeMillis) / 1000),
+        expectedAccessToken: "remote-token",
+      }),
+    ).toMatchObject({ ok: true });
   }),
 );
 it.effect("refuses insecure remote endpoints before transmitting the bootstrap credential", () =>
   Effect.gen(function* () {
     const f = fixture(true);
     expect(
-      (yield* f
-        .run({ action: "send", environmentId: f.other, packet: {} })
-        .pipe(
-          Effect.match({
-            onFailure: (error) => ({ message: String(error) }),
-            onSuccess: () => ({ message: "unexpected success" }),
-          }),
-        )).message,
+      (yield* f.run({ action: "send", environmentId: f.other, packet: {} }).pipe(
+        Effect.match({
+          onFailure: (error) => ({ message: String(error) }),
+          onSuccess: () => ({ message: "unexpected success" }),
+        }),
+      )).message,
     ).toContain("unavailable");
     expect(f.calls.every((request) => request.url.startsWith("https://relay.test"))).toBe(true);
   }),
@@ -158,36 +140,30 @@ it.effect("keeps sessions for unavailable plugins but replaces an unauthorized s
     const initial = f.calls.length;
     f.status(503);
     expect(
-      (yield* f
-        .run(input)
-        .pipe(
-          Effect.match({
-            onFailure: (error) => ({ message: String(error) }),
-            onSuccess: () => ({ message: "unexpected success" }),
-          }),
-        )).message,
+      (yield* f.run(input).pipe(
+        Effect.match({
+          onFailure: (error) => ({ message: String(error) }),
+          onSuccess: () => ({ message: "unexpected success" }),
+        }),
+      )).message,
     ).toContain("unavailable");
     expect(
-      (yield* f
-        .run(input)
-        .pipe(
-          Effect.match({
-            onFailure: (error) => ({ message: String(error) }),
-            onSuccess: () => ({ message: "unexpected success" }),
-          }),
-        )).message,
+      (yield* f.run(input).pipe(
+        Effect.match({
+          onFailure: (error) => ({ message: String(error) }),
+          onSuccess: () => ({ message: "unexpected success" }),
+        }),
+      )).message,
     ).toContain("unavailable");
     expect(f.calls).toHaveLength(initial + 2);
     f.status(401);
     expect(
-      (yield* f
-        .run(input)
-        .pipe(
-          Effect.match({
-            onFailure: (error) => ({ message: String(error) }),
-            onSuccess: () => ({ message: "unexpected success" }),
-          }),
-        )).message,
+      (yield* f.run(input).pipe(
+        Effect.match({
+          onFailure: (error) => ({ message: String(error) }),
+          onSuccess: () => ({ message: "unexpected success" }),
+        }),
+      )).message,
     ).toContain("unavailable");
     f.status(200);
     yield* f.run(input);
@@ -254,7 +230,15 @@ it.effect(
       const check = f.calls.find((call) => call.url.endsWith("/status"))!;
       expect(check.url).toBe("https://relay.test/v1/environments/other/status");
       expect(check.headers.authorization).toBe("DPoP relay-token");
-      expect(check.headers.dpop).toBeTruthy();
+      expect(
+        verifyDpopProof({
+          proof: check.headers.dpop,
+          method: check.method,
+          url: check.url,
+          nowEpochSeconds: Math.floor((yield* Clock.currentTimeMillis) / 1000),
+          expectedAccessToken: "relay-token",
+        }),
+      ).toMatchObject({ ok: true });
       expect(f.calls.some((call) => call.url.endsWith("/connect"))).toBe(false);
       expect(yield* fixture(false, true, true).run({ action: "status" })).toEqual({
         computers: [

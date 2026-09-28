@@ -15,11 +15,26 @@ import { ServerEnvironmentIdentity } from "../environment/ServerEnvironment.ts";
 import { EnvironmentAuth } from "../auth/EnvironmentAuth.ts";
 import { exarchRouteLayer } from "../http.ts";
 import { randomUUID } from "node:crypto";
+import { verifyDpopProof } from "@t3tools/shared/dpop";
 
 const disposers: Array<() => Promise<void>> = [];
 afterEach(async () => {
   for (const dispose of disposers.splice(0)) await dispose();
 });
+/** The remote computer's own check: the proof must pass for the exact request it arrived on. */
+function expectAcceptedProof(request: HttpClientRequest.HttpClientRequest) {
+  expect(request.headers.authorization).toBe("DPoP remote-token");
+  expect(
+    verifyDpopProof({
+      proof: request.headers.dpop,
+      method: request.method,
+      url: request.url,
+      // @effect-diagnostics-next-line globalDate:off
+      nowEpochSeconds: Math.floor(Date.now() / 1000),
+      expectedAccessToken: "remote-token",
+    }),
+  ).toMatchObject({ ok: true });
+}
 function fixture() {
   const requests: HttpClientRequest.HttpClientRequest[] = [];
   const endpoint = {
@@ -151,8 +166,7 @@ it("streams a separate speech host immediately, preserves private routing, and r
   const forwards = f.requests.filter((r) => r.url.includes("/speech/record/events"));
   expect(forwards).toHaveLength(2);
   expect(forwards[1]!.url).toBe("https://speech.test/api/exarch/speech/record/events?private=1");
-  expect(forwards[1]!.headers.authorization).toBe("DPoP remote-token");
-  expect(forwards[1]!.headers.dpop).toBeTruthy();
+  expectAcceptedProof(forwards[1]!);
   expect(f.requests.filter((r) => r.url.endsWith("/oauth/token"))).toHaveLength(2);
   expect(f.requests.some((r) => r.url.endsWith("/api/exarch/events"))).toBe(false);
   f.end();
@@ -175,8 +189,30 @@ it("a window call reaches any path, and its buffered bytes are sent again after 
   expect(calls).toHaveLength(2);
   expect(calls[1]!.url).toBe("https://speech.test/api/exarch/desktop/call");
   expect(calls[1]!.headers["content-type"]).toBe("application/octet-stream");
+  expectAcceptedProof(calls[1]!);
   expect(calls[1]!.headers.cookie).toBeUndefined();
   expect(response.headers.get("set-cookie")).toBeNull();
+});
+
+it("a window request carrying a query keeps it and is signed so the remote check accepts it", async () => {
+  const f = fixture();
+  const events = await f.app.handler(
+    new Request("https://chat.test/api/exarch/computer-bridge/speech/desktop/events?control=c%201"),
+  );
+  expect(events.status).toBe(200);
+  const upload = await f.app.handler(
+    new Request(
+      "https://chat.test/api/exarch/computer-bridge/speech/desktop/attachment?control=c&name=a.png",
+      { method: "POST", body: new Uint8Array([1, 2]) },
+    ),
+  );
+  expect(upload.status).toBe(200);
+  const forwarded = f.requests.filter((r) => /\/desktop\/(events|attachment)/.test(r.url));
+  expect(forwarded.map((r) => r.url)).toEqual([
+    "https://speech.test/api/exarch/desktop/events?control=c%201",
+    "https://speech.test/api/exarch/desktop/attachment?control=c&name=a.png",
+  ]);
+  for (const request of forwarded) expectAcceptedProof(request);
 });
 
 it("a preview page passes its own cookie, redirect and set-cookies through, and nothing else does", async () => {

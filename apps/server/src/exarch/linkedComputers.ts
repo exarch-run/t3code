@@ -9,6 +9,7 @@ import {
 import {
   computeDpopAccessTokenHash,
   computeDpopJwkThumbprint,
+  normalizeDpopHtu,
   type DpopPublicJwk,
 } from "@t3tools/shared/dpop";
 import * as Clock from "effect/Clock";
@@ -268,6 +269,7 @@ class LinkedComputerError extends Schema.TaggedError<LinkedComputerError>()("Lin
     return "The linked computer is unavailable or needs account authorization.";
   }
 }
+/** Signs a DPoP proof for `url`; `htu` drops the query and fragment the way the checker does, while the request itself keeps them. */
 export function makeProof(
   privateKey: NodeCrypto.KeyObject,
   jwk: DpopPublicJwk,
@@ -280,7 +282,7 @@ export function makeProof(
   const payload = Buffer.from(
     encode({
       htm: method,
-      htu: url,
+      htu: normalizeDpopHtu(url) ?? url,
       jti: NodeCrypto.randomUUID(),
       iat: Math.floor(now / 1000),
       ...(accessToken ? { ath: computeDpopAccessTokenHash(accessToken) } : {}),
