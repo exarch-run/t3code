@@ -51,7 +51,6 @@ import {
 } from "./toolkits/preview/tools.ts";
 import { WorktreeToolkitHandlersLive } from "./toolkits/worktree/handlers.ts";
 import { WorktreeToolkit } from "./toolkits/worktree/tools.ts";
-import * as WorktreeMcpService from "./WorktreeMcpService.ts";
 import { PullRequestsToolkitHandlersLive } from "./toolkits/pullRequests/handlers.ts";
 import { PullRequestsToolkit } from "./toolkits/pullRequests/tools.ts";
 import {
@@ -699,9 +698,10 @@ export const ThreadToolkitRegistrationLive = McpServer.toolkit(ThreadToolkit).pi
   Layer.provide(ThreadToolkitHandlersLive),
 );
 
+// The server provides WorktreeMcpService once, so owner moves over WebSocket
+// share this toolkit's per-thread handoff guard.
 const WorktreeToolkitRegistrationLive = McpServer.toolkit(WorktreeToolkit).pipe(
   Layer.provide(WorktreeToolkitHandlersLive),
-  Layer.provide(WorktreeMcpService.layer),
 );
 
 const PreviewControlsRegistrationLive = McpServer.toolkit(PreviewControlsToolkit).pipe(

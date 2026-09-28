@@ -3,6 +3,7 @@ import type {
   OrchestrationV2ThreadProjection,
   OrchestrationV2ProviderCapabilities,
 } from "@t3tools/contracts";
+import { contextWindowStart } from "../exarch/ContextWindow.ts";
 import type { ProviderSwitchPlanV2 } from "./ProviderSwitchService.ts";
 
 export function handoffPlan(
@@ -19,7 +20,8 @@ export function handoffPlan(
     )
     .toSorted((a, b) => a.ordinal - b.ordinal);
   const latest = sources.at(-1);
-  const lastClean = sources.findLast((run) => run.startClean)?.ordinal ?? 1;
+  // Same window the next run's dispatch uses, so a supplied package's range matches.
+  const lastClean = contextWindowStart(projection.runs) || 1;
   const target =
     workspaceMove || (!plan.instanceChanged && plan.transition.type === "create_with_handoff")
       ? undefined

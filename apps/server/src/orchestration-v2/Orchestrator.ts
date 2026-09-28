@@ -2,6 +2,7 @@ import { normalizeQueuedAnswerEdit } from "../exarch/QueuedAnswerEdit.ts";
 import { bindTaskProgressCommands, nextTaskProgressRecord } from "../exarch/TaskProgressV2.ts";
 import { TaskProgress } from "../exarch/TaskProgressRuntime.ts";
 import { settledParentDisposesReports } from "../exarch/SettledParentReports.ts";
+import { contextWindowStart } from "../exarch/ContextWindow.ts";
 import { latestRootProviderFailure } from "@t3tools/shared/orchestrationV2ThreadError";
 import { threadPullRequestsOf } from "@t3tools/shared/threadPullRequests";
 import {
@@ -591,15 +592,16 @@ export function appendContextHandoffId(
 function rootProviderThreadsForProvider(
   projection: Pick<OrchestrationV2ThreadProjection, "providerThreads" | "thread" | "runs">,
   providerInstanceId: ModelSelection["instanceId"],
+  targetRunOrdinal?: number,
 ): ReadonlyArray<OrchestrationV2ProviderThread> {
+  const windowStart = contextWindowStart(projection.runs, targetRunOrdinal);
   return projection.providerThreads
     .filter(
       (providerThread) =>
         providerThread.providerInstanceId === providerInstanceId &&
         providerThread.appThreadId === projection.thread.id &&
         providerThread.ownerNodeId === null &&
-        (providerThread.lastRunOrdinal ?? 0) >=
-          (projection.runs.findLast((run) => run.startClean)?.ordinal ?? 0),
+        (providerThread.lastRunOrdinal ?? 0) >= windowStart,
     )
     .toSorted(
       (left, right) =>
@@ -1225,6 +1227,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         projection.thread.pendingHandoff?.afterRunOrdinal === queuedRun.ordinal - 1
           ? projection.thread.pendingHandoff
           : undefined;
+      const queuedWindowStart = contextWindowStart(projection.runs, queuedRun.ordinal);
       const coveredRuns =
         queuedRun.startClean ||
         canResumeAcrossInstances ||
@@ -1235,8 +1238,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           : projection.runs.filter(
               (run) =>
                 isHandoffSourceRun(run) &&
-                run.ordinal >=
-                  (projection.runs.findLast((candidate) => candidate.startClean)?.ordinal ?? 1) &&
+                run.ordinal >= queuedWindowStart &&
                 run.ordinal > (targetLastCompletedRun?.ordinal ?? 0) &&
                 run.ordinal <= latestHandoffRun.ordinal,
             );
@@ -3767,7 +3769,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         const existingTargetProviderThread = rootProviderThreadsForProvider(
           input.projection,
           input.modelSelection.instanceId,
+          targetRun.ordinal,
         ).find((candidate) => candidate.id !== providerThread.id);
+        const windowStart = contextWindowStart(input.projection.runs, targetRun.ordinal);
         const targetProviderSessionId =
           existingTargetProviderThread?.providerSessionId ??
           (yield* mapDispatchError(input.command)(
@@ -3822,19 +3826,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             fromProviderInstanceId: targetRun.providerInstanceId,
             toProviderInstanceId: input.modelSelection.instanceId,
             coveredRunOrdinals: {
-              from: input.projection.runs.findLast((run) => run.startClean)?.ordinal ?? 1,
+              from: Math.max(1, windowStart),
               to: targetRun.ordinal,
             },
             strategy: "full_thread_summary",
             items: yield* readHandoffItems(
               input.command.threadId,
               input.projection.runs
-                .filter(
-                  (run) =>
-                    run.ordinal >=
-                    (input.projection.runs.findLast((candidate) => candidate.startClean)?.ordinal ??
-                      1),
-                )
+                .filter((run) => run.ordinal >= windowStart)
                 .map((run) => run.id),
             ),
             runs: input.projection.runs,
@@ -5398,14 +5397,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         targetProviderThread === undefined
           ? undefined
           : lastDeliveredRunForProviderThread(projection, targetProviderThread.id);
+      const providerSwitchWindowStart = contextWindowStart(projection.runs, ordinal);
       const providerSwitchCoveredRuns =
         !isProviderSwitch || canResumeAcrossInstances || latestHandoffRun === undefined
           ? []
           : projection.runs.filter(
               (run) =>
                 isHandoffSourceRun(run) &&
-                run.ordinal >=
-                  (projection.runs.findLast((candidate) => candidate.startClean)?.ordinal ?? 1) &&
+                run.ordinal >= providerSwitchWindowStart &&
                 run.ordinal >
                   (requiresFullProviderSwitchContext
                     ? 0

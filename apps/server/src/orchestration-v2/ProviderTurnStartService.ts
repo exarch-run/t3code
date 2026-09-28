@@ -1,4 +1,5 @@
 import { restoreClaudeHandoffContext } from "../exarch/ClaudeHandoffContext.ts";
+import { contextWindowStart } from "../exarch/ContextWindow.ts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { formatQuestionResponseForProvider } from "../orchestration/questionResponseInput.ts";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
@@ -730,6 +731,7 @@ export const layer: Layer.Layer<
           type: "provider_resume_fallback",
         });
         const createdAt = yield* DateTime.now;
+        const windowStart = contextWindowStart(projection.runs, run.ordinal - 1);
         const handoff = yield* contextHandoffService.prepareProviderHandoff({
           threadId: projection.thread.id,
           targetRunId: run.id,
@@ -739,24 +741,18 @@ export const layer: Layer.Layer<
           fromProviderInstanceId: providerThread.providerInstanceId,
           toProviderInstanceId: run.providerInstanceId,
           coveredRunOrdinals: {
-            from:
-              projection.runs.findLast(
-                (source) => source.startClean && source.ordinal < run.ordinal,
-              )?.ordinal ?? 1,
+            from: Math.max(1, windowStart),
             to: Math.max(1, run.ordinal - 1),
           },
           strategy: "full_thread_summary",
           runs: projection.runs,
           items: (yield* projectionStore.getTurnStartHistory(input.threadId)).filter(
             (item) =>
-              (item.runId === null && !projection.runs.some((source) => source.startClean)) ||
+              (item.runId === null && windowStart === 0) ||
               projection.runs.some(
                 (source) =>
                   source.id === item.runId &&
-                  source.ordinal >=
-                    (projection.runs.findLast(
-                      (candidate) => candidate.startClean && candidate.ordinal < run.ordinal,
-                    )?.ordinal ?? 1) &&
+                  source.ordinal >= windowStart &&
                   source.ordinal < run.ordinal,
               ),
           ),

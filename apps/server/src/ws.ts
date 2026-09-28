@@ -1083,6 +1083,7 @@ const makeWsRpcLayer = (
       const currentSessionId = currentSession.sessionId;
       const sql = yield* SqlClient.SqlClient;
       const threadManagement = yield* ThreadManagementService.ThreadManagementService;
+      const worktreeMoves = yield* AdoptionWorktree.WorktreeMcpService;
       const intakeContext = yield* Effect.context<
         | ThreadManagementService.ThreadManagementService
         | ThreadLaunchService.ThreadLaunchService
@@ -1904,8 +1905,7 @@ const makeWsRpcLayer = (
         [ADOPTION_RPC.moveToWorktree.method]: (input) =>
           Effect.gen(function* () {
             const projection = yield* threadManagement.getThreadProjection(input.threadId);
-            const service = yield* AdoptionWorktree.WorktreeMcpService;
-            return yield* service.handoff(
+            return yield* worktreeMoves.handoff(
               {
                 environmentId: yield* serverEnvironment.getEnvironmentId,
                 threadId: input.threadId,
@@ -1917,10 +1917,7 @@ const makeWsRpcLayer = (
               input,
               "user",
             );
-          }).pipe(
-            Effect.provide(AdoptionWorktree.layer),
-            Effect.mapError((error) => new AdoptionError({ message: String(error) })),
-          ),
+          }).pipe(Effect.mapError((error) => new AdoptionError({ message: String(error) }))),
         [ORCHESTRATION_V2_WS_METHODS.getThreadProjection]: (input) =>
           observeRpcEffect(
             ORCHESTRATION_V2_WS_METHODS.getThreadProjection,
@@ -3756,6 +3753,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
     const previewAutomationBroker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
     const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
     const pullRequests = yield* PullRequestService.PullRequestService;
+    const worktreeMoves = yield* AdoptionWorktree.WorktreeMcpService;
     const sql = yield* SqlClient.SqlClient;
     return HttpRouter.add(
       "GET",
@@ -3816,6 +3814,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
               // One server-lifetime service means clients share the same PR caches, and a WS
               // mutation invalidates the HTTP diff cache that every client reads from.
               Layer.provide(Layer.succeed(PullRequestService.PullRequestService, pullRequests)),
+              Layer.provide(Layer.succeed(AdoptionWorktree.WorktreeMcpService, worktreeMoves)),
               Layer.provide(
                 SourceControlDiscovery.layer.pipe(
                   Layer.provide(

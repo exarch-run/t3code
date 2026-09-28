@@ -133,3 +133,18 @@ Policy lives in `apps/server/src/exarch/ScheduledTaskWorkspace.ts`. Every editor
 | `mcp/toolkits/exarch/tools.ts`                                                                                              | The `keys` choice in the personal-setup tool schema.              | `mcp/toolkits/exarch/handlers.test.ts`                                  |
 
 Existing saved tasks are not migrated. A saved schedule that fails the workspace check is refused on its next save until its workspace is changed.
+
+## Clean-run context window and shared worktree moves
+
+Policy lives in `apps/server/src/exarch/ContextWindow.ts`. A run's context window opens at the last clean run at or before it, by ordinal. The floor used to be the last clean run anywhere, so a clean run queued behind a provider switch erased the switch's history and the switch started with no handoff. Queue activation, dispatch, restart with a new model, resume fallback and the handoff preview now call the same rule with their own target run. The preview reads every run, like dispatch, so a supplied package's range matches what the engine expects. The preview keeps its old default of 1, so a provider thread that has never run still reads as a newcomer.
+
+Owner worktree moves over WebSocket built a fresh `WorktreeMcpService` per request, each with an empty in-flight guard. The server now builds one service and gives it to both the MCP toolkit and the WebSocket handlers, so owner and agent moves of one chat are serialized against each other.
+
+| Hook                                           | Reason                                                                                   | Regression coverage                                           |
+| ---------------------------------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `orchestration-v2/Orchestrator.ts`             | Queue activation, dispatch, restart and provider-thread reuse take the window by target. | `orchestration-v2/testkit/ProviderSwitch.integration.test.ts` |
+| `orchestration-v2/ProviderTurnStartService.ts` | Resume fallback takes the window before its run.                                         | `orchestration-v2/ProviderTurnStartService.test.ts`           |
+| `orchestration-v2/HandoffPlan.ts`              | The preview takes the next run's window.                                                 | `orchestration-v2/testkit/ProviderSwitch.integration.test.ts` |
+| `server.ts`                                    | Provide `WorktreeMcpService` once to the MCP and WebSocket routes.                       | Typecheck, server boot                                        |
+| `mcp/McpHttpServer.ts`                         | The worktree toolkit uses the server's service instead of building its own.              | `mcp/toolkits/worktree/registration.test.ts` (build only)     |
+| `ws.ts`                                        | The WebSocket route passes the shared service to each connection's owner-move handler.   | Typecheck, server boot                                        |
