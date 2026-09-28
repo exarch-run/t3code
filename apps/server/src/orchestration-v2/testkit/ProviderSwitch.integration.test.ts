@@ -94,6 +94,7 @@ const GROK_DRIVER = ProviderDriverKind.make("acp");
 
 interface CapturedTurn {
   readonly sessionContext?: string | undefined;
+  readonly handoffContext?: string | undefined;
   readonly driver: ProviderDriverKind;
   readonly threadId: ThreadId;
   readonly providerThreadId: ProviderThreadId;
@@ -246,6 +247,7 @@ function makeTestAdapter(input: {
                   providerThreadId: turnInput.providerThread.id,
                   text: turnInput.message.text,
                   sessionContext: turnInput.runtimePolicy.sessionContext,
+                  handoffContext: turnInput.handoffContext,
                   attachments: turnInput.message.attachments,
                 },
               ]);
@@ -3629,15 +3631,20 @@ for (const scenario of ["supplied", "clean", "workspace"] as const) {
               "Old private run context",
             );
           } else {
+            // Claude takes a supplied package through its hook input, never its
+            // session instructions; Codex takes it in the instructions.
+            const sees = (captured: CapturedTurn | undefined) =>
+              scenario === "supplied" ? captured?.handoffContext : captured?.sessionContext;
             assert.equal(after.contextHandoffs.at(-1)?.summaryText, text);
-            assert.include(turn.sessionContext ?? "", text);
+            assert.include(sees(turn) ?? "", text);
+            if (scenario === "supplied") assert.notInclude(turn.sessionContext ?? "", text);
             assert.equal(after.contextHandoffs.at(-1)?.author, "verbatim");
             yield* send(
               3,
               scenario === "supplied" ? CLAUDE_MODEL_SELECTION : CODEX_MODEL_SELECTION,
             );
             yield* waitForIdle(id);
-            assert.include((yield* Ref.get(capturedTurns)).at(-1)?.sessionContext ?? "", text);
+            assert.include(sees((yield* Ref.get(capturedTurns)).at(-1)) ?? "", text);
           }
         }).pipe(
           Effect.provide(

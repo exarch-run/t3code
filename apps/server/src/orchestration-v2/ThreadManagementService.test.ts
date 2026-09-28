@@ -459,7 +459,7 @@ it.effect("applies requested modes to the thread before dispatching a message", 
   const testLayer = layer.pipe(
     Layer.provide(
       Layer.mock(OrchestratorV2)({
-        getThreadProjection: () => Effect.sync(projection),
+        getThreadRecords: () => Effect.sync(projection),
         dispatch: (command) =>
           Effect.sync(() => {
             dispatched.push(command);

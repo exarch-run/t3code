@@ -1664,12 +1664,16 @@ it.effect("shared intake preserves durable attachment bytes after a lost launch 
     assert.deepEqual(yield* fs.readFile(durableFilePath), new Uint8Array([5, 6, 7, 8]));
     assert.deepEqual(yield* fs.readFile(filePath), new Uint8Array([5, 6, 7, 8]));
     const beforeRejectedEdit = (yield* claimedFiles).length;
+    // Exarch accepts an empty-text edit that keeps files, so the rejected edit
+    // targets the first run, which is active rather than queued.
+    const activeRun = queuedProjection.runs.find((run) => run.userMessageId === stored.id);
+    assert.isDefined(activeRun);
     const rejectedEdit = yield* ThreadMessageIntake.dispatchCommand({
       type: "queued-run.edit",
       commandId: CommandId.make("intake-edit-rejected"),
       threadId: input.threadId,
-      runId: queuedRun.id,
-      text: "",
+      runId: activeRun.id,
+      text: "Edited an active run",
       attachments: [file],
     }).pipe(Effect.flip);
     assert.equal(rejectedEdit._tag, "OrchestratorCommandRejectedError");

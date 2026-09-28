@@ -13,7 +13,7 @@ const [Effect, Layer, FileSystem] = await Promise.all([
   load("FileSystem"),
 ]);
 const app = (file) => import(NodeURL.pathToFileURL(root + "/apps/server/src/" + file + ".ts"));
-const [Start, Projection, Run, Sessions, Policy, Id, Sink, Handoff, Git, Project, Auth] =
+const [Start, Projection, Run, Sessions, Policy, Id, Sink, Handoff, Git, Project, Auth, Codex] =
   await Promise.all([
     app("orchestration-v2/ProviderTurnStartService"),
     app("orchestration-v2/ProjectionStore"),
@@ -26,6 +26,7 @@ const [Start, Projection, Run, Sessions, Policy, Id, Sink, Handoff, Git, Project
     app("git/GitWorkflowService"),
     app("project/ProjectService"),
     app("provider/Services/ProviderAuthService"),
+    app("orchestration-v2/Adapters/CodexAdapterV2"),
   ]);
 let current;
 let fullReads = 0;
@@ -36,7 +37,11 @@ const count = Number(process.argv[4] ?? 4);
 const bytes = Number(process.argv[5] ?? 32768);
 const session = {
   driver: "codex",
-  providerSession: { id: "session", driver: "codex" },
+  providerSession: {
+    id: "session",
+    driver: "codex",
+    capabilities: Codex.CodexProviderCapabilitiesV2,
+  },
   resumeThread: ({ providerThread }) => Effect.succeed(providerThread),
   startTurn: () =>
     mode === "handoff-failure" ? Effect.fail("Synthetic startup failure") : Effect.void,
