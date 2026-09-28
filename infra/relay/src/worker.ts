@@ -1,3 +1,4 @@
+import { speechRoutes } from "./exarch/speech.ts";
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Drizzle from "alchemy/Drizzle/Postgres";
@@ -462,6 +463,7 @@ export const ApiLive = Api.make(
         HttpApiScalar.layer(RelayApi, { path: "/docs" }),
         relayDocsRedirectRoute,
         reportRoutes.pipe(Layer.provide(runtimeLayer)),
+        speechRoutes.pipe(Layer.provide(relayClientAuthLayer), Layer.provide(runtimeLayer)),
       ).pipe(Layer.provide([Etag.layerWeak, httpPlatformNotSupportedLayer, relayCors])),
       relayNotFoundRoute,
     ).pipe(

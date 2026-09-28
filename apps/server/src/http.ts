@@ -1,3 +1,4 @@
+import { speechBridge } from "./exarch/speech.ts";
 import { linkedComputers, linkedComputerRequest } from "./exarch/linkedComputers.ts";
 import { forwardExarchRequest } from "./exarch/http.ts";
 import * as Mime from "effect/unstable/http/Mime";
@@ -324,6 +325,10 @@ const exarchRoute = (method: "GET" | "POST") =>
           Effect.flatMap((value) => HttpServerResponse.json(value)),
           Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 503 })),
         );
+      }
+      if (request.url.startsWith("/api/exarch/speech-bridge/") || request.url === "/api/exarch/speech-account" || request.url === "/api/exarch/speech-account/computers") {
+        yield* authenticateRawRouteWithScope(AuthRelayWriteScope);
+        return yield* speechBridge.pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 503 })));
       }
       const session = yield* authenticateRawRouteWithScope(
         method === "GET" ? AuthOrchestrationReadScope : AuthOrchestrationOperateScope,

@@ -310,6 +310,19 @@ const ExarchPersonalSetupTool = exarchTool(
   }).annotate(Tool.Title, "Manage personal setup"),
 );
 
+const ExarchSpeechTool = exarchTool(
+  Tool.make("exarch_speech", {
+    description: "Inspect shared speech and recover recordings captured on this computer. Recovery automatically uses the calling chat's ordinary or private storage. Recordings on a phone are retried from that phone. Never chooses a model or sends recovered text to a chat. Use exarch_plugins for integration lifecycle and configuration.",
+    parameters: Schema.Struct({
+      action: Schema.Literals(["status", "recordings", "retry", "result", "remove"]).annotate({ description: "Read speech status or recordings, retry saved audio, read its result, or remove a recording." }),
+      id: Schema.optional(Schema.String.annotate({ description: "Recording id for retry, result, or remove." })),
+    }),
+    success: ExarchResult,
+    failure: ExarchToolError,
+    dependencies,
+  }).annotate(Tool.Title, "Shared speech and recording recovery"),
+);
+
 const ExarchPluginsTool = exarchTool(
   Tool.make("exarch_plugins", {
     description:
@@ -560,6 +573,7 @@ export const ExarchToolkit = Toolkit.make(
   ExarchRemoteInvestigationTool,
   ExarchComputersTool,
   ExarchPluginsTool,
+  ExarchSpeechTool,
   ExarchProgressCardTool,
   ExarchProgressCardReadTool,
   ExarchGuideTool,

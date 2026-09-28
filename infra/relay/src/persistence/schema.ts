@@ -239,3 +239,11 @@ export const relayAiReports = pgTable(
   },
   (table) => [index("idx_relay_ai_reports_received_at").on(table.receivedAt)],
 );
+
+/** The account selects a speech attachment; runtime configuration remains on its host. */
+export const relaySpeechPrimary = pgTable('relay_speech_primary', {
+  userId: varchar('user_id', { length: 255 }).primaryKey(),
+  environmentId: varchar('environment_id', { length: 191 }),
+  integrationId: varchar('integration_id', { length: 80 }),
+  revision: integer('revision').notNull(),
+});

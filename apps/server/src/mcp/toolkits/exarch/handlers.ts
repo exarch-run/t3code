@@ -51,6 +51,7 @@ const make = Effect.gen(function* () {
     exarch_render_check: call("exarch_render_check"),
     exarch_library: call("exarch_library"),
     exarch_plugins: call("exarch_plugins"),
+    exarch_speech: call("exarch_speech"),
     exarch_remote_investigation: call("exarch_remote_investigation"),
     exarch_computers: call("exarch_computers"),
     exarch_personal_setup: call("exarch_personal_setup"),

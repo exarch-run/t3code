@@ -73,6 +73,7 @@ it("lists the Exarch tools with described object parameters", () => {
     "exarch_render_check",
     "exarch_resolve",
     "exarch_session",
+    "exarch_speech",
   ]);
   for (const tool of Object.values(ExarchToolkit.tools)) {
     const schema = Tool.getJsonSchema(tool) as {

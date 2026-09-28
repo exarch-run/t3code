@@ -2,6 +2,7 @@ import { expect, it } from "@effect/vitest";
 import * as NodeCrypto from "node:crypto";
 import { EnvironmentId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
 import * as ConfigProvider from "effect/ConfigProvider";
 import { HttpClient, HttpClientResponse, type HttpClientRequest } from "effect/unstable/http";
@@ -96,19 +97,19 @@ it.effect("excludes itself and reuses a signed session without repeating enrollm
     const request = f.calls.at(-1)!;
     expect(request.headers.authorization).toBe("DPoP remote-token");
     const [header, payload, signature] = request.headers.dpop!.split(".");
-    const decoded = JSON.parse(Buffer.from(header!, "base64url").toString());
+    const decoded = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Struct({ jwk: Schema.Unknown })))(Buffer.from(header!, "base64url").toString());
     expect(
       NodeCrypto.verify(
         "sha256",
         Buffer.from(`${header}.${payload}`),
         {
-          key: NodeCrypto.createPublicKey({ key: decoded.jwk, format: "jwk" }),
+          key: NodeCrypto.createPublicKey({ key: decoded.jwk as NodeCrypto.JsonWebKey, format: "jwk" }),
           dsaEncoding: "ieee-p1363",
         },
         Buffer.from(signature!, "base64url"),
       ),
     ).toBe(true);
-    expect(JSON.parse(Buffer.from(payload!, "base64url").toString())).toMatchObject({
+    expect(yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(Buffer.from(payload!, "base64url").toString())).toMatchObject({
       htm: "POST",
       htu: "https://remote.test/api/exarch/personal-setup",
     });
@@ -118,7 +119,7 @@ it.effect("refuses insecure remote endpoints before transmitting the bootstrap c
   Effect.gen(function* () {
     const f = fixture(true);
     expect(
-      (yield* f.run({ action: "send", environmentId: f.other, packet: {} }).pipe(Effect.flip))
+      (yield* f.run({ action: "send", environmentId: f.other, packet: {} }).pipe(Effect.match({ onFailure: error => ({ message: String(error) }), onSuccess: () => ({ message: "unexpected success" }) })))
         .message,
     ).toContain("unavailable");
     expect(f.calls.every((request) => request.url.startsWith("https://relay.test"))).toBe(true);
@@ -132,11 +133,11 @@ it.effect("keeps sessions for unavailable plugins but replaces an unauthorized s
     yield* f.run(input);
     const initial = f.calls.length;
     f.status(503);
-    expect((yield* f.run(input).pipe(Effect.flip)).message).toContain("unavailable");
-    expect((yield* f.run(input).pipe(Effect.flip)).message).toContain("unavailable");
+    expect((yield* f.run(input).pipe(Effect.match({ onFailure: error => ({ message: String(error) }), onSuccess: () => ({ message: "unexpected success" }) }))).message).toContain("unavailable");
+    expect((yield* f.run(input).pipe(Effect.match({ onFailure: error => ({ message: String(error) }), onSuccess: () => ({ message: "unexpected success" }) }))).message).toContain("unavailable");
     expect(f.calls).toHaveLength(initial + 2);
     f.status(401);
-    expect((yield* f.run(input).pipe(Effect.flip)).message).toContain("unavailable");
+    expect((yield* f.run(input).pipe(Effect.match({ onFailure: error => ({ message: String(error) }), onSuccess: () => ({ message: "unexpected success" }) }))).message).toContain("unavailable");
     f.status(200);
     yield* f.run(input);
     expect(f.calls).toHaveLength(initial + 8);
@@ -151,8 +152,21 @@ it.effect("does not contact the network without an account and refuses an unlist
     expect(
       (yield* f
         .run({ action: "send", environmentId: EnvironmentId.make("unlisted"), packet: {} })
-        .pipe(Effect.flip)).message,
+        .pipe(Effect.match({ onFailure: error => ({ message: String(error) }), onSuccess: () => ({ message: "unexpected success" }) }))).message,
     ).toContain("unavailable");
     expect(f.calls).toHaveLength(1);
+  }),
+);
+
+it.effect("speech discovery includes this host and internal sessions renew without exposing them in discovery", () =>
+  Effect.gen(function* () {
+    const f = fixture();
+    expect(yield* f.run({ action: "speech-computers" })).toEqual({ computers: [{ id: "own", name: "own" }, { id: "other", name: "other" }] });
+    const first = yield* f.run({ action: "speech-session", environmentId: f.other });
+    const count = f.calls.length;
+    expect(yield* f.run({ action: "speech-session", environmentId: f.other })).toBe(first);
+    expect(f.calls).toHaveLength(count);
+    expect(yield* f.run({ action: "speech-session", environmentId: f.other, refresh: true })).not.toBe(first);
+    expect(f.calls.length).toBeGreaterThan(count);
   }),
 );

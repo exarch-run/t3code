@@ -72,3 +72,18 @@ Policy lives in `apps/server/src/exarch/ChildThreadEventWrites.ts`. Every live r
 | `orchestration-v2/RunExecutionService.ts`    | Join the session when a run subscribes and leave when the subscription closes, and send each delivered event's write through it before ingest. | `exarch/ChildThreadEventWrites.test.ts`, `RunExecutionService.test.ts`    |
 
 The events' run tag comes from whichever run wrote them. What was written is kept in memory per provider session while any run subscribed to it is live, since only those runs can deliver its older events, and the last run to leave releases it. No schema, migration, or persisted state is introduced.
+
+## Shared speech integration
+
+Policy lives in `apps/server/src/exarch/speech.ts` and `infra/relay/src/exarch/speech.ts`. Exarch speech uses its normal plugin lifecycle. The relay stores one account host/integration pointer with a revision, validates ownership, and compares revisions on writes. Runtime/model configuration stays on the speech host. The desktop bridge reuses linked-computer DPoP enrollment and streams a dedicated speech endpoint; chat subscriptions remain independent.
+
+| Hook | Reason | Coverage |
+| --- | --- | --- |
+| `apps/server/src/http.ts` | Thin authenticated dispatch for speech account discovery and linked-host forwarding. | `apps/server/src/exarch/speech.test.ts` |
+| `apps/server/src/exarch/linkedComputers.ts` | Internal speech discovery includes the current host; reuse and renewal of its signed connection. Public personal-setup schema is unchanged. | `linkedComputers.test.ts` |
+| `apps/server/src/mcp/toolkits/exarch/tools.ts`, `handlers.ts` | Register origin-computer recording recovery; Exarch derives storage/access from the calling chat. | `tools.test.ts` |
+| `infra/relay/src/persistence/schema.ts`, `migrations/postgres/20260927230300_speech_primary/` | Account primary pointer and compare-and-set revision. No audio or model credentials. | `infra/relay/src/exarch/speech.test.ts` |
+| `infra/relay/src/worker.ts` | Compose authenticated speech routes with the relay. | Relay typecheck and speech route test |
+| `infra/relay/src/account/AccountDeletions.ts` | Remove the pointer during the existing account deletion transaction. | `AccountDeletions.test.ts` |
+
+No provider adapter changes. The tool uses the existing Exarch toolkit on every driver that exposes it. These source changes require a subsequent authorized engine package and relay deployment before account speech is available in an installed app.

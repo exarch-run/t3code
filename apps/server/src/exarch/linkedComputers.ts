@@ -27,21 +27,21 @@ export const linkedComputerRequest = Schema.Union([
     packet: Schema.Unknown,
   }),
 ]);
-type Session = {
+export type LinkedSession = {
   privateKey: NodeCrypto.KeyObject;
   jwk: DpopPublicJwk;
   origin: string;
   token: string;
   expires: number;
 };
-const sessions = new Map<string, Session>();
+const sessions = new Map<string, LinkedSession>();
 const encode = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 
 /** Uses the existing account, relay discovery, DPoP exchange, and remote Exarch route. No credential leaves this process. */
 export const linkedComputers = Effect.fn("exarch.linkedComputers")(function* (
-  input: typeof linkedComputerRequest.Type,
+  input: typeof linkedComputerRequest.Type | { action: "speech-session"; environmentId: EnvironmentId; refresh?: boolean } | { action: "speech-computers" },
 ) {
   const tokens = yield* CliTokenManager.CloudCliTokenManager;
   const stored = yield* tokens.getExisting;
@@ -77,9 +77,11 @@ export const linkedComputers = Effect.fn("exarch.linkedComputers")(function* (
   });
   const now = yield* Clock.currentTimeMillis;
   const sessionKey =
-    input.action === "send" ? `${stored.value.accessToken}:${input.environmentId}` : "";
+    (input.action === "send" || input.action === "speech-session") ? `${stored.value.accessToken}:${input.environmentId}` : "";
+  if (input.action === "speech-session" && input.refresh) sessions.delete(sessionKey);
   const cached = sessions.get(sessionKey);
-  if (input.action === "send" && cached && cached.expires > now) {
+  if ((input.action === "send" || input.action === "speech-session") && cached && cached.expires > now) {
+    if (input.action === "speech-session") return cached;
     const url = `${cached.origin}/api/exarch/personal-setup`;
     return yield* request(
       url,
@@ -102,15 +104,15 @@ export const linkedComputers = Effect.fn("exarch.linkedComputers")(function* (
   const list = yield* request(`${relay}/v1/environments`, "GET", {
     authorization: `Bearer ${stored.value.accessToken}`,
   }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(RelayListEnvironmentsResponse)));
-  const computers = list.environments.filter((computer) => computer.environmentId !== ownId);
-  if (input.action === "list")
+  const computers = list.environments.filter((computer) => input.action === "speech-computers" || computer.environmentId !== ownId);
+  if (input.action === "list" || input.action === "speech-computers")
     return {
       computers: computers.map((computer) => ({
         id: computer.environmentId,
         name: computer.label,
       })),
     };
-  if (!computers.some((computer) => computer.environmentId === input.environmentId))
+  if (!list.environments.some((computer) => computer.environmentId === input.environmentId))
     return yield* new LinkedComputerError({});
   const pair = yield* Effect.sync(() =>
     NodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" }),
@@ -185,6 +187,7 @@ export const linkedComputers = Effect.fn("exarch.linkedComputers")(function* (
     token: token.access_token,
     expires: now + Math.max(0, token.expires_in - 30) * 1000,
   });
+  if (input.action === "speech-session") return sessions.get(sessionKey)!;
   const url = `${origin}/api/exarch/personal-setup`;
   return yield* request(
     url,
@@ -205,7 +208,7 @@ class LinkedComputerError extends Schema.TaggedError<LinkedComputerError>()("Lin
     return "The linked computer is unavailable or needs account authorization.";
   }
 }
-function makeProof(
+export function makeProof(
   privateKey: NodeCrypto.KeyObject,
   jwk: DpopPublicJwk,
   method: string,

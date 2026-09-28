@@ -14,6 +14,7 @@ import type { RelayAccountDeletionResponse } from "@t3tools/contracts/relay";
 import * as RelayConfiguration from "../Config.ts";
 import * as RelayDb from "../db.ts";
 import {
+  relaySpeechPrimary,
   relayAccountDeletions,
   relayAgentActivityRows,
   relayDeliveryAttempts,
@@ -452,6 +453,7 @@ const makeStore = Effect.gen(function* () {
       transactions
         .withTransaction(
           Effect.gen(function* () {
+            yield* db.delete(relaySpeechPrimary).where(eq(relaySpeechPrimary.userId, input.userId));
             yield* db.delete(relayMobileDevices).where(eq(relayMobileDevices.userId, input.userId));
             yield* db
               .delete(relayLiveActivities)
