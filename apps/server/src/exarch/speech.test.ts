@@ -87,7 +87,7 @@ function fixture() {
             headers: { "content-type": "application/octet-stream" },
           }),
         );
-      } else if (request.url.includes("/api/exarch/preview/")) {
+      } else if (request.url.includes("/api/exarch/desktop/preview/")) {
         const headers = new Headers({
           location: "/v1/preview/5173/signed-in",
           "content-type": "text/html",
@@ -182,15 +182,18 @@ it("a window call reaches any path, and its buffered bytes are sent again after 
 it("a preview page passes its own cookie, redirect and set-cookies through, and nothing else does", async () => {
   const f = fixture();
   const response = await f.app.handler(
-    new Request("https://chat.test/api/exarch/computer-bridge/speech/preview/5173/login", {
-      redirect: "manual",
-      headers: { cookie: "session=old" },
-    }),
+    new Request(
+      "https://chat.test/api/exarch/computer-bridge/speech/desktop/preview/control/5173/login",
+      {
+        redirect: "manual",
+        headers: { cookie: "session=old" },
+      },
+    ),
   );
   expect(response.status).toBe(302);
   expect(response.headers.get("location")).toBe("/v1/preview/5173/signed-in");
   expect(response.headers.getSetCookie()).toHaveLength(2);
   expect(response.headers.getSetCookie().join(";")).toContain("session=abc");
-  const forward = f.requests.find((r) => r.url.includes("/preview/5173/login"))!;
+  const forward = f.requests.find((r) => r.url.includes("/desktop/preview/control/5173/login"))!;
   expect(forward.headers.cookie).toBe("session=old");
 });

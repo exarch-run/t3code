@@ -14,8 +14,12 @@ const encodeHeaders = Schema.encodeEffect(
   Schema.fromJsonString(Schema.Record(Schema.String, Schema.String)),
 );
 
-/** Browser pages another computer's window loads through `/v1/preview/<port>/…`. Their own cookies and redirects pass; they never authenticate. */
-export const isPreviewPath = (path: string) => path.startsWith("/preview/");
+/**
+ * Browser pages another computer's window loads, through `/v1/desktop/preview/…` (or the phone's `/v1/preview/<port>/…`).
+ * Their own cookies and redirects pass; they never authenticate.
+ */
+export const isPreviewPath = (path: string) =>
+  path.startsWith("/preview/") || path.startsWith("/desktop/preview/");
 export const previewHeaders = (
   headers: Readonly<Record<string, string | undefined>>,
 ): Record<string, string> => (headers.location === undefined ? {} : { location: headers.location });
