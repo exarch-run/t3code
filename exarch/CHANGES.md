@@ -77,13 +77,25 @@ The events' run tag comes from whichever run wrote them. What was written is kep
 
 Policy lives in `apps/server/src/exarch/speech.ts` and `infra/relay/src/exarch/speech.ts`. Exarch speech uses its normal plugin lifecycle. The relay stores one account host/integration pointer with a revision, validates ownership, and compares revisions on writes. Runtime/model configuration stays on the speech host. The desktop bridge reuses linked-computer DPoP enrollment and streams a dedicated speech endpoint; chat subscriptions remain independent.
 
-| Hook | Reason | Coverage |
-| --- | --- | --- |
-| `apps/server/src/http.ts` | Thin authenticated dispatch for speech account discovery and linked-host forwarding. | `apps/server/src/exarch/speech.test.ts` |
-| `apps/server/src/exarch/linkedComputers.ts` | Internal speech discovery includes the current host; reuse and renewal of its signed connection. Public personal-setup schema is unchanged. | `linkedComputers.test.ts` |
-| `apps/server/src/mcp/toolkits/exarch/tools.ts`, `handlers.ts` | Register origin-computer recording recovery; Exarch derives storage/access from the calling chat. | `tools.test.ts` |
-| `infra/relay/src/persistence/schema.ts`, `migrations/postgres/20260927230300_speech_primary/` | Account primary pointer and compare-and-set revision. No audio or model credentials. | `infra/relay/src/exarch/speech.test.ts` |
-| `infra/relay/src/worker.ts` | Compose authenticated speech routes with the relay. | Relay typecheck and speech route test |
-| `infra/relay/src/account/AccountDeletions.ts` | Remove the pointer during the existing account deletion transaction. | `AccountDeletions.test.ts` |
+| Hook                                                                                          | Reason                                                                                                                                      | Coverage                                |
+| --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| `apps/server/src/http.ts`                                                                     | Thin authenticated dispatch for speech account discovery and linked-host forwarding.                                                        | `apps/server/src/exarch/speech.test.ts` |
+| `apps/server/src/exarch/linkedComputers.ts`                                                   | Internal speech discovery includes the current host; reuse and renewal of its signed connection. Public personal-setup schema is unchanged. | `linkedComputers.test.ts`               |
+| `apps/server/src/mcp/toolkits/exarch/tools.ts`, `handlers.ts`                                 | Register origin-computer recording recovery; Exarch derives storage/access from the calling chat.                                           | `tools.test.ts`                         |
+| `infra/relay/src/persistence/schema.ts`, `migrations/postgres/20260927230300_speech_primary/` | Account primary pointer and compare-and-set revision. No audio or model credentials.                                                        | `infra/relay/src/exarch/speech.test.ts` |
+| `infra/relay/src/worker.ts`                                                                   | Compose authenticated speech routes with the relay.                                                                                         | Relay typecheck and speech route test   |
+| `infra/relay/src/account/AccountDeletions.ts`                                                 | Remove the pointer during the existing account deletion transaction.                                                                        | `AccountDeletions.test.ts`              |
 
 No provider adapter changes. The tool uses the existing Exarch toolkit on every driver that exposes it. These source changes require a subsequent authorized engine package and relay deployment before account speech is available in an installed app.
+
+## Agent schedule controls
+
+Policy lives in `apps/server/src/exarch/ScheduledTaskWorkspace.ts`. `schedule_task` and `update_scheduled_task` accept the settings the app's Schedules page sets: account, model and options (`target`, checked like `delegate_task`'s), `runtimeMode`, `interactionMode`, and `workspaceStrategy`. Access and build-or-plan can't be broader than the calling chat's. A fresh chat per run defaults to a new worktree from the project's current local branch, not fetched; upstream fetched `main` from origin. A named local ref must exist, and a fixed branch for a new worktree is refused because the second run would collide with it. A workspace for runs that post into a chat is refused, not stored unused. The schedule tool inputs refuse unknown fields instead of dropping them.
+
+| Hook                                                                        | Reason                                                                                                                               | Regression coverage                                                                       |
+| --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------- |
+| `packages/contracts/src/orchestratorMcp.ts` (path from the repository root) | New schedule tool fields, the saved settings in the task summary, and unknown-field refusal on the create, update and delete inputs. | `mcp/OrchestratorMcpToolkit.integration.test.ts`                                          |
+| `mcp/OrchestratorMcpService.ts`                                             | Replace the hard-coded `main`-from-origin default with the policy, and resolve target and modes on create and update.                | `mcp/OrchestratorMcpToolkit.integration.test.ts`, `exarch/ScheduledTaskWorkspace.test.ts` |
+| `mcp/toolkits/orchestrator/tools.ts`, `handlers.ts`                         | Tool descriptions, and the project and git services the workspace check needs.                                                       | `mcp/OrchestratorMcpToolkit.integration.test.ts`                                          |
+
+Existing saved tasks are not migrated.

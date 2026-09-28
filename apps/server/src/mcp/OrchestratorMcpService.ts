@@ -5,6 +5,10 @@ import {
   modelFamilyFor,
 } from "@t3tools/contracts";
 import { ServerSettingsService } from "../serverSettings.ts";
+import {
+  chooseScheduledTaskWorkspace,
+  type ScheduledTaskWorkspaceResolver,
+} from "../exarch/ScheduledTaskWorkspace.ts";
 import { explainHelperTask, HELPERS_OFF_REASON, resolveHelperTask } from "./HelperPolicy.ts";
 import {
   CommandId,
@@ -121,6 +125,7 @@ export interface OrchestratorMcpServiceShape {
   readonly scheduleTask: (
     scope: McpInvocationScope,
     input: OrchestratorMcpScheduleTaskInput,
+    resolveWorkspace: ScheduledTaskWorkspaceResolver,
   ) => Effect.Effect<OrchestratorMcpScheduleTaskResult, OrchestratorMcpFailure>;
   readonly listScheduledTasks: (
     scope: McpInvocationScope,
@@ -128,6 +133,7 @@ export interface OrchestratorMcpServiceShape {
   readonly updateScheduledTask: (
     scope: McpInvocationScope,
     input: OrchestratorMcpUpdateScheduledTaskInput,
+    resolveWorkspace: ScheduledTaskWorkspaceResolver,
   ) => Effect.Effect<OrchestratorMcpScheduleTaskResult, OrchestratorMcpFailure>;
   readonly deleteScheduledTask: (
     scope: McpInvocationScope,
@@ -189,19 +195,6 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/**
- * Workspace strategy for a scheduled task created/updated over MCP: bound runs
- * post into the existing thread (the strategy is unused, keep root); unbound
- * runs launch a fresh worktree per run.
- */
-function scheduledTaskWorkspaceStrategy(
-  boundToThread: boolean,
-): ScheduledTask["workspaceStrategy"] {
-  return boundToThread
-    ? { type: "root" }
-    : { type: "worktree", baseRef: "main", startFromOrigin: true };
-}
-
 function scheduledTaskSummary(task: ScheduledTask): OrchestratorMcpScheduledTask {
   return {
     scheduledTaskId: task.id,
@@ -216,6 +209,10 @@ function scheduledTaskSummary(task: ScheduledTask): OrchestratorMcpScheduledTask
     lastRunAt: task.lastRunAt,
     lastRunStatus: task.lastRunStatus,
     ...(task.lastOutcome === undefined ? {} : { lastOutcome: task.lastOutcome }),
+    modelSelection: task.modelSelection,
+    runtimeMode: task.runtimeMode,
+    interactionMode: task.interactionMode,
+    workspaceStrategy: task.workspaceStrategy,
   };
 }
 
@@ -1144,11 +1141,26 @@ const make = Effect.gen(function* () {
     });
 
   return OrchestratorMcpService.of({
-    scheduleTask: (scope, input) =>
+    scheduleTask: (scope, input, resolveWorkspace) =>
       Effect.gen(function* () {
         yield* requireCapability(scope);
         const parent = yield* loadProjection(scope.threadId);
         const bindToCurrentThread = input.bindToCurrentThread ?? true;
+        const workspaceStrategy = yield* chooseScheduledTaskWorkspace({
+          bound: bindToCurrentThread,
+          requested: input.workspaceStrategy,
+          keep: undefined,
+          projectId: parent.thread.projectId,
+          resolve: resolveWorkspace,
+        });
+        const modelSelection =
+          input.target === undefined
+            ? parent.thread.modelSelection
+            : (yield* resolveTarget({
+                parent,
+                target: input.target,
+                providers: yield* loadProviders,
+              })).modelSelection;
         const derivedTitle = input.prompt.split("\n")[0]?.trim() ?? "";
         const title =
           input.title ?? (derivedTitle.length > 0 ? derivedTitle.slice(0, 80) : "Scheduled task");
@@ -1160,10 +1172,13 @@ const make = Effect.gen(function* () {
           startClean: input.startClean ?? false,
           projectId: parent.thread.projectId,
           threadId: bindToCurrentThread ? scope.threadId : null,
-          workspaceStrategy: scheduledTaskWorkspaceStrategy(bindToCurrentThread),
-          modelSelection: parent.thread.modelSelection,
-          runtimeMode: parent.thread.runtimeMode,
-          interactionMode: parent.thread.interactionMode,
+          workspaceStrategy,
+          modelSelection,
+          runtimeMode: yield* resolveRuntimeMode(parent.thread.runtimeMode, input.runtimeMode),
+          interactionMode: yield* resolveInteractionMode(
+            parent.thread.interactionMode,
+            input.interactionMode,
+          ),
           createdBy: "agent",
           creationSource: "mcp",
           // Scope the idempotency key by provider session so two callers
@@ -1205,7 +1220,7 @@ const make = Effect.gen(function* () {
             .map(scheduledTaskSummary),
         };
       }),
-    updateScheduledTask: (scope, input) =>
+    updateScheduledTask: (scope, input, resolveWorkspace) =>
       Effect.gen(function* () {
         yield* requireCapability(scope);
         const parent = yield* loadProjection(scope.threadId);
@@ -1219,13 +1234,26 @@ const make = Effect.gen(function* () {
             : input.bindToCurrentThread
               ? scope.threadId
               : null;
-        // Rebinding changes where runs execute, so the workspace strategy must
-        // follow: unbinding a root-strategy task would otherwise run loose
-        // prompts in the shared project checkout.
-        const workspaceStrategy =
-          input.bindToCurrentThread === undefined
-            ? existing.workspaceStrategy
-            : scheduledTaskWorkspaceStrategy(input.bindToCurrentThread);
+        const bound = threadId !== null;
+        const workspaceStrategy = yield* chooseScheduledTaskWorkspace({
+          bound,
+          requested: input.workspaceStrategy,
+          keep: bound === (existing.threadId !== null) ? existing.workspaceStrategy : undefined,
+          projectId: existing.projectId,
+          resolve: resolveWorkspace,
+        });
+        // Options and a model or account left out of target come from the
+        // task's saved selection, not the calling thread's.
+        const modelSelection =
+          input.target === undefined
+            ? existing.modelSelection
+            : (yield* resolveTarget({
+                parent: {
+                  thread: { ...parent.thread, modelSelection: existing.modelSelection },
+                },
+                target: input.target,
+                providers: yield* loadProviders,
+              })).modelSelection;
         const upsertInput: ScheduledTaskUpsertInput = {
           id: existing.id,
           title: input.title ?? existing.title,
@@ -1236,9 +1264,15 @@ const make = Effect.gen(function* () {
           projectId: existing.projectId,
           threadId,
           workspaceStrategy,
-          modelSelection: existing.modelSelection,
-          runtimeMode: existing.runtimeMode,
-          interactionMode: existing.interactionMode,
+          modelSelection,
+          runtimeMode:
+            input.runtimeMode === undefined
+              ? existing.runtimeMode
+              : yield* resolveRuntimeMode(parent.thread.runtimeMode, input.runtimeMode),
+          interactionMode:
+            input.interactionMode === undefined
+              ? existing.interactionMode
+              : yield* resolveInteractionMode(parent.thread.interactionMode, input.interactionMode),
           createdBy: existing.createdBy,
           creationSource: existing.creationSource,
         };
