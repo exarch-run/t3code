@@ -14,6 +14,12 @@ const encodeHeaders = Schema.encodeEffect(
   Schema.fromJsonString(Schema.Record(Schema.String, Schema.String)),
 );
 
+/** Browser pages another computer's window loads through `/v1/preview/<port>/…`. Their own cookies and redirects pass; they never authenticate. */
+export const isPreviewPath = (path: string) => path.startsWith("/preview/");
+export const previewHeaders = (
+  headers: Readonly<Record<string, string | undefined>>,
+): Record<string, string> => (headers.location === undefined ? {} : { location: headers.location });
+
 export const forwardExarchRequest = Effect.fn("exarch.forward")(function* (
   sessionId: string,
   incoming: boolean,
@@ -31,7 +37,8 @@ export const forwardExarchRequest = Effect.fn("exarch.forward")(function* (
     authorization: `Bearer ${token}`,
     "x-exarch-device": sessionId,
   };
-  for (const name of ["content-type", "last-event-id"]) {
+  const preview = isPreviewPath(source.pathname.slice("/api/exarch".length));
+  for (const name of ["content-type", "last-event-id", ...(preview ? ["cookie"] : [])]) {
     const value = request.headers[name];
     if (value !== undefined) headers[name] = value;
   }
@@ -62,6 +69,8 @@ export const forwardExarchRequest = Effect.fn("exarch.forward")(function* (
       "content-type": response.headers["content-type"] ?? "application/octet-stream",
       "cache-control": "no-store, no-transform",
       "x-accel-buffering": "no",
+      ...(preview ? previewHeaders(response.headers) : {}),
     },
+    ...(preview ? { cookies: response.cookies } : {}),
   });
 });

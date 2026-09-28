@@ -10,7 +10,7 @@ import { CloudCliTokenManager } from "../cloud/CliTokenManager.ts";
 import { ServerEnvironmentIdentity } from "../environment/ServerEnvironment.ts";
 import { linkedComputers } from "./linkedComputers.ts";
 
-function fixture(insecure = false, signedIn = true) {
+function fixture(insecure = false, signedIn = true, offline = false) {
   let remoteStatus = 200;
   const calls: HttpClientRequest.HttpClientRequest[] = [];
   const own = EnvironmentId.make("own"),
@@ -50,6 +50,15 @@ function fixture(insecure = false, signedIn = true) {
         };
       else if (request.url.endsWith("/oauth/token"))
         response = { access_token: "remote-token", expires_in: 3600 };
+      else if (request.url.endsWith("/status")) {
+        if (offline) return HttpClientResponse.fromWeb(request, new Response("", { status: 504 }));
+        response = {
+          environmentId: other,
+          endpoint,
+          status: "online",
+          checkedAt: "2026-09-27T00:00:00Z",
+        };
+      } else if (request.method === "DELETE") response = { ok: true };
       return HttpClientResponse.fromWeb(
         request,
         Response.json(response, {
@@ -97,19 +106,28 @@ it.effect("excludes itself and reuses a signed session without repeating enrollm
     const request = f.calls.at(-1)!;
     expect(request.headers.authorization).toBe("DPoP remote-token");
     const [header, payload, signature] = request.headers.dpop!.split(".");
-    const decoded = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Struct({ jwk: Schema.Unknown })))(Buffer.from(header!, "base64url").toString());
+    const decoded = yield* Schema.decodeUnknownEffect(
+      Schema.fromJsonString(Schema.Struct({ jwk: Schema.Unknown })),
+    )(Buffer.from(header!, "base64url").toString());
     expect(
       NodeCrypto.verify(
         "sha256",
         Buffer.from(`${header}.${payload}`),
         {
-          key: NodeCrypto.createPublicKey({ key: decoded.jwk as NodeCrypto.JsonWebKey, format: "jwk" }),
+          key: NodeCrypto.createPublicKey({
+            key: decoded.jwk as NodeCrypto.JsonWebKey,
+            format: "jwk",
+          }),
           dsaEncoding: "ieee-p1363",
         },
         Buffer.from(signature!, "base64url"),
       ),
     ).toBe(true);
-    expect(yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(Buffer.from(payload!, "base64url").toString())).toMatchObject({
+    expect(
+      yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(
+        Buffer.from(payload!, "base64url").toString(),
+      ),
+    ).toMatchObject({
       htm: "POST",
       htu: "https://remote.test/api/exarch/personal-setup",
     });
@@ -119,8 +137,14 @@ it.effect("refuses insecure remote endpoints before transmitting the bootstrap c
   Effect.gen(function* () {
     const f = fixture(true);
     expect(
-      (yield* f.run({ action: "send", environmentId: f.other, packet: {} }).pipe(Effect.match({ onFailure: error => ({ message: String(error) }), onSuccess: () => ({ message: "unexpected success" }) })))
-        .message,
+      (yield* f
+        .run({ action: "send", environmentId: f.other, packet: {} })
+        .pipe(
+          Effect.match({
+            onFailure: (error) => ({ message: String(error) }),
+            onSuccess: () => ({ message: "unexpected success" }),
+          }),
+        )).message,
     ).toContain("unavailable");
     expect(f.calls.every((request) => request.url.startsWith("https://relay.test"))).toBe(true);
   }),
@@ -133,11 +157,38 @@ it.effect("keeps sessions for unavailable plugins but replaces an unauthorized s
     yield* f.run(input);
     const initial = f.calls.length;
     f.status(503);
-    expect((yield* f.run(input).pipe(Effect.match({ onFailure: error => ({ message: String(error) }), onSuccess: () => ({ message: "unexpected success" }) }))).message).toContain("unavailable");
-    expect((yield* f.run(input).pipe(Effect.match({ onFailure: error => ({ message: String(error) }), onSuccess: () => ({ message: "unexpected success" }) }))).message).toContain("unavailable");
+    expect(
+      (yield* f
+        .run(input)
+        .pipe(
+          Effect.match({
+            onFailure: (error) => ({ message: String(error) }),
+            onSuccess: () => ({ message: "unexpected success" }),
+          }),
+        )).message,
+    ).toContain("unavailable");
+    expect(
+      (yield* f
+        .run(input)
+        .pipe(
+          Effect.match({
+            onFailure: (error) => ({ message: String(error) }),
+            onSuccess: () => ({ message: "unexpected success" }),
+          }),
+        )).message,
+    ).toContain("unavailable");
     expect(f.calls).toHaveLength(initial + 2);
     f.status(401);
-    expect((yield* f.run(input).pipe(Effect.match({ onFailure: error => ({ message: String(error) }), onSuccess: () => ({ message: "unexpected success" }) }))).message).toContain("unavailable");
+    expect(
+      (yield* f
+        .run(input)
+        .pipe(
+          Effect.match({
+            onFailure: (error) => ({ message: String(error) }),
+            onSuccess: () => ({ message: "unexpected success" }),
+          }),
+        )).message,
+    ).toContain("unavailable");
     f.status(200);
     yield* f.run(input);
     expect(f.calls).toHaveLength(initial + 8);
@@ -152,21 +203,79 @@ it.effect("does not contact the network without an account and refuses an unlist
     expect(
       (yield* f
         .run({ action: "send", environmentId: EnvironmentId.make("unlisted"), packet: {} })
-        .pipe(Effect.match({ onFailure: error => ({ message: String(error) }), onSuccess: () => ({ message: "unexpected success" }) }))).message,
+        .pipe(
+          Effect.match({
+            onFailure: (error) => ({ message: String(error) }),
+            onSuccess: () => ({ message: "unexpected success" }),
+          }),
+        )).message,
     ).toContain("unavailable");
     expect(f.calls).toHaveLength(1);
   }),
 );
 
-it.effect("speech discovery includes this host and internal sessions renew without exposing them in discovery", () =>
+it.effect(
+  "discovery marks this host and internal sessions renew without exposing them in discovery",
+  () =>
+    Effect.gen(function* () {
+      const f = fixture();
+      expect(yield* f.run({ action: "computers" })).toEqual({
+        computers: [
+          { id: "own", name: "own", self: true },
+          { id: "other", name: "other" },
+        ],
+      });
+      const first = yield* f.run({ action: "session", environmentId: f.other });
+      const count = f.calls.length;
+      expect(yield* f.run({ action: "session", environmentId: f.other })).toBe(first);
+      expect(f.calls).toHaveLength(count);
+      expect(yield* f.run({ action: "session", environmentId: f.other, refresh: true })).not.toBe(
+        first,
+      );
+      expect(f.calls.length).toBeGreaterThan(count);
+    }),
+);
+
+it.effect(
+  "status checks each other computer with a status-scoped relay pass and reports a failed check as unknown",
+  () =>
+    Effect.gen(function* () {
+      const f = fixture();
+      expect(yield* f.run({ action: "status" })).toEqual({
+        computers: [
+          { id: "own", status: "online" },
+          { id: "other", status: "online" },
+        ],
+      });
+      const pass = f.calls.find((call) => call.url.endsWith("/dpop-token"))!;
+      expect(new TextDecoder().decode((pass.body as { body: Uint8Array }).body)).toContain(
+        "scope=environment%3Astatus",
+      );
+      const check = f.calls.find((call) => call.url.endsWith("/status"))!;
+      expect(check.url).toBe("https://relay.test/v1/environments/other/status");
+      expect(check.headers.authorization).toBe("DPoP relay-token");
+      expect(check.headers.dpop).toBeTruthy();
+      expect(f.calls.some((call) => call.url.endsWith("/connect"))).toBe(false);
+      expect(yield* fixture(false, true, true).run({ action: "status" })).toEqual({
+        computers: [
+          { id: "own", status: "online" },
+          { id: "other", status: "unknown" },
+        ],
+      });
+    }),
+);
+
+it.effect("unlink removes another computer from the account and refuses this one", () =>
   Effect.gen(function* () {
     const f = fixture();
-    expect(yield* f.run({ action: "speech-computers" })).toEqual({ computers: [{ id: "own", name: "own" }, { id: "other", name: "other" }] });
-    const first = yield* f.run({ action: "speech-session", environmentId: f.other });
-    const count = f.calls.length;
-    expect(yield* f.run({ action: "speech-session", environmentId: f.other })).toBe(first);
-    expect(f.calls).toHaveLength(count);
-    expect(yield* f.run({ action: "speech-session", environmentId: f.other, refresh: true })).not.toBe(first);
-    expect(f.calls.length).toBeGreaterThan(count);
+    expect(yield* f.run({ action: "unlink", environmentId: f.other })).toEqual({ ok: true });
+    const removal = f.calls.find((call) => call.method === "DELETE")!;
+    expect(removal.url).toBe("https://relay.test/v1/client/environment-links/other");
+    expect(removal.headers.authorization).toMatch(/^Bearer /);
+    const refused = yield* f
+      .run({ action: "unlink", environmentId: EnvironmentId.make("own") })
+      .pipe(Effect.match({ onFailure: () => "refused", onSuccess: () => "removed" }));
+    expect(refused).toBe("refused");
+    expect(f.calls.filter((call) => call.method === "DELETE")).toHaveLength(1);
   }),
 );

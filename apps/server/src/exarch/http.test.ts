@@ -167,3 +167,20 @@ it("requires account-management scope before discovering other computers", async
   expect(await response.json()).toEqual({ computers: [] });
   expect(accepted.requests).toHaveLength(0);
 });
+
+it("passes a page's own cookie to the host only on preview paths", async () => {
+  const cookies: Array<string | undefined> = [];
+  for (const path of ["preview/5173/app.js", "events"]) {
+    const f = fixture(["orchestration:read"]);
+    const response = await f.handler(
+      new Request(`https://computer.test/api/exarch/${path}`, {
+        headers: { cookie: "session=page" },
+      }),
+    );
+    expect(response.status).toBe(200);
+    await response.body?.cancel();
+    expect(f.requests[0]!.url).toBe(`http://127.0.0.1:1234/v1/${path}`);
+    cookies.push(f.requests[0]!.headers.cookie);
+  }
+  expect(cookies).toEqual(["session=page", undefined]);
+});

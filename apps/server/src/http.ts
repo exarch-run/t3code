@@ -326,9 +326,16 @@ const exarchRoute = (method: "GET" | "POST") =>
           Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 503 })),
         );
       }
-      if (request.url.startsWith("/api/exarch/speech-bridge/") || request.url === "/api/exarch/speech-account" || request.url === "/api/exarch/speech-account/computers") {
+      if (
+        request.url.startsWith("/api/exarch/speech-bridge/") ||
+        request.url.startsWith("/api/exarch/computer-bridge/") ||
+        request.url === "/api/exarch/speech-account" ||
+        request.url === "/api/exarch/speech-account/computers"
+      ) {
         yield* authenticateRawRouteWithScope(AuthRelayWriteScope);
-        return yield* speechBridge.pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 503 })));
+        return yield* speechBridge.pipe(
+          Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 503 })),
+        );
       }
       const session = yield* authenticateRawRouteWithScope(
         method === "GET" ? AuthOrchestrationReadScope : AuthOrchestrationOperateScope,

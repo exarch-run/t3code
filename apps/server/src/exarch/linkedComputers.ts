@@ -3,6 +3,7 @@ import { EnvironmentId } from "@t3tools/contracts";
 import {
   RelayListEnvironmentsResponse,
   RelayEnvironmentConnectResponse,
+  RelayEnvironmentStatusResponse,
   RelayDpopAccessTokenResponse,
 } from "@t3tools/contracts/relay";
 import {
@@ -21,6 +22,9 @@ import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 
 export const linkedComputerRequest = Schema.Union([
   Schema.Struct({ action: Schema.Literal("list") }),
+  Schema.Struct({ action: Schema.Literal("computers") }),
+  Schema.Struct({ action: Schema.Literal("status") }),
+  Schema.Struct({ action: Schema.Literal("unlink"), environmentId: EnvironmentId }),
   Schema.Struct({
     action: Schema.Literal("send"),
     environmentId: EnvironmentId,
@@ -39,9 +43,15 @@ const encode = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 
-/** Uses the existing account, relay discovery, DPoP exchange, and remote Exarch route. No credential leaves this process. */
+/**
+ * Uses the existing account, relay discovery, DPoP exchange, and remote Exarch route. No credential leaves this process.
+ * `computers` lists every computer on the account, this one marked `self`; `list` leaves this one out.
+ * `session` is the signed connection the computer bridge reuses and renews.
+ */
 export const linkedComputers = Effect.fn("exarch.linkedComputers")(function* (
-  input: typeof linkedComputerRequest.Type | { action: "speech-session"; environmentId: EnvironmentId; refresh?: boolean } | { action: "speech-computers" },
+  input:
+    | typeof linkedComputerRequest.Type
+    | { action: "session"; environmentId: EnvironmentId; refresh?: boolean },
 ) {
   const tokens = yield* CliTokenManager.CloudCliTokenManager;
   const stored = yield* tokens.getExisting;
@@ -52,7 +62,7 @@ export const linkedComputers = Effect.fn("exarch.linkedComputers")(function* (
   const client = yield* HttpClient.HttpClient;
   const request = Effect.fn("exarch.linkedComputerRequest")(function* (
     url: string,
-    method: "GET" | "POST",
+    method: "GET" | "POST" | "DELETE",
     headers: Record<string, string>,
     body?: string,
   ) {
@@ -77,11 +87,13 @@ export const linkedComputers = Effect.fn("exarch.linkedComputers")(function* (
   });
   const now = yield* Clock.currentTimeMillis;
   const sessionKey =
-    (input.action === "send" || input.action === "speech-session") ? `${stored.value.accessToken}:${input.environmentId}` : "";
-  if (input.action === "speech-session" && input.refresh) sessions.delete(sessionKey);
+    input.action === "send" || input.action === "session"
+      ? `${stored.value.accessToken}:${input.environmentId}`
+      : "";
+  if (input.action === "session" && input.refresh) sessions.delete(sessionKey);
   const cached = sessions.get(sessionKey);
-  if ((input.action === "send" || input.action === "speech-session") && cached && cached.expires > now) {
-    if (input.action === "speech-session") return cached;
+  if ((input.action === "send" || input.action === "session") && cached && cached.expires > now) {
+    if (input.action === "session") return cached;
     const url = `${cached.origin}/api/exarch/personal-setup`;
     return yield* request(
       url,
@@ -104,15 +116,33 @@ export const linkedComputers = Effect.fn("exarch.linkedComputers")(function* (
   const list = yield* request(`${relay}/v1/environments`, "GET", {
     authorization: `Bearer ${stored.value.accessToken}`,
   }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(RelayListEnvironmentsResponse)));
-  const computers = list.environments.filter((computer) => input.action === "speech-computers" || computer.environmentId !== ownId);
-  if (input.action === "list" || input.action === "speech-computers")
+  if (input.action === "list")
     return {
-      computers: computers.map((computer) => ({
+      computers: list.environments
+        .filter((computer) => computer.environmentId !== ownId)
+        .map((computer) => ({ id: computer.environmentId, name: computer.label })),
+    };
+  if (input.action === "computers")
+    return {
+      computers: list.environments.map((computer) => ({
         id: computer.environmentId,
         name: computer.label,
+        ...(computer.environmentId === ownId ? { self: true } : {}),
       })),
     };
-  if (!list.environments.some((computer) => computer.environmentId === input.environmentId))
+  if (input.action === "unlink") {
+    // This computer leaves the account through its own connection settings, which also stop its tunnel here.
+    if (input.environmentId === ownId) return yield* new LinkedComputerError({});
+    return yield* request(
+      `${relay}/v1/client/environment-links/${encodeURIComponent(input.environmentId)}`,
+      "DELETE",
+      { authorization: `Bearer ${stored.value.accessToken}` },
+    );
+  }
+  if (
+    input.action !== "status" &&
+    !list.environments.some((computer) => computer.environmentId === input.environmentId)
+  )
     return yield* new LinkedComputerError({});
   const pair = yield* Effect.sync(() =>
     NodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" }),
@@ -127,20 +157,50 @@ export const linkedComputers = Effect.fn("exarch.linkedComputers")(function* (
     return makeProof(pair.privateKey, jwk, method, url, now, accessToken);
   });
   const tokenUrl = `${relay}/v1/client/dpop-token`;
-  const relayToken = yield* request(
-    tokenUrl,
-    "POST",
-    { "content-type": "application/x-www-form-urlencoded", dpop: yield* proof("POST", tokenUrl) },
-    new URLSearchParams({
-      grant_type: "urn:ietf:params:oauth:grant-type:token-exchange",
-      subject_token: stored.value.accessToken,
-      subject_token_type: "urn:ietf:params:oauth:token-type:jwt",
-      requested_token_type: "urn:ietf:params:oauth:token-type:access_token",
-      resource: relay,
-      scope: "environment:connect",
-      client_id: "t3-web",
-    }).toString(),
-  ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(RelayDpopAccessTokenResponse)));
+  const relayAccess = (scope: string) =>
+    Effect.gen(function* () {
+      return yield* request(
+        tokenUrl,
+        "POST",
+        {
+          "content-type": "application/x-www-form-urlencoded",
+          dpop: yield* proof("POST", tokenUrl),
+        },
+        new URLSearchParams({
+          grant_type: "urn:ietf:params:oauth:grant-type:token-exchange",
+          subject_token: stored.value.accessToken,
+          subject_token_type: "urn:ietf:params:oauth:token-type:jwt",
+          requested_token_type: "urn:ietf:params:oauth:token-type:access_token",
+          resource: relay,
+          scope,
+          client_id: "t3-web",
+        }).toString(),
+      ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(RelayDpopAccessTokenResponse)));
+    });
+  if (input.action === "status") {
+    // Each check is a live health probe that can take ten seconds, so all run at once and one failure stays that computer's.
+    const statusToken = yield* relayAccess("environment:status");
+    const checked = yield* Effect.forEach(
+      list.environments,
+      (computer) => {
+        if (computer.environmentId === ownId)
+          return Effect.succeed({ id: computer.environmentId, status: "online" as const });
+        const url = `${relay}/v1/environments/${encodeURIComponent(computer.environmentId)}/status`;
+        return Effect.gen(function* () {
+          const value = yield* request(url, "POST", {
+            authorization: `DPoP ${statusToken.access_token}`,
+            dpop: yield* proof("POST", url, statusToken.access_token),
+          }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(RelayEnvironmentStatusResponse)));
+          return { id: computer.environmentId, status: value.status };
+        }).pipe(
+          Effect.orElseSucceed(() => ({ id: computer.environmentId, status: "unknown" as const })),
+        );
+      },
+      { concurrency: "unbounded" },
+    );
+    return { computers: checked };
+  }
+  const relayToken = yield* relayAccess("environment:connect");
   const connectUrl = `${relay}/v1/environments/${encodeURIComponent(input.environmentId)}/connect`;
   const connection = yield* request(
     connectUrl,
@@ -187,7 +247,7 @@ export const linkedComputers = Effect.fn("exarch.linkedComputers")(function* (
     token: token.access_token,
     expires: now + Math.max(0, token.expires_in - 30) * 1000,
   });
-  if (input.action === "speech-session") return sessions.get(sessionKey)!;
+  if (input.action === "session") return sessions.get(sessionKey)!;
   const url = `${origin}/api/exarch/personal-setup`;
   return yield* request(
     url,
