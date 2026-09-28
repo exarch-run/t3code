@@ -1,8 +1,15 @@
 import { describe, expect, it } from "@effect/vitest";
+import { PgDialect } from "drizzle-orm/pg-core";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as TestClock from "effect/testing/TestClock";
 
+import * as RelayDb from "../db.ts";
+import {
+  relayAgentActivityRows,
+  relayEnvironmentCredentials,
+  relayEnvironmentLinks,
+} from "../persistence/schema.ts";
 import * as AccountDeletions from "./AccountDeletions.ts";
 
 interface Row {
@@ -328,6 +335,80 @@ describe("AccountDeletions", () => {
         expect(summary.pending).toBe(1);
         expect(summary.stalled).toBe(1);
       }),
+    );
+  });
+
+  it.effect("a computer another account unlinked loses its login and activity", () => {
+    // Links left by other accounts once the deleting user's own rows are gone.
+    const otherLinks = [
+      { environmentId: "env_unlinked", revokedAt: "2026-01-01T00:00:00.000Z" },
+      { environmentId: "env_shared", revokedAt: null },
+    ];
+    const revokedCredentials: Array<unknown> = [];
+    const deletedActivity: Array<unknown> = [];
+    const dialect = new PgDialect();
+    const render = (condition: unknown) => dialect.sqlToQuery(condition as never);
+    const fakeDb = {
+      delete: (table: unknown) => ({
+        where: (condition: unknown) =>
+          Effect.sync(() => {
+            if (table === relayAgentActivityRows) deletedActivity.push(render(condition).params);
+          }),
+      }),
+      update: (table: unknown) => ({
+        set: () => ({
+          where: (condition: unknown) =>
+            Effect.sync(() => {
+              if (table === relayEnvironmentCredentials) {
+                revokedCredentials.push(render(condition).params);
+              }
+            }),
+        }),
+      }),
+      select: () => ({
+        from: (table: unknown) => {
+          expect(table).toBe(relayEnvironmentLinks);
+          return {
+            where: (condition: unknown) => ({
+              limit: () =>
+                Effect.sync(() => {
+                  const query = render(condition);
+                  const activeOnly = query.sql.includes(
+                    '"relay_environment_links"."revoked_at" is null',
+                  );
+                  return otherLinks
+                    .filter((link) => query.params.includes(link.environmentId))
+                    .filter((link) => !activeOnly || link.revokedAt === null)
+                    .map(() => ({ userId: "user_other" }));
+                }),
+            }),
+          };
+        },
+      }),
+    } as unknown as RelayDb.RelayDb["Service"];
+
+    return Effect.gen(function* () {
+      const store = yield* AccountDeletions.AccountDeletionStore;
+      yield* store.purgeUser({
+        userId: "user_a",
+        environmentIds: ["env_unlinked", "env_shared"],
+        now: "2026-09-28T00:00:00.000Z",
+      });
+      expect(revokedCredentials).toEqual([["env_unlinked"]]);
+      expect(deletedActivity).toEqual([["env_unlinked"]]);
+    }).pipe(
+      Effect.provide(
+        AccountDeletions.storeLayer.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              Layer.succeed(RelayDb.RelayDb, fakeDb),
+              Layer.succeed(RelayDb.RelayTransactions, {
+                withTransaction: (effect: Effect.Effect<unknown>) => effect,
+              } as unknown as RelayDb.RelayTransactions["Service"]),
+            ),
+          ),
+        ),
+      ),
     );
   });
 

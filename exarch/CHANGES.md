@@ -109,3 +109,13 @@ Policy lives in `apps/server/src/exarch/ScheduledTaskWorkspace.ts`. `schedule_ta
 | `mcp/toolkits/orchestrator/tools.ts`, `handlers.ts`                         | Tool descriptions, and the project and git services the workspace check needs.                                                       | `mcp/OrchestratorMcpToolkit.integration.test.ts`                                          |
 
 Existing saved tasks are not migrated.
+
+## Relay expiry cleanup warnings
+
+Policy lives in `infra/relay/src/exarch/cleanup.ts`. The fork's five-minute cron removes expired DPoP proofs, agent activity, Live Activity content and delivery attempts, each running even when another fails. A failure now leaves a warning, as upstream's did, instead of vanishing while tracing is off. Pruning completed account deletions and expired AI reports warns the same way.
+
+| Hook                        | Reason                                                                                                   | Regression coverage                      |
+| --------------------------- | -------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| `infra/relay/src/worker.ts` | The cron runs the policy's expiry cleanup and wraps the tombstone and report pruning in its failure log. | `infra/relay/src/exarch/cleanup.test.ts` |
+
+A relay deployment is needed before this reaches the live relay.

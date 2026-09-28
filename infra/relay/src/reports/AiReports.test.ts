@@ -3,6 +3,7 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
+import * as Semaphore from "effect/Semaphore";
 import * as TestClock from "effect/testing/TestClock";
 import * as HttpRouter from "effect/unstable/http/HttpRouter";
 import * as HttpServer from "effect/unstable/http/HttpServer";
@@ -18,6 +19,8 @@ type Stored = AiReports.StoredReport & { contentHash: string };
 function memoryStore() {
   const rows = new Map<string, Stored>();
   const calls = { count: 0 };
+  // Stands in for the database's admission lock.
+  const admission = Semaphore.makeUnsafe(1);
   const store = AiReports.AiReportStore.of({
     find: (id) =>
       Effect.sync(() => {
@@ -39,11 +42,13 @@ function memoryStore() {
           since: all.filter((row) => row.receivedAt >= input.since).length,
           oldest: all.map((row) => row.receivedAt).sort()[0] ?? null,
         };
-      }),
+        // Other submissions run between a count and the next query, as they do against the database.
+      }).pipe(Effect.tap(() => Effect.yieldNow)),
     pruneBefore: (before) =>
       Effect.sync(() => {
         for (const [id, row] of rows) if (row.receivedAt < before) rows.delete(id);
       }),
+    withAdmissionLock: (effect) => admission.withPermits(1)(effect),
     list: (limit) => Effect.succeed([...rows.values()].slice(0, limit)),
     remove: (id) => Effect.sync(() => rows.delete(id)),
   });
@@ -160,6 +165,22 @@ describe("AiReports", () => {
         const full = yield* reports.submit(report(ids[2]!)).pipe(Effect.flip);
         expect(full).toMatchObject({ reason: "unavailable" });
         expect(rows.size).toBe(2);
+      }),
+    );
+  });
+
+  it.effect("reports sent at the same moment cannot share the last slot", () => {
+    const { rows, layer } = memoryStore();
+    return withReports(reportsLayer(layer, { capacity: 3, hourlyLimit: 5 }), (reports) =>
+      Effect.gen(function* () {
+        yield* reports.submit(report(ids[0]!));
+        yield* reports.submit(report(ids[1]!));
+        const results = yield* Effect.all(
+          ids.slice(2, 10).map((id) => reports.submit(report(id)).pipe(Effect.result)),
+          { concurrency: "unbounded" },
+        );
+        expect(results.filter((result) => result._tag === "Success")).toHaveLength(1);
+        expect(rows.size).toBe(3);
       }),
     );
   });

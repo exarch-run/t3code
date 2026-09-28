@@ -1,3 +1,4 @@
+import * as ExarchCleanup from "./exarch/cleanup.ts";
 import { speechRoutes } from "./exarch/speech.ts";
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -361,24 +362,7 @@ export const ApiLive = Api.make(
     yield* Cloudflare.Workers.cron("*/5 * * * *", () =>
       Effect.all(
         [
-          DpopProofs.DpopProofReplay.pipe(
-            Effect.flatMap((dpopProofs) => dpopProofs.pruneExpired),
-            // One failure must not prevent another category's privacy cleanup.
-            Effect.ignore,
-            Effect.andThen(
-              AgentActivityRows.AgentActivityRows.pipe(
-                Effect.flatMap((rows) => rows.pruneExpired),
-                Effect.ignore,
-              ),
-            ),
-            Effect.andThen(LiveActivities.pruneExpiredContent.pipe(Effect.ignore)),
-            Effect.andThen(
-              DeliveryAttempts.DeliveryAttempts.pipe(
-                Effect.flatMap((attempts) => attempts.pruneExpired),
-                Effect.ignore,
-              ),
-            ),
-          ),
+          ExarchCleanup.pruneExpiredState,
           ManagedEndpointReaper.ManagedEndpointReaper.pipe(
             Effect.flatMap((reaper) => reaper.sweep.pipe(Effect.timeout("2 minutes"))),
             Effect.tap((result) =>
@@ -405,7 +389,9 @@ export const ApiLive = Api.make(
                 [
                   deletions.processDue.pipe(Effect.ignore),
                   deletions.reconcileIdentities.pipe(Effect.ignore),
-                  deletions.pruneCompleted.pipe(Effect.ignore),
+                  deletions.pruneCompleted.pipe(
+                    ExarchCleanup.warnOnFailure("Failed to prune completed account deletions"),
+                  ),
                   deletions.summary.pipe(
                     Effect.tap((summary) =>
                       summary.stalled > 0
@@ -446,7 +432,7 @@ export const ApiLive = Api.make(
                 ),
               ),
             ),
-            Effect.ignore,
+            ExarchCleanup.warnOnFailure("Failed to prune or count AI reports"),
             Effect.withSpan("relay.cron.reports"),
           ),
         ),

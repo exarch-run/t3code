@@ -1,4 +1,4 @@
-import { count, eq, gte, lt, min } from "drizzle-orm";
+import { count, eq, gte, lt, min, sql } from "drizzle-orm";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -6,6 +6,7 @@ import * as Effect from "effect/Effect";
 import * as Encoding from "effect/Encoding";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as SqlError from "effect/unstable/sql/SqlError";
 
 import * as RelayDb from "../db.ts";
 import { relayAiReports } from "../persistence/schema.ts";
@@ -79,6 +80,10 @@ export class AiReportStore extends Context.Service<
       ReportStorageError
     >;
     readonly pruneBefore: (before: string) => Effect.Effect<void, ReportStorageError>;
+    /** Runs the limit check and insert as one step. Admissions wait for each other. */
+    readonly withAdmissionLock: <A, E, R>(
+      effect: Effect.Effect<A, E, R>,
+    ) => Effect.Effect<A, E | ReportStorageError, R>;
     readonly list: (
       limit: number,
     ) => Effect.Effect<ReadonlyArray<StoredReport>, ReportStorageError>;
@@ -172,11 +177,15 @@ export const make = (options?: { readonly capacity?: number; readonly hourlyLimi
         if (yield* matchExisting(report.id, contentHash)) {
           return { id: report.id, created: false };
         }
-        const current = yield* counts;
-        if (current.since >= hourlyLimit) return yield* rejected("rate_limited");
-        if (current.total >= capacity) return yield* rejected("unavailable");
-        const receivedAt = DateTime.formatIso(yield* DateTime.now);
-        const inserted = yield* store.insert({ ...report, contentHash, receivedAt });
+        const inserted = yield* store.withAdmissionLock(
+          Effect.gen(function* () {
+            const current = yield* counts;
+            if (current.since >= hourlyLimit) return yield* rejected("rate_limited");
+            if (current.total >= capacity) return yield* rejected("unavailable");
+            const receivedAt = DateTime.formatIso(yield* DateTime.now);
+            return yield* store.insert({ ...report, contentHash, receivedAt });
+          }),
+        );
         if (!inserted) {
           // A concurrent submission of the same id won the insert.
           yield* matchExisting(report.id, contentHash);
@@ -249,6 +258,22 @@ export const storeLayer = Layer.effect(
         ),
       pruneBefore: (before) =>
         db.delete(t).where(lt(t.receivedAt, before)).pipe(storage("prune"), Effect.asVoid),
+      // A transaction-scoped advisory lock, so it is released at commit and works
+      // through Hyperdrive's transaction pooling. Readers and pruning never wait on it.
+      withAdmissionLock: (effect) =>
+        db.$client
+          .withTransaction(
+            db
+              .execute(sql`SELECT pg_advisory_xact_lock(hashtext('relay_ai_reports.admission'))`)
+              .pipe(storage("admission"), Effect.andThen(effect)),
+          )
+          .pipe(
+            Effect.mapError((cause) =>
+              SqlError.isSqlError(cause)
+                ? new ReportStorageError({ operation: "admission", cause })
+                : cause,
+            ),
+          ),
       list: (limit) =>
         db
           .select({

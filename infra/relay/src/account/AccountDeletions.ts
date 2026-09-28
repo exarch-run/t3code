@@ -1,6 +1,6 @@
 import { createClerkClient } from "@clerk/backend";
 import { isClerkAPIResponseError } from "@clerk/backend/errors";
-import { and, eq, inArray, lt, lte, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, lt, lte, sql } from "drizzle-orm";
 import { QueryBuilder } from "drizzle-orm/pg-core";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -477,9 +477,15 @@ const makeStore = Effect.gen(function* () {
               const [stillLinked] = yield* db
                 .select({ userId: relayEnvironmentLinks.userId })
                 .from(relayEnvironmentLinks)
-                .where(eq(relayEnvironmentLinks.environmentId, environmentId))
+                .where(
+                  and(
+                    eq(relayEnvironmentLinks.environmentId, environmentId),
+                    isNull(relayEnvironmentLinks.revokedAt),
+                  ),
+                )
                 .limit(1);
               // Another account still uses this computer. Its credential and activity stay.
+              // An account that unlinked it keeps a revoked row, which doesn't count.
               if (stillLinked) continue;
               yield* db
                 .update(relayEnvironmentCredentials)
