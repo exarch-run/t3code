@@ -8,6 +8,7 @@ import {
   ProviderSessionId,
   ThreadId,
   type OrchestrationProjectShell,
+  type OrchestrationV2AppThread,
   type OrchestrationV2Command,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ShellSnapshot,
@@ -35,7 +36,8 @@ import {
 } from "../pullRequest/PullRequestService.ts";
 import { ServerActivation } from "../serverActivation.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { TerminalManager } from "../terminal/Manager.ts";
+import * as ProjectStore from "./ProjectStore.ts";
 import { OrchestratorV2, type OrchestratorV2Shape } from "./Orchestrator.ts";
 import { ProjectionStoreV2 } from "./ProjectionStore.ts";
 import * as ThreadSettlementService from "./ThreadSettlementService.ts";
@@ -413,6 +415,8 @@ interface HarnessOptions {
   readonly pullRequestSummary?: PullRequestService["Service"]["summary"];
   readonly existingWorktreePaths?: ReadonlyArray<string>;
   readonly onDispatch?: (command: AutoSettleCommand) => Effect.Effect<void>;
+  /** Threads `getThread` returns when a `thread.settled` event is handled. */
+  readonly currentThreads?: ReadonlyArray<OrchestrationV2AppThread>;
 }
 
 const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options: HarnessOptions) {
@@ -438,6 +442,7 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
   const summaryRecovery = yield* Ref.make<ReadonlyArray<boolean | undefined>>([]);
   const invalidatedCwds = yield* Ref.make<ReadonlyArray<string>>([]);
   const domainEvents = yield* PubSub.unbounded<OrchestrationV2DomainEvent>();
+  const closedIdle = yield* Queue.unbounded<{ readonly threadId: string }>();
 
   const updateSettings = (patch: ServerSettingsPatch) =>
     Effect.gen(function* () {
@@ -493,9 +498,8 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
   });
 
   const dependencies = Layer.mergeAll(
-    Layer.mock(ProjectionSnapshotQuery)({
-      getProjectShellsWithoutEnrichment: () =>
-        Ref.get(snapshots).pipe(Effect.map((snapshot) => snapshot.projects)),
+    Layer.mock(ProjectStore.ProjectStoreV2)({
+      listShells: () => Ref.get(snapshots).pipe(Effect.map((snapshot) => snapshot.projects)),
     }),
     Layer.mock(ProjectionStoreV2)({
       getSettlementCandidates: (threadId) =>
@@ -509,10 +513,19 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
               : snapshot.threads.filter((thread) => thread.id === threadId),
           ),
         ),
+      getThread: (threadId) => {
+        const thread = options.currentThreads?.find((candidate) => candidate.id === threadId);
+        return thread
+          ? Effect.succeed(thread)
+          : Effect.die(new Error(`Unexpected thread read: ${threadId}`));
+      },
     }),
     Layer.mock(OrchestratorV2)({
       streamDomainEvents: Stream.fromPubSub(domainEvents),
       dispatch,
+    }),
+    Layer.mock(TerminalManager)({
+      closeIdle: (input) => Queue.offer(closedIdle, input).pipe(Effect.asVoid),
     }),
     Layer.mock(GitManager)({
       branchPullRequest,
@@ -543,6 +556,7 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
     summaryCalls,
     summaryRecovery,
     invalidatedCwds,
+    closedIdle,
     publishEvent: (event: OrchestrationV2DomainEvent) => PubSub.publish(domainEvents, event),
     updateSettings,
     publishMerge: PubSub.publish(mergedPullRequests, {
@@ -912,6 +926,88 @@ describe("ThreadSettlementServiceV2 worker", () => {
               { cwd: "/workspace/project-root", branch: "feature/deleted" },
             ]),
           );
+        }).pipe(Effect.provide(fixture.layer));
+      }),
+    ),
+  );
+});
+
+describe("ThreadSettlementServiceV2 terminals", () => {
+  const appThread = (
+    id: string,
+    settledOverride: OrchestrationV2AppThread["settledOverride"],
+  ): OrchestrationV2AppThread => {
+    const threadId = ThreadId.make(id);
+    return {
+      createdBy: "user",
+      creationSource: "web",
+      id: threadId,
+      projectId: PROJECT_ID,
+      title: id,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      activeProviderThreadId: null,
+      lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+      forkedFrom: null,
+      createdAt: DateTime.makeUnsafe(NOW),
+      updatedAt: DateTime.makeUnsafe(NOW),
+      archivedAt: null,
+      settledOverride,
+      settledAt: settledOverride === "settled" ? DateTime.makeUnsafe(NOW) : null,
+      lastVisitedAt: null,
+      deletedAt: null,
+    };
+  };
+  const settledEvent = (thread: OrchestrationV2AppThread): OrchestrationV2DomainEvent => ({
+    type: "thread.settled",
+    id: EventId.make(`event:settled:${thread.id}`),
+    threadId: thread.id,
+    occurredAt: DateTime.makeUnsafe(NOW),
+    payload: thread,
+  });
+
+  it.effect("closes the thread's idle terminals when it settles", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = appThread("settled-thread", "settled");
+        const fixture = yield* makeHarness({
+          snapshot: makeSnapshot([]),
+          currentThreads: [thread],
+        });
+
+        yield* Effect.gen(function* () {
+          const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+          yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+          yield* fixture.publishEvent(settledEvent(thread));
+          assert.deepStrictEqual(yield* Queue.take(fixture.closedIdle), { threadId: thread.id });
+        }).pipe(Effect.provide(fixture.layer));
+      }),
+    ),
+  );
+
+  it.effect("keeps the terminals of a thread re-engaged before the event ran", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const settled = appThread("reengaged-thread", "settled");
+        const reengaged = appThread("reengaged-thread", "active");
+        const marker = appThread("marker-thread", "settled");
+        const fixture = yield* makeHarness({
+          snapshot: makeSnapshot([]),
+          currentThreads: [reengaged, marker],
+        });
+
+        yield* Effect.gen(function* () {
+          const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+          yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+          yield* fixture.publishEvent(settledEvent(settled));
+          // Events run in order, so the first close belongs to the later
+          // event only if the re-engaged thread was skipped.
+          yield* fixture.publishEvent(settledEvent(marker));
+          assert.deepStrictEqual(yield* Queue.take(fixture.closedIdle), { threadId: marker.id });
         }).pipe(Effect.provide(fixture.layer));
       }),
     ),

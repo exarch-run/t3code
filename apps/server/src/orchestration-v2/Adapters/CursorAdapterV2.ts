@@ -8,6 +8,7 @@ import type {
   SettingSource,
   ToolCall,
 } from "@cursor/sdk";
+import { formatReadToolLabel, formatSearchToolLabel } from "@t3tools/shared/toolActivity";
 import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
 import {
   CursorSettings,
@@ -454,7 +455,6 @@ function cursorToolSearchPattern(toolCall: ToolCall): string | undefined {
       return toolCall.args.pattern;
     case "semSearch":
       return toolCall.args.query;
-    case "read":
     case "ls":
       return toolCall.args.path;
     case "readLints":
@@ -492,13 +492,6 @@ function cursorToolSearchResults(
     return [];
   }
   switch (toolCall.type) {
-    case "read":
-      return [
-        {
-          fileName: toolCall.args.path,
-          preview: toolCall.result.value.content,
-        },
-      ];
     case "glob":
       return toolCall.result.value.files.map((fileName) => ({ fileName }));
     case "grep":
@@ -1171,12 +1164,16 @@ export function makeCursorAdapterV2(
         const emitToolArtifacts = Effect.fnUntraced(function* (input: {
           readonly active: ActiveCursorToolCall;
           readonly completed: boolean;
+          /** Terminal status for a tool the turn ended before Cursor completed it. */
+          readonly unfinishedStatus?: "interrupted" | "failed" | "cancelled";
         }) {
           const { active } = input;
           const toolCall = active.toolCall;
           const now = yield* DateTime.now;
           const failed = input.completed && cursorToolFailed(toolCall);
-          const status = input.completed ? (failed ? "failed" : "completed") : "running";
+          const status = !input.completed
+            ? "running"
+            : (input.unfinishedStatus ?? (failed ? "failed" : "completed"));
           const nodeId = idAllocator.derive.nodeFromProviderItem({
             driver: CURSOR_PROVIDER,
             nativeItemId: active.callId,
@@ -1279,19 +1276,34 @@ export function makeCursorAdapterV2(
                 ...(toolCall.type === "write" ? { newStr: toolCall.args.fileText } : {}),
               };
               break;
+            case "read":
+              turnItem = {
+                ...base,
+                title: formatReadToolLabel(toolCall.args.path),
+                type: "dynamic_tool",
+                toolName: "Read",
+                input: toolCall.args,
+                ...(cursorToolOutput(toolCall) === undefined
+                  ? {}
+                  : { output: cursorToolOutput(toolCall) }),
+              };
+              break;
             case "glob":
             case "grep":
-            case "read":
             case "ls":
             case "readLints":
             case "semSearch": {
               const results = cursorToolSearchResults(toolCall, path);
+              const pattern = cursorToolSearchPattern(toolCall);
               turnItem = {
                 ...base,
+                title:
+                  formatSearchToolLabel({
+                    input: toolCall.args,
+                    ...(pattern === undefined ? {} : { pattern }),
+                  }) ?? null,
                 type: "file_search",
-                ...(cursorToolSearchPattern(toolCall) === undefined
-                  ? {}
-                  : { pattern: cursorToolSearchPattern(toolCall) }),
+                ...(pattern === undefined ? {} : { pattern }),
                 ...(results.length === 0 ? {} : { results: [...results] }),
               };
               break;
@@ -1974,8 +1986,14 @@ export function makeCursorAdapterV2(
           }
           input.context.finalized = true;
           const completedAt = yield* DateTime.now;
+          // Tools still here never got a tool-call-completed. A stopped or
+          // failed turn cut them short, so they end with the turn's status.
           for (const tool of input.context.tools.values()) {
-            yield* emitToolArtifacts({ active: tool, completed: true });
+            yield* emitToolArtifacts({
+              active: tool,
+              completed: true,
+              ...(input.status === "completed" ? {} : { unfinishedStatus: input.status }),
+            });
           }
           input.context.tools.clear();
           // This interaction stops delivering updates at finalization. Tasks

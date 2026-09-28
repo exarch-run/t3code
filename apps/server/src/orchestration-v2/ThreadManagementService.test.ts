@@ -4,6 +4,7 @@ import {
   MessageId,
   NodeId,
   type OrchestrationV2Command,
+  type OrchestrationV2ServerCommand,
   type OrchestrationV2Run,
   type OrchestrationV2ThreadProjection,
   ProjectId,
@@ -18,7 +19,10 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as TestClock from "effect/testing/TestClock";
 
-import { LegacyV1ThreadImporter, LegacyV1ThreadImportError } from "./LegacyV1ThreadImporter.ts";
+import {
+  LegacyV1ThreadImporter,
+  LegacyV1ThreadImportError,
+} from "./legacy/LegacyV1ThreadImporter.ts";
 import { OrchestratorProjectionError, OrchestratorV2 } from "./Orchestrator.ts";
 import {
   existingThreadIdsForCommand,
@@ -435,7 +439,7 @@ it.effect("applies requested modes to the thread before dispatching a message", 
   const threadId = ThreadId.make("thread:thread-management:modes");
   const messageId = MessageId.make("message:thread-management:modes");
   const runId = RunId.make("run:thread-management:modes");
-  const dispatched: Array<OrchestrationV2Command> = [];
+  const dispatched: Array<OrchestrationV2ServerCommand> = [];
   const projection = () =>
     ({
       thread: {

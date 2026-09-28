@@ -1,7 +1,7 @@
 import { restoreClaudeHandoffContext } from "../exarch/ClaudeHandoffContext.ts";
 import { contextWindowStart } from "../exarch/ContextWindow.ts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
-import { formatQuestionResponseForProvider } from "../orchestration/questionResponseInput.ts";
+import { formatQuestionResponseForProvider } from "../exarch/questionResponseInput.ts";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
   CommandId,
@@ -33,6 +33,7 @@ import {
   handoffTokenCapConfig,
   handoffBudget,
   attachmentTokenAllowance,
+  contextUsageForHandoff,
   historicalMessage,
   latestNativeContextUsage,
 } from "./ContextHandoffBudget.ts";
@@ -52,6 +53,11 @@ import {
   selectInheritedBackgroundTurnItems,
 } from "./RunExecutionService.ts";
 import { RuntimePolicyV2 } from "./RuntimePolicy.ts";
+import {
+  isRestartNoteContinuation,
+  pendingRestartCancelledBackgroundWork,
+  restartCancelledBackgroundWorkNote,
+} from "./RestartBackgroundNote.ts";
 
 export class ProviderTurnStartError extends Schema.TaggedError<ProviderTurnStartError>()(
   "ProviderTurnStartError",
@@ -824,26 +830,24 @@ export const layer: Layer.Layer<
       const previousUsage = measuredContext
         ? { ...threadUsage, ...measuredContext.usage }
         : threadUsage;
-      const compatibleUsage =
-        previousSelection !== undefined &&
-        session.canReuseContextUsage?.(previousSelection, run.modelSelection) &&
-        previousUsage != null
-          ? {
-              usedTokens: previousUsage.usedTokens,
-              ...(previousUsage.maxTokens === undefined
-                ? {}
-                : { maxTokens: previousUsage.maxTokens }),
-            }
-          : null;
+      const reuseTelemetry =
+        sameSelection ||
+        (previousSelection !== undefined &&
+          session.canReuseContextUsage?.(previousSelection, run.modelSelection) === true);
+      const knownModelWindow = session.getModelContextWindow?.(run.modelSelection);
+      // Persist before delivery. Keep this native transcript's measured
+      // occupancy. A different model drops compaction telemetry and uses the
+      // new window when that window is known.
+      const handoffUsage = contextUsageForHandoff({
+        sameNativeThread,
+        sameSelection,
+        reuseTelemetry,
+        previousUsage,
+        knownModelWindow,
+      });
       const runningProviderThread: OrchestrationV2ProviderThread = {
         ...loadedProviderThread,
-        // Persist invalidation before delivery: a failed start must not let the next
-        // attempt mistake old-model telemetry for usage of the new selection.
-        contextUsage: sameNativeThread
-          ? sameSelection
-            ? (previousUsage ?? null)
-            : compatibleUsage
-          : null,
+        contextUsage: handoffUsage,
         id: providerThread.id,
         driver: session.driver,
         providerInstanceId: run.providerInstanceId,
@@ -974,6 +978,34 @@ export const layer: Layer.Layer<
           : message.text,
         records: message.context?.records ?? [],
       });
+      // Delivered once: this run's provider turn marks the work as told. A
+      // restart continuation is prompted by its own text or resumes natively.
+      const noteContinuation = isRestartNoteContinuation(
+        run,
+        projection.runs,
+        projection.providerTurns,
+      );
+      const restartCancelledWork = pendingRestartCancelledBackgroundWork({
+        runs: projection.runs,
+        providerTurns: projection.providerTurns,
+        compactionMessageIds: new Set(
+          projection.messages
+            .filter(
+              (candidate) =>
+                candidate.attachments.length === 0 &&
+                candidate.text.trim().toLowerCase() === "/compact",
+            )
+            .map((candidate) => candidate.id),
+        ),
+        run,
+        runAttemptIds: projection.attempts
+          .filter((candidate) => candidate.runId === run.id)
+          .map((candidate) => candidate.id),
+      });
+      const restartNote =
+        restartCancelledWork.length === 0
+          ? ""
+          : restartCancelledBackgroundWorkNote(restartCancelledWork);
       const tokenCap = yield* handoffTokenCapConfig.pipe(
         Effect.orElseSucceed(() => DEFAULT_HANDOFF_TOKEN_CAP),
       );
@@ -1059,14 +1091,13 @@ export const layer: Layer.Layer<
             }, 0)
           : 0;
       });
-      const reportedUsage = sameSelection ? previousUsage : compatibleUsage;
       const modelContextWindow =
-        session.getModelContextWindow?.(run.modelSelection) ?? reportedUsage?.maxTokens;
+        knownModelWindow ??
+        (handoffUsage !== null || reuseTelemetry ? previousUsage?.maxTokens : undefined);
       // Replacing a native thread clears its usage, not the selected model's capacity.
-      // Model/options changes invalidate old window and compaction telemetry.
       const budgetProviderThread = {
         ...runningProviderThread,
-        contextUsage: sameNativeThread ? (reportedUsage ?? null) : null,
+        contextUsage: handoffUsage,
       };
       const missedRuns = projection.runs.filter(
         (source) =>
@@ -1139,7 +1170,8 @@ export const layer: Layer.Layer<
               return handoffBudget({
                 tokenCap,
                 modelContextWindow,
-                userText,
+                // The note is sent with the user text, so it spends the same allowance.
+                userText: restartNote === "" ? userText : `${restartNote}\n\n${userText}`,
                 attachments: message.attachments,
                 providerThread: budgetProviderThread,
                 nativeContextEstimate:
@@ -1189,8 +1221,14 @@ export const layer: Layer.Layer<
                 ? delivery.context
                 : undefined;
           const start = compact ? session.compactThread! : session.startTurn;
+          // Context delivered through instructions stays out of the message.
+          const context = [inInstructions ? "" : delivery.context, restartNote]
+            .filter((part) => part !== "")
+            .join("\n\n");
+          // A note continuation has no turn to resume; its text is the prompt.
+          const { restartContinuationOfRunId: _resumedRunId, ...promptedInput } = turnInput;
           yield* start({
-            ...turnInput,
+            ...(noteContinuation ? promptedInput : turnInput),
             ...(claudeHandoffContext === undefined ? {} : { handoffContext: claudeHandoffContext }),
             ...(inInstructions && session.driver !== "claudeAgent"
               ? {
@@ -1204,10 +1242,7 @@ export const layer: Layer.Layer<
               : {}),
             message: {
               ...turnInput.message,
-              text:
-                inInstructions || delivery.context === ""
-                  ? userText
-                  : `${delivery.context}\n\nUser message:\n${userText}`,
+              text: context === "" ? userText : `${context}\n\nUser message:\n${userText}`,
             },
           });
           // The provider already accepted the turn. A stale pending marker
@@ -1234,7 +1269,10 @@ export const layer: Layer.Layer<
           ),
         );
       const deliverySession =
-        effectiveHandoffs.length === 0 && missedItems.length === 0
+        effectiveHandoffs.length === 0 &&
+        missedItems.length === 0 &&
+        restartNote === "" &&
+        !noteContinuation
           ? session
           : makeDeliverySession(session, startWithHandoffs);
       const startExecution = runExecution.startRootRun({

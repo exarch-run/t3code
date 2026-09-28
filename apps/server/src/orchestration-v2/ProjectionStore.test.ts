@@ -281,6 +281,40 @@ it("includes imported runless history when selecting fork context through a run"
   );
 });
 
+// Recovery records the work, then a run.updated snapshot taken before it lands.
+const restartCancelledWorkSurvivesStaleRunUpdate = Effect.gen(function* () {
+  const store = yield* ProjectionStoreV2;
+  const threadId = yield* addRolledBackRecoveryCandidate("restart-cancelled-work-stale-update");
+  const run = (yield* store.getThreadProjection(threadId)).runs[0]!;
+  const now = yield* DateTime.now;
+  const work = [{ kind: "subagent" as const, label: "Background subagent test" }];
+  yield* store.apply({
+    id: EventId.make("event:restart-cancelled-work-stale-update:recorded"),
+    type: "run.background-work-cancelled",
+    threadId,
+    runId: run.id,
+    providerInstanceId,
+    occurredAt: now,
+    payload: { runId: run.id, restartCancelledBackgroundWork: work },
+  });
+  yield* store.apply({
+    id: EventId.make("event:restart-cancelled-work-stale-update:completed"),
+    type: "run.updated",
+    threadId,
+    runId: run.id,
+    providerInstanceId,
+    occurredAt: now,
+    payload: { ...run, status: "completed", completedAt: now },
+  });
+  const updated = (yield* store.getThreadProjection(threadId)).runs[0];
+  assert.equal(updated?.status, "completed");
+  assert.deepEqual(updated?.restartCancelledBackgroundWork, work);
+});
+
+it.effect("memory projection keeps restart-cancelled work through a stale run.updated", () =>
+  restartCancelledWorkSurvivesStaleRunUpdate.pipe(Effect.provide(projectionStoreMemoryLayer)),
+);
+
 it.effect("memory recovery selection ignores unfinished items from rolled-back runs", () =>
   Effect.gen(function* () {
     const projectionStore = yield* ProjectionStoreV2;
@@ -428,6 +462,46 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
     }),
   );
 
+  it.effect(
+    "keeps restart-cancelled work through a stale run.updated",
+    () => restartCancelledWorkSurvivesStaleRunUpdate,
+  );
+  it.effect("records restart-cancelled work without regressing a run that completed since", () =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStoreV2;
+      const threadId = yield* addRolledBackRecoveryCandidate("restart-cancelled-work");
+      const run = (yield* store.getThreadProjection(threadId)).runs[0]!;
+      const now = yield* DateTime.now;
+      // Recovery read the run as waiting; its checkpoint completed it before the commit.
+      yield* store.apply({
+        id: EventId.make("event:restart-cancelled-work:completed"),
+        type: "run.updated",
+        threadId,
+        runId: run.id,
+        providerInstanceId,
+        occurredAt: now,
+        payload: { ...run, status: "completed", completedAt: now },
+      });
+      const work = [{ kind: "subagent" as const, label: "Background subagent test" }];
+      yield* store.apply({
+        id: EventId.make("event:restart-cancelled-work:recorded"),
+        type: "run.background-work-cancelled",
+        threadId,
+        runId: run.id,
+        providerInstanceId,
+        occurredAt: now,
+        payload: { runId: run.id, restartCancelledBackgroundWork: work },
+      });
+      const recorded = (yield* store.getThreadProjection(threadId)).runs[0];
+      assert.equal(recorded?.status, "completed");
+      assert.deepEqual(recorded?.restartCancelledBackgroundWork, work);
+      const [recovery] = (yield* store.getThreadRecords(threadId, ["runs"], {
+        runIds: [run.id],
+      })).runs;
+      assert.equal(recovery?.status, "completed");
+      assert.deepEqual(recovery?.restartCancelledBackgroundWork, work);
+    }),
+  );
   it.effect("limits turn-start history to the requested runs, including an empty selection", () =>
     Effect.gen(function* () {
       const store = yield* ProjectionStoreV2;
@@ -2193,7 +2267,97 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
       });
       yield* applyRun("failed");
       yield* assertSummary("Plan limit reached.", "usage_limit");
+      const queuedRunId = RunId.make("run:limit-shell:queued");
+      yield* store.apply({
+        id: EventId.make("event:limit-shell:queued"),
+        type: "run.created",
+        threadId,
+        runId: queuedRunId,
+        nodeId: NodeId.make("node:limit-shell:queued"),
+        driver,
+        providerInstanceId,
+        occurredAt: now,
+        payload: {
+          ...original,
+          id: queuedRunId,
+          ordinal: original.ordinal + 1,
+          rootNodeId: NodeId.make("node:limit-shell:queued"),
+          userMessageId: MessageId.make("message:limit-shell:queued"),
+          status: "queued",
+          startedAt: null,
+          completedAt: null,
+        },
+      });
+      yield* assertSummary("Plan limit reached.", "usage_limit");
+      const queuedProjection = yield* store.getThreadProjection(threadId);
+      const queuedMemoryShell = threadShellFromProjection(queuedProjection);
+      const queuedSqlShell = (yield* store.getShellSnapshot()).threads.find(
+        (row) => row.id === threadId,
+      )!;
+      assert.equal(queuedMemoryShell.status, "failed");
+      assert.equal(queuedMemoryShell.latestRunId, original.id);
+      assert.equal(queuedSqlShell.status, "failed");
+      assert.equal(queuedSqlShell.latestRunId, original.id);
+      assert.equal(queuedProjection.runs.find((run) => run.id === queuedRunId)?.status, "queued");
+      const cancelledRunId = RunId.make("run:limit-shell:cancelled-queued");
+      yield* store.apply({
+        id: EventId.make("event:limit-shell:cancelled-queued"),
+        type: "run.created",
+        threadId,
+        runId: cancelledRunId,
+        nodeId: NodeId.make("node:limit-shell:cancelled-queued"),
+        driver,
+        providerInstanceId,
+        occurredAt: now,
+        payload: {
+          ...original,
+          id: cancelledRunId,
+          ordinal: original.ordinal + 2,
+          rootNodeId: NodeId.make("node:limit-shell:cancelled-queued"),
+          userMessageId: MessageId.make("message:limit-shell:cancelled-queued"),
+          status: "cancelled",
+          startedAt: null,
+          completedAt: now,
+        },
+      });
+      yield* store.apply({
+        id: EventId.make("event:limit-shell:cancelled-queued-message"),
+        type: "turn-item.updated",
+        threadId,
+        runId: cancelledRunId,
+        nodeId: NodeId.make("node:limit-shell:cancelled-queued"),
+        driver,
+        occurredAt: now,
+        payload: {
+          createdBy: "user",
+          creationSource: "web",
+          id: TurnItemId.make("limit-shell:cancelled-queued-message"),
+          threadId,
+          runId: cancelledRunId,
+          nodeId: NodeId.make("node:limit-shell:cancelled-queued"),
+          providerThreadId: null,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: 3,
+          status: "completed",
+          title: null,
+          startedAt: now,
+          completedAt: now,
+          updatedAt: now,
+          type: "user_message",
+          messageId: MessageId.make("message:limit-shell:cancelled-queued"),
+          inputIntent: "turn_start",
+          text: "cancelled before the provider started",
+          attachments: [],
+        },
+      });
+      yield* assertSummary("Plan limit reached.", "usage_limit");
       const sql = yield* SqlClient.SqlClient;
+      // The rest of this case treats the failed run as the latest run.
+      yield* sql`DELETE FROM orchestration_v2_projection_runs WHERE run_id = ${queuedRunId}`;
+      yield* assertSummary("Plan limit reached.", "usage_limit");
+      yield* sql`DELETE FROM orchestration_v2_projection_runs WHERE run_id = ${cancelledRunId}`;
       const [originalRow] = yield* sql<{
         payload_json: string;
       }>`SELECT payload_json FROM orchestration_v2_projection_threads WHERE thread_id = ${threadId}`;

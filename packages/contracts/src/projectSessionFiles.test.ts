@@ -1,12 +1,13 @@
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
-import { OrchestrationProject, ProjectCreateCommand } from "./orchestration.ts";
+import { OrchestrationProjectShell } from "./orchestrationProject.ts";
+import { ProjectMutation } from "./project.ts";
 import { isProjectSessionFilePath, ProjectSessionFiles } from "./projectSessionFiles.ts";
 
 const decodeFiles = Schema.decodeUnknownSync(ProjectSessionFiles);
-const decodeProject = Schema.decodeUnknownSync(OrchestrationProject);
-const decodeCreate = Schema.decodeUnknownSync(ProjectCreateCommand);
+const decodeProject = Schema.decodeUnknownSync(OrchestrationProjectShell);
+const decodeCreate = Schema.decodeUnknownSync(ProjectMutation);
 
 describe("project session files", () => {
   it("accepts relative paths inside the project and refuses the rest", () => {
@@ -38,7 +39,6 @@ describe("project session files", () => {
       scripts: [],
       createdAt: "2026-09-11T00:00:00.000Z",
       updatedAt: "2026-09-11T00:00:00.000Z",
-      deletedAt: null,
     };
     const decoded = decodeProject(base);
     expect("sessionFiles" in decoded).toBe(false);
@@ -54,8 +54,7 @@ describe("project session files", () => {
       title: "Assistant",
       workspaceRoot: "/tmp/assistant",
       sessionFiles: ["SOUL.md"],
-      createdAt: "2026-09-11T00:00:00.000Z",
     });
-    expect(command.sessionFiles).toEqual(["SOUL.md"]);
+    expect(command.type === "project.create" && command.sessionFiles).toEqual(["SOUL.md"]);
   });
 });

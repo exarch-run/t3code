@@ -6,16 +6,21 @@ import {
   type OrchestrationV2AppThread,
   ProjectId,
   ProviderInstanceId,
+  type RuntimeMode,
+  type ServerProvider,
   ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
 
-import * as ProjectionProjects from "../persistence/Services/ProjectionProjects.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
-import { layerFromProjectRepository, RuntimePolicyV2 } from "./RuntimePolicy.ts";
+import type { ProviderInstance } from "../provider/ProviderDriver.ts";
+import { ProviderInstanceRegistry } from "../provider/Services/ProviderInstanceRegistry.ts";
+import * as ProjectStore from "./ProjectStore.ts";
+import { layerFromProjectStore, RuntimePolicyV2 } from "./RuntimePolicy.ts";
 
 const projectId = ProjectId.make("project:runtime-policy");
 const providerInstanceId = ProviderInstanceId.make("codex");
@@ -27,6 +32,7 @@ const modelSelection = {
 function makeThread(input: {
   readonly now: DateTime.Utc;
   readonly worktreePath: string | null;
+  readonly runtimeMode?: RuntimeMode;
 }): OrchestrationV2AppThread {
   const threadId = ThreadId.make("thread:runtime-policy");
   return {
@@ -37,7 +43,7 @@ function makeThread(input: {
     title: "Runtime policy",
     providerInstanceId,
     modelSelection,
-    runtimeMode: "full-access",
+    runtimeMode: input.runtimeMode ?? "full-access",
     interactionMode: "default",
     branch: null,
     worktreePath: input.worktreePath,
@@ -58,11 +64,35 @@ function makeThread(input: {
   };
 }
 
-const TestLayer = layerFromProjectRepository.pipe(
+// Grok's instance offers no Auto-accept edits; the Codex instance advertises no
+// restriction.
+const grokInstanceId = ProviderInstanceId.make("grok");
+const supportedRuntimeModesByInstance = new Map<ProviderInstanceId, ReadonlyArray<RuntimeMode>>([
+  [grokInstanceId, ["approval-required", "auto", "full-access"]],
+]);
+const providerInstanceFor = (instanceId: ProviderInstanceId) =>
+  ({
+    snapshot: {
+      getSnapshot: Effect.succeed({
+        supportedRuntimeModes: supportedRuntimeModesByInstance.get(instanceId),
+      } as ServerProvider),
+    },
+  }) as ProviderInstance;
+
+const providerInstanceRegistry = Layer.succeed(ProviderInstanceRegistry, {
+  getInstance: (instanceId) => Effect.succeed(providerInstanceFor(instanceId)),
+  listInstances: Effect.succeed([]),
+  listUnavailable: Effect.succeed([]),
+  streamChanges: Stream.empty,
+  subscribeChanges: Effect.never,
+});
+
+const TestLayer = layerFromProjectStore.pipe(
   Layer.provide(NodeServices.layer),
+  Layer.provide(providerInstanceRegistry),
   Layer.provide(
-    Layer.mock(ProjectionProjects.ProjectionProjectRepository)({
-      getById: () =>
+    Layer.mock(ProjectStore.ProjectStoreV2)({
+      get: () =>
         Effect.succeed(
           Option.some({
             projectId,
@@ -71,6 +101,8 @@ const TestLayer = layerFromProjectRepository.pipe(
             defaultModelSelection: null,
             defaultThreadEnvMode: null,
             autoPull: false,
+            faviconPath: null,
+            projectIcon: null,
             scripts: [],
             createdAt: "2026-06-21T00:00:00.000Z",
             updatedAt: "2026-06-21T00:00:00.000Z",
@@ -105,6 +137,26 @@ it.layer(TestLayer)("RuntimePolicyV2", (it) => {
       assert.equal(resolved.cwd, "/project-worktree");
     }),
   );
+
+  it.effect("runs a mode the provider does not offer in Supervised", () =>
+    Effect.gen(function* () {
+      const policy = yield* RuntimePolicyV2;
+      const now = yield* DateTime.now;
+      const modeFor = (instanceId: ProviderInstanceId, runtimeMode: RuntimeMode) =>
+        policy
+          .resolve({
+            thread: makeThread({ now, worktreePath: null, runtimeMode }),
+            modelSelection: { instanceId, model: "test-model" },
+          })
+          .pipe(Effect.map((resolved) => resolved.runtimeMode));
+
+      assert.equal(yield* modeFor(grokInstanceId, "auto-accept-edits"), "approval-required");
+      assert.equal(yield* modeFor(grokInstanceId, "auto"), "auto");
+      assert.equal(yield* modeFor(grokInstanceId, "full-access"), "full-access");
+      // A provider that advertises no restriction runs every mode as stored.
+      assert.equal(yield* modeFor(providerInstanceId, "auto-accept-edits"), "auto-accept-edits");
+    }),
+  );
 });
 
 it.effect("excludes configured session files only for app-owned helpers", () =>
@@ -114,8 +166,8 @@ it.effect("excludes configured session files only for app-owned helpers", () =>
       const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "helper-policy-" });
       yield* fs.writeFileString(`${cwd}/IDENTITY.md`, "Named agent identity and personal memory");
       const now = yield* DateTime.now;
-      const repository = Layer.mock(ProjectionProjects.ProjectionProjectRepository)({
-        getById: () =>
+      const repository = Layer.mock(ProjectStore.ProjectStoreV2)({
+        get: () =>
           Effect.succeed(
             Option.some({
               projectId,
@@ -124,6 +176,8 @@ it.effect("excludes configured session files only for app-owned helpers", () =>
               defaultModelSelection: null,
               defaultThreadEnvMode: null,
               autoPull: false,
+              faviconPath: null,
+              projectIcon: null,
               scripts: [],
               sessionFiles: ["IDENTITY.md"],
               createdAt: "2026-09-20T00:00:00Z",
@@ -154,7 +208,15 @@ it.effect("excludes configured session files only for app-owned helpers", () =>
           modelSelection,
         });
         assert.include(native.sessionContext ?? "", "Named agent identity");
-      }).pipe(Effect.provide(layerFromProjectRepository.pipe(Layer.provide(repository))));
+      }).pipe(
+        Effect.provide(
+          layerFromProjectStore.pipe(
+            Layer.provide(repository),
+            Layer.provide(providerInstanceRegistry),
+            Layer.provide(NodeServices.layer),
+          ),
+        ),
+      );
     }),
   ).pipe(Effect.provide(NodeServices.layer)),
 );

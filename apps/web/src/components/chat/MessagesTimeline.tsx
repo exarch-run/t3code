@@ -35,6 +35,7 @@ import { environmentThreadDetails } from "../../state/threads";
 import { resolveUserMessagePresentation } from "@t3tools/client-runtime/user-message";
 import { Link } from "@tanstack/react-router";
 import { canForkProjectedAssistantItem } from "@t3tools/client-runtime/state/thread-workflows";
+import { notificationChildThreadId } from "@t3tools/client-runtime/state/thread-execution";
 import { replaceComposerContextReferences } from "@t3tools/shared/composerContextReferences";
 import {
   resolveWorkEntryToolPresentation,
@@ -190,12 +191,14 @@ import {
   resolveTimelineMinimapHitStripWidth,
   resolveTimelineMinimapIndexFromPointer,
   resolveTimelineMinimapInteractiveWidth,
+  resolveTimelineMinimapNavigationInteractive,
   resolveTimelineMinimapTopPercent,
   resolveWorkGroupScrollIndex,
   shouldFollowWorkGroupAppend,
   shouldPreserveAssistantLineBreaks,
   toolGroupAction,
   workEntryDisplayLabel,
+  workEntryReadOutput,
   workEntryIsVisibleInGroup,
   worktreeSetupAgentStarted,
   type StableMessagesTimelineRowsState,
@@ -240,6 +243,7 @@ import { chatMarkdownClipboardPayload } from "../../markdown-clipboard";
 import { ContextChip, ContextChipLabel, type ContextChipKind } from "../ContextChip";
 import { createContextPresentationRegistry } from "../contextPresentationRegistry";
 import { useOpenPrLink } from "~/lib/openPullRequestLink";
+import { useClientSettings } from "~/hooks/useSettings";
 import type { ChatMarkdownContextReference } from "../ChatMarkdown";
 import { useMediaQuery } from "~/hooks/useMediaQuery";
 import { cn } from "~/lib/utils";
@@ -401,6 +405,8 @@ interface MessagesTimelineProps {
     sourceAnchor: AssistantCitationSourceAnchor,
   ) => boolean;
   isWorking: boolean;
+  /** The live work belongs to a runless root turn (a provider-native subagent). */
+  runlessWorkActive?: boolean;
   activeTurnInProgress: boolean;
   activeTurnStartedAt?: string | null;
   worktreeSetup?: WorktreeSetupSnapshot | null;
@@ -483,6 +489,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   citationHistoryLoading = false,
   onCiteAssistantText,
   isWorking,
+  runlessWorkActive = false,
   activeTurnInProgress,
   activeTurnStartedAt = null,
   worktreeSetup = null,
@@ -741,6 +748,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         expandedAttemptIds,
         expandedWorkGroupIds,
         isWorking,
+        runlessWorkActive,
         activeTurnStartedAt,
         turnDiffSummaries,
         supportsConversationRollback,
@@ -763,6 +771,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     expandedAttemptIds,
     expandedWorkGroupIds,
     isWorking,
+    runlessWorkActive,
     activeTurnStartedAt,
     turnDiffSummaries,
     supportsConversationRollback,
@@ -900,6 +909,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const [timelineViewportElement, setTimelineViewportElement] = useState<HTMLDivElement | null>(
     null,
   );
+  // Re-measure the minimap gutter when the chat column changes width without a viewport resize.
+  const chatWidth = useClientSettings((settings) => settings.chatWidth);
   const {
     target: readyCitationRequest,
     positioning: citationPositioning,
@@ -1090,11 +1101,19 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
     const measure = () => {
       const viewportWidth = timelineViewportElement.getBoundingClientRect().width;
-      const nextHasPersistentGutter = resolveTimelineMinimapHasPersistentGutter(viewportWidth);
+      // Without a mounted row, treat the column as full width so the strip stays inert.
+      const contentWidth =
+        timelineViewportElement
+          .querySelector<HTMLElement>("[data-timeline-root]")
+          ?.getBoundingClientRect().width ?? viewportWidth;
+      const nextHasPersistentGutter = resolveTimelineMinimapHasPersistentGutter(
+        viewportWidth,
+        contentWidth,
+      );
       setMinimapHasPersistentGutter((current) =>
         current === nextHasPersistentGutter ? current : nextHasPersistentGutter,
       );
-      setMinimapHitStripWidth(resolveTimelineMinimapHitStripWidth(viewportWidth));
+      setMinimapHitStripWidth(resolveTimelineMinimapHitStripWidth(viewportWidth, contentWidth));
       reportContentOverflow();
     };
 
@@ -1107,7 +1126,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       cancelAnimationFrame(frame);
       observer.disconnect();
     };
-  }, [timelineViewportElement, rows.length, reportContentOverflow]);
+  }, [timelineViewportElement, rows.length, reportContentOverflow, chatWidth]);
 
   const sharedState = useMemo<TimelineRowSharedState>(
     () => ({
@@ -1442,6 +1461,7 @@ function TimelineMinimap({
       ),
     [items, resolvedActiveIndex],
   );
+  const navigationInteractive = resolveTimelineMinimapNavigationInteractive(hitStripWidth);
   const activeTopPercent =
     resolvedActiveIndex === null
       ? 0
@@ -1522,6 +1542,7 @@ function TimelineMinimap({
           <TimelineMinimapNavigationButton
             direction="previous"
             disabled={previousItem === null}
+            interactive={navigationInteractive}
             onClick={() => {
               if (previousItem) onSelect(previousItem);
             }}
@@ -1647,6 +1668,7 @@ function TimelineMinimap({
           <TimelineMinimapNavigationButton
             direction="next"
             disabled={nextItem === null}
+            interactive={navigationInteractive}
             onClick={() => {
               if (nextItem) onSelect(nextItem);
             }}
@@ -1660,10 +1682,12 @@ function TimelineMinimap({
 function TimelineMinimapNavigationButton({
   direction,
   disabled,
+  interactive,
   onClick,
 }: {
   direction: "previous" | "next";
   disabled: boolean;
+  interactive: boolean;
   onClick: () => void;
 }) {
   const previous = direction === "previous";
@@ -1676,7 +1700,8 @@ function TimelineMinimapNavigationButton({
         render={
           <span
             className={cn(
-              "absolute left-1 z-10 inline-flex -translate-x-1/2 opacity-0 pointer-events-auto transition-opacity duration-150 hover:opacity-100 focus-within:opacity-100",
+              "absolute left-1 z-10 inline-flex -translate-x-1/2 opacity-0 transition-opacity duration-150 hover:opacity-100 focus-within:opacity-100",
+              interactive ? "pointer-events-auto" : "pointer-events-none",
               previous ? "bottom-[calc(100%+2px)]" : "top-[calc(100%+2px)]",
             )}
           />
@@ -4799,7 +4824,22 @@ const toolCallExpandedBodyClassName =
 
 function workEntryIconName(workEntry: TimelineWorkEntry): WorkEntryIconName {
   if (workEntry.structuredPayload?.type === "notification") {
-    return workEntry.structuredPayload.outcome === "failed" ? "circle-alert" : "zap";
+    if (workEntry.structuredPayload.outcome === "failed") return "circle-alert";
+    const source = workEntry.structuredPayload.source;
+    switch (source.kind) {
+      case "subagent":
+      case "delegated_task":
+        return "bot";
+      case "command":
+        return "terminal";
+      case "monitor":
+        return "eye";
+      case "background_task":
+        return "zap";
+      default:
+        source satisfies never;
+        return "zap";
+    }
   }
   if (workEntry.itemType === "user_input_request" || workEntry.itemType === "approval_request") {
     return "message-circle";
@@ -4883,6 +4923,10 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
     workEntry.projectedItem?.item.type === "thread_created"
       ? workEntry.projectedItem.item
       : undefined;
+  const notifiedSubagentThreadId =
+    workEntry.projectedItem?.item.type === "notification"
+      ? notificationChildThreadId(workEntry.projectedItem.item.source)
+      : undefined;
   const groupView = use(WorkGroupViewCtx);
   const [expanded, setExpanded] = useState(
     () => groupView?.state.expandedEntries.has(workEntry.id) ?? false,
@@ -4964,6 +5008,8 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
     ? getQuestionAnswerPreview(workEntry.questionAnswer)
     : null;
   const viewedImagePath = workEntryViewedImagePath(workEntry);
+  const isRead = toolGroupAction(workEntry) === "read";
+  const readOutput = isRead ? workEntryReadOutput(workEntry, workspaceRoot) : null;
   const viewedImage =
     viewedImagePath && threadRef
       ? resolveViewedImageAsset(viewedImagePath, {
@@ -4983,14 +5029,18 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
     );
   const expandedBody =
     expanded && !isReasoning
-      ? buildToolCallExpandedBody(
-          workEntry,
-          workspaceRoot,
-          previewText,
-          viewedImage ? viewedImagePath : null,
-        )
+      ? isRead
+        ? readOutput
+        : buildToolCallExpandedBody(
+            workEntry,
+            workspaceRoot,
+            previewText,
+            viewedImage ? viewedImagePath : null,
+          )
       : null;
-  const canExpandProjectedItem = canExpand || workEntry.projectedItem !== undefined;
+  const canExpandProjectedItem = isRead
+    ? Boolean(readOutput || viewedImage || workEntry.questionAnswer)
+    : canExpand || workEntry.projectedItem !== undefined;
   // Reserve destructive row styling for severe failures, not routine tool errors.
   const iconWrapperClass = cn(
     "flex size-4 items-center justify-center",
@@ -5109,6 +5159,18 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
               Open chat
             </button>
           ) : null}
+          {notifiedSubagentThreadId ? (
+            <InlineButton
+              aria-label="Open subagent thread"
+              onClick={(event) => {
+                event.stopPropagation();
+                ctx.onOpenThread(notifiedSubagentThreadId);
+              }}
+              onKeyDown={stopRowToggle}
+            >
+              Open subagent
+            </InlineButton>
+          ) : null}
           {showFailedIndicator &&
           !showDestructiveRowStyle &&
           !toolIconAcceptsTint(entryIconName, entryToolIcon) ? (
@@ -5153,9 +5215,9 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
       !isReasoning &&
       !workEntry.questionAnswer &&
       canExpandProjectedItem &&
-      (expandedBody || workEntry.projectedItem) ? (
+      (expandedBody || (workEntry.projectedItem && !isRead)) ? (
         <WorkLogDetails kind="panel">
-          {workEntry.projectedItem ? (
+          {workEntry.projectedItem && !isRead ? (
             <V2ItemInspector
               projectedItem={workEntry.projectedItem}
               environmentId={ctx.activeThreadEnvironmentId}

@@ -1,4 +1,4 @@
-import { formatQuestionResponseForProvider } from "../orchestration/questionResponseInput.ts";
+import { formatQuestionResponseForProvider } from "../exarch/questionResponseInput.ts";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
   MessageId,

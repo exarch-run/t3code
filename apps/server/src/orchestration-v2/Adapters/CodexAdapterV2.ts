@@ -129,6 +129,7 @@ import {
   type ProviderContinuationRequest,
   ProviderContinuationRequests,
 } from "../ProviderContinuationRequests.ts";
+import { backgroundWorkNotification } from "../Notification.ts";
 import {
   makeProviderFailure,
   makeProviderFailureTurnItem,
@@ -976,22 +977,32 @@ export const resolveCodexForkBoundary = Effect.fn("CodexAdapterV2.resolveForkBou
 const CodexThreadHistoryMetadata = Schema.Struct({
   thread: Schema.Struct({
     historyMode: Schema.optionalKey(Schema.Literals(["legacy", "paginated"])),
+    status: Schema.optionalKey(Schema.Struct({ type: Schema.String })),
   }),
 });
 const decodeCodexThreadHistoryMetadata = Schema.decodeUnknownEffect(CodexThreadHistoryMetadata);
 
-const readCodexThreadHistoryMode = Effect.fn("CodexAdapterV2.readThreadHistoryMode")(function* (
-  raw: Pick<CodexClient.CodexAppServerClient["Service"]["raw"], "request">,
-  threadId: string,
-) {
-  const response = yield* raw.request("thread/read", { threadId, includeTurns: false });
-  const metadata = yield* decodeCodexThreadHistoryMetadata(response).pipe(
-    Effect.mapError((error) =>
-      CodexErrors.CodexAppServerRequestError.invalidPayload("thread/read", "decode-payload", error),
-    ),
-  );
-  return metadata.thread.historyMode;
-});
+const readCodexThreadHistoryMetadata = Effect.fn("CodexAdapterV2.readThreadHistoryMetadata")(
+  function* (
+    raw: Pick<CodexClient.CodexAppServerClient["Service"]["raw"], "request">,
+    threadId: string,
+  ) {
+    const response = yield* raw.request("thread/read", { threadId, includeTurns: false });
+    const metadata = yield* decodeCodexThreadHistoryMetadata(response).pipe(
+      Effect.mapError((error) =>
+        CodexErrors.CodexAppServerRequestError.invalidPayload(
+          "thread/read",
+          "decode-payload",
+          error,
+        ),
+      ),
+    );
+    return {
+      historyMode: metadata.thread.historyMode,
+      loaded: metadata.thread.status?.type !== "notLoaded",
+    };
+  },
+);
 
 export const resolveCodexRollbackTurnCount = Effect.fn("CodexAdapterV2.resolveRollbackTurnCount")(
   function* (input: ProviderAdapterV2RollbackThreadInput) {
@@ -1127,6 +1138,26 @@ interface CodexSubagentThreadContext {
   readonly turnItemOrdinal: number;
   task: OrchestrationV2Subagent;
 }
+
+/**
+ * The top-level turn a (possibly nested) subagent turn runs under, and the
+ * subagent on that turn's thread that leads to it. Native subagent threads are
+ * hidden from the sidebar, so their approvals are asked there instead.
+ */
+const approvalOwnerCodexTurn = (
+  context: ActiveCodexTurnContext,
+): {
+  readonly owner: ActiveCodexTurnContext;
+  readonly subagent: CodexSubagentThreadContext | null;
+} => {
+  let owner = context;
+  let subagent: CodexSubagentThreadContext | null = null;
+  while (owner.subagent !== null) {
+    subagent = owner.subagent;
+    owner = owner.subagent.parentContext;
+  }
+  return { owner, subagent };
+};
 
 const isDescendantCodexTurn = (
   candidate: ActiveCodexTurnContext,
@@ -3677,37 +3708,42 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
         }) =>
           Effect.gen(function* () {
             const createdAt = yield* DateTime.now;
-            const parentNodeId = idAllocator.derive.nodeFromProviderItem({
-              driver: CODEX_PROVIDER,
-              nativeItemId: input.nativeItemId,
-            });
+            // A subagent's approval is asked on the top-level thread and run,
+            // under the subagent that asked, where the user can see and answer it.
+            const { owner, subagent } = approvalOwnerCodexTurn(input.context);
+            const parentNodeId =
+              subagent?.subagentNodeId ??
+              idAllocator.derive.nodeFromProviderItem({
+                driver: CODEX_PROVIDER,
+                nativeItemId: input.nativeItemId,
+              });
             const ordinal = yield* resolveItemOrdinal(
-              input.context,
+              owner,
               `${input.nativeItemId}:approval:${input.nativeRequestId}`,
             );
             const requestId = yield* idAllocator.allocate.runtimeRequest({
               driver: CODEX_PROVIDER,
-              providerTurnId: input.context.providerTurnId,
+              providerTurnId: owner.providerTurnId,
               nativeRequestId: input.nativeRequestId,
             });
             const nodeId = idAllocator.derive.approvalNode({ requestId });
-            const providerSessionId = input.context.input.providerThread.providerSessionId;
+            const providerSessionId = owner.input.providerThread.providerSessionId;
             if (providerSessionId === null) {
               return yield* toProtocolError(
-                `Provider thread ${input.context.providerThread.id} is missing a provider session id.`,
+                `Provider thread ${owner.providerThread.id} is missing a provider session id.`,
               );
             }
             const node: OrchestrationV2ExecutionNode = {
               id: nodeId,
-              threadId: input.context.projectionThreadId,
-              runId: input.context.projectionRunId,
+              threadId: owner.projectionThreadId,
+              runId: owner.projectionRunId,
               parentNodeId,
-              rootNodeId: input.context.rootNodeId,
+              rootNodeId: owner.rootNodeId,
               kind: "approval_request",
               status: "waiting",
               countsForRun: false,
-              providerThreadId: input.context.providerThread.id,
-              providerTurnId: input.context.providerTurnId,
+              providerThreadId: owner.providerThread.id,
+              providerTurnId: owner.providerTurnId,
               nativeItemRef: codexNativeItemRef(input.nativeItemId),
               runtimeRequestId: requestId,
               checkpointScopeId: null,
@@ -3717,7 +3753,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             const request: OrchestrationV2RuntimeRequest = {
               id: requestId,
               nodeId,
-              providerTurnId: input.context.providerTurnId,
+              providerTurnId: owner.providerTurnId,
               nativeRequestRef: {
                 driver: CODEX_PROVIDER,
                 nativeId: input.nativeRequestId,
@@ -3734,11 +3770,11 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             };
             const turnItem: OrchestrationV2TurnItem = {
               id: idAllocator.derive.approvalTurnItem({ requestId }),
-              threadId: input.context.projectionThreadId,
-              runId: input.context.projectionRunId,
+              threadId: owner.projectionThreadId,
+              runId: owner.projectionRunId,
               nodeId,
-              providerThreadId: input.context.providerThread.id,
-              providerTurnId: input.context.providerTurnId,
+              providerThreadId: owner.providerThread.id,
+              providerTurnId: owner.providerTurnId,
               nativeItemRef: codexNativeItemRef(input.nativeItemId),
               parentItemId: null,
               ordinal,
@@ -4414,17 +4450,19 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                       driver: CODEX_PROVIDER,
                       detail: codexBackgroundCommandDetail(payload.item),
                       notification: {
-                        source: { kind: "background_command" },
-                        outcome:
-                          payload.item.exitCode === 0
-                            ? "completed"
-                            : payload.item.exitCode == null
-                              ? "unknown"
-                              : "failed",
-                        summary:
-                          payload.item.exitCode == null || payload.item.exitCode === 0
-                            ? "Background command finished"
-                            : `Background command exited with code ${payload.item.exitCode}`,
+                        ...backgroundWorkNotification([
+                          {
+                            kind: "command",
+                            label: payload.item.command,
+                            outcome:
+                              payload.item.exitCode === 0
+                                ? "completed"
+                                : payload.item.exitCode == null
+                                  ? "unknown"
+                                  : "failed",
+                            exitCode: payload.item.exitCode ?? undefined,
+                          },
+                        ]),
                         detail: payload.item.command,
                       },
                     });
@@ -4499,10 +4537,11 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                   ? payload.item.text
                   : (planDeltas.get(payload.item.id) ?? "");
               planDeltas.delete(payload.item.id);
+              // A finished proposal stays active until Implement consumes it.
               const artifacts = yield* buildProposedPlanArtifacts({
                 context,
                 nativeItemId: payload.item.id,
-                status: "completed",
+                status: "active",
                 markdown,
                 completed: true,
               });
@@ -6304,14 +6343,28 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               }
               // Codex 0.156 can revert paginated history at a turn boundary.
               // Legacy history no longer has a rollback endpoint.
-              const historyMode = yield* ensureInitialized.pipe(
-                Effect.andThen(readCodexThreadHistoryMode(client.raw, threadId)),
+              const { historyMode, loaded } = yield* ensureInitialized.pipe(
+                Effect.andThen(readCodexThreadHistoryMetadata(client.raw, threadId)),
               );
               if (historyMode !== "paginated") {
                 return yield* new ProviderAdapterRollbackThreadError({
                   driver: CODEX_PROVIDER,
                   providerThreadId: threadInput.providerThread.id,
                   cause: `Cannot roll back Codex thread ${threadId}: the thread uses legacy history, which Codex 0.156 cannot revert.`,
+                });
+              }
+              // `thread/revert` only acts on a thread loaded in this app-server
+              // process. After a restart or idle release, load it the same way
+              // the next turn would before reverting.
+              if (!loaded) {
+                yield* client.raw.request("thread/resume", {
+                  threadId,
+                  excludeTurns: true,
+                  ...codexThreadRuntimeParams({
+                    threadId: threadInput.providerThread.appThreadId,
+                    modelSelection: input.modelSelection,
+                    runtimePolicy: input.runtimePolicy,
+                  }),
                 });
               }
               const response = yield* ensureInitialized.pipe(
@@ -6381,8 +6434,8 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 // Reached only when the selected source turn has no native
                 // turn reference, so the fork had to be taken at head and then
                 // trimmed with the paginated history API.
-                const historyMode = yield* ensureInitialized.pipe(
-                  Effect.andThen(readCodexThreadHistoryMode(client.raw, response.thread.id)),
+                const { historyMode } = yield* ensureInitialized.pipe(
+                  Effect.andThen(readCodexThreadHistoryMetadata(client.raw, response.thread.id)),
                 );
                 if (historyMode !== "paginated") {
                   return yield* new ProviderAdapterForkThreadError({
