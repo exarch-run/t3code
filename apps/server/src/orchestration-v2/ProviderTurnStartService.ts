@@ -731,7 +731,7 @@ export const layer: Layer.Layer<
           type: "provider_resume_fallback",
         });
         const createdAt = yield* DateTime.now;
-        const windowStart = contextWindowStart(projection.runs, run.ordinal - 1);
+        const windowStart = contextWindowStart(projection.runs, run);
         const handoff = yield* contextHandoffService.prepareProviderHandoff({
           threadId: projection.thread.id,
           targetRunId: run.id,
@@ -741,7 +741,7 @@ export const layer: Layer.Layer<
           fromProviderInstanceId: providerThread.providerInstanceId,
           toProviderInstanceId: run.providerInstanceId,
           coveredRunOrdinals: {
-            from: Math.max(1, windowStart),
+            from: Math.max(1, Math.min(windowStart, run.ordinal - 1)),
             to: Math.max(1, run.ordinal - 1),
           },
           strategy: "full_thread_summary",

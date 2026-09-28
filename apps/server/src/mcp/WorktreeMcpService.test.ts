@@ -18,6 +18,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
@@ -916,6 +917,38 @@ describe("t3_worktree_handoff", () => {
       yield* Deferred.succeed(gate, undefined);
       const firstExit = yield* Fiber.join(first);
       expect(Exit.isSuccess(firstExit)).toBe(true);
+      expect(harness.createWorktree).toHaveBeenCalledTimes(1);
+    }),
+  );
+
+  // Owner moves provide the service per request while agent moves use the MCP
+  // server's, so the guard must hold across separately built services.
+  it.effect("serializes handoffs across separately provided services", () =>
+    Effect.gen(function* () {
+      const gate = yield* Deferred.make<void>();
+      const entered = yield* Queue.unbounded<void>();
+      const harness = makeHarness({
+        createWorktreeGate: Queue.offer(entered, undefined).pipe(
+          Effect.andThen(Deferred.await(gate)),
+        ),
+      });
+
+      const first = yield* Effect.forkChild(
+        Effect.exit(runHandoff(harness, { branch: "feature/owner-1" })),
+      );
+      yield* Queue.take(entered);
+      const second = yield* Effect.forkChild(
+        Effect.exit(runHandoff(harness, { branch: "feature/owner-2" })),
+      );
+      // Either the second move is refused, or it reaches worktree creation.
+      yield* Effect.raceFirst(Fiber.await(second), Queue.take(entered));
+
+      yield* Deferred.succeed(gate, undefined);
+      expect(Exit.isSuccess(yield* Fiber.join(first))).toBe(true);
+      expectTypedFailure(yield* Fiber.join(second), {
+        _tag: "WorktreeMcpFailure",
+        code: "handoff_in_progress",
+      });
       expect(harness.createWorktree).toHaveBeenCalledTimes(1);
     }),
   );

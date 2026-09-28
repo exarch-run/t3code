@@ -592,9 +592,9 @@ export function appendContextHandoffId(
 function rootProviderThreadsForProvider(
   projection: Pick<OrchestrationV2ThreadProjection, "providerThreads" | "thread" | "runs">,
   providerInstanceId: ModelSelection["instanceId"],
-  targetRunOrdinal?: number,
+  targetRun?: OrchestrationV2Run,
 ): ReadonlyArray<OrchestrationV2ProviderThread> {
-  const windowStart = contextWindowStart(projection.runs, targetRunOrdinal);
+  const windowStart = contextWindowStart(projection.runs, targetRun);
   return projection.providerThreads
     .filter(
       (providerThread) =>
@@ -1227,7 +1227,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         projection.thread.pendingHandoff?.afterRunOrdinal === queuedRun.ordinal - 1
           ? projection.thread.pendingHandoff
           : undefined;
-      const queuedWindowStart = contextWindowStart(projection.runs, queuedRun.ordinal);
+      const queuedWindowStart = contextWindowStart(projection.runs, queuedRun);
       const coveredRuns =
         queuedRun.startClean ||
         canResumeAcrossInstances ||
@@ -3769,9 +3769,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         const existingTargetProviderThread = rootProviderThreadsForProvider(
           input.projection,
           input.modelSelection.instanceId,
-          targetRun.ordinal,
+          targetRun,
         ).find((candidate) => candidate.id !== providerThread.id);
-        const windowStart = contextWindowStart(input.projection.runs, targetRun.ordinal);
+        const windowStart = contextWindowStart(input.projection.runs, targetRun);
         const targetProviderSessionId =
           existingTargetProviderThread?.providerSessionId ??
           (yield* mapDispatchError(input.command)(
@@ -3826,7 +3826,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             fromProviderInstanceId: targetRun.providerInstanceId,
             toProviderInstanceId: input.modelSelection.instanceId,
             coveredRunOrdinals: {
-              from: Math.max(1, windowStart),
+              from: Math.max(1, Math.min(windowStart, targetRun.ordinal)),
               to: targetRun.ordinal,
             },
             strategy: "full_thread_summary",
@@ -5397,7 +5397,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         targetProviderThread === undefined
           ? undefined
           : lastDeliveredRunForProviderThread(projection, targetProviderThread.id);
-      const providerSwitchWindowStart = contextWindowStart(projection.runs, ordinal);
+      const providerSwitchWindowStart = contextWindowStart(projection.runs);
       const providerSwitchCoveredRuns =
         !isProviderSwitch || canResumeAcrossInstances || latestHandoffRun === undefined
           ? []

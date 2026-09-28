@@ -24,7 +24,6 @@ import * as ServerSettings from "../../../serverSettings.ts";
 import { VcsStatusBroadcaster } from "../../../vcs/VcsStatusBroadcaster.ts";
 import * as McpHttpServer from "../../McpHttpServer.ts";
 import * as McpSessionRegistry from "../../McpSessionRegistry.ts";
-import * as WorktreeMcpService from "../../WorktreeMcpService.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
 
 const StubServicesLive = Layer.mergeAll(
@@ -67,10 +66,7 @@ const decodeToolsListPayload = Schema.decodeUnknownEffect(ToolsListPayload);
 it.effect("production mcp layer lists worktree tools over http", () =>
   Effect.scoped(
     Effect.gen(function* () {
-      const routes = McpHttpServer.layer.pipe(
-        Layer.provide(McpSessionRegistry.layer),
-        Layer.provide(WorktreeMcpService.layer),
-      );
+      const routes = McpHttpServer.layer.pipe(Layer.provide(McpSessionRegistry.layer));
       yield* HttpRouter.serve(routes, {
         disableListenLog: true,
         disableLogger: true,

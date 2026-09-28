@@ -2039,134 +2039,165 @@ describe("orchestration v2 provider switching", () => {
     ),
   );
 
-  it.live("hands context to a queued switch even when a clean run is queued after it", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const cwd = yield* checkpointWorkspace("queued-switch-before-clean");
-        const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
-        const started = yield* Deferred.make<void>();
-        const release = yield* Deferred.make<void>();
-        const registryLayer = makeProviderAdapterRegistryLayer([
-          makeTestAdapter({
-            instanceId: CODEX_MODEL_SELECTION.instanceId,
-            driver: CODEX_DRIVER,
-            capabilities: CodexProviderCapabilitiesV2,
-            modelSelection: CODEX_MODEL_SELECTION,
-            responseByRunOrdinal: { 1: "Codex answer before the switch" },
-            capturedTurns,
-            holdFirstTurn: started,
-            releaseFirstTurn: release,
+  // Queue position, not creation order, decides which runs a clean run cuts off.
+  for (const reordered of [false, true] as const) {
+    it.live(
+      reordered
+        ? "keeps a clean run moved ahead of a queued switch as the switch's boundary"
+        : "hands context to a queued switch even when a clean run is queued after it",
+      () =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const cwd = yield* checkpointWorkspace(`queued-switch-clean-${reordered}`);
+            const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
+            const started = yield* Deferred.make<void>();
+            const release = yield* Deferred.make<void>();
+            const registryLayer = makeProviderAdapterRegistryLayer([
+              makeTestAdapter({
+                instanceId: CODEX_MODEL_SELECTION.instanceId,
+                driver: CODEX_DRIVER,
+                capabilities: CodexProviderCapabilitiesV2,
+                modelSelection: CODEX_MODEL_SELECTION,
+                responseByRunOrdinal: { 1: "Codex answer before the switch" },
+                capturedTurns,
+                holdFirstTurn: started,
+                releaseFirstTurn: release,
+              }),
+              makeTestAdapter({
+                instanceId: CLAUDE_MODEL_SELECTION.instanceId,
+                driver: CLAUDE_DRIVER,
+                capabilities: ClaudeProviderCapabilitiesV2,
+                modelSelection: CLAUDE_MODEL_SELECTION,
+                responseByRunOrdinal: {},
+                capturedTurns,
+              }),
+            ]);
+            const threadId = ThreadId.make(`thread:queued-switch-clean-${reordered}`);
+            const projection = yield* Effect.gen(function* () {
+              const orchestrator = yield* OrchestratorV2;
+              const dispatch = (
+                ordinal: number,
+                modelSelection: ModelSelection,
+                startClean = false,
+              ) =>
+                orchestrator.dispatch({
+                  type: "message.dispatch",
+                  createdBy: "user",
+                  creationSource: "web",
+                  commandId: CommandId.make(`command:queued-switch-before-clean:${ordinal}`),
+                  threadId,
+                  messageId: MessageId.make(`message:queued-switch-before-clean:${ordinal}`),
+                  text: `Prompt ${ordinal}`,
+                  attachments: [],
+                  modelSelection,
+                  startClean,
+                  dispatchMode: {
+                    type: ordinal === 1 ? "start_immediately" : "queue_after_active",
+                  },
+                });
+              yield* orchestrator.dispatch({
+                type: "thread.create",
+                createdBy: "user",
+                creationSource: "web",
+                commandId: CommandId.make("command:queued-switch-before-clean:create"),
+                threadId,
+                projectId: ProjectId.make("project:queued-switch-before-clean"),
+                title: "Queued switch before clean",
+                modelSelection: CODEX_MODEL_SELECTION,
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                branch: null,
+                worktreePath: cwd,
+              });
+              yield* dispatch(1, CODEX_MODEL_SELECTION);
+              yield* Deferred.await(started);
+              yield* dispatch(2, CLAUDE_MODEL_SELECTION);
+              yield* dispatch(3, CODEX_MODEL_SELECTION, true);
+              const queued = yield* orchestrator.getThreadProjection(threadId);
+              assert.deepEqual(
+                queued.runs.map((run) => [run.status, run.startClean === true]),
+                [
+                  ["running", false],
+                  ["queued", false],
+                  ["queued", true],
+                ],
+              );
+              if (reordered) {
+                yield* orchestrator.dispatch({
+                  type: "queued-run.reorder",
+                  commandId: CommandId.make("command:queued-switch-before-clean:reorder"),
+                  threadId,
+                  runId: queued.runs[2]!.id,
+                  beforeRunId: queued.runs[1]!.id,
+                });
+              }
+              const lastRunCompleted = yield* orchestrator.streamStoredEvents.pipe(
+                Stream.filter(
+                  ({ event }) =>
+                    event.type === "run.updated" &&
+                    event.runId === queued.runs[reordered ? 1 : 2]?.id &&
+                    event.payload.status === "completed",
+                ),
+                Stream.runHead,
+                Effect.forkScoped,
+              );
+              yield* Deferred.succeed(release, undefined);
+              yield* Fiber.join(lastRunCompleted);
+              return yield* orchestrator.getThreadProjection(threadId);
+            }).pipe(
+              Effect.provide(
+                makeOrchestratorV2ReplayLayerWithRegistry(
+                  { name: "queued-switch-before-clean", runtimePolicyOverride: { cwd } },
+                  registryLayer,
+                ),
+              ),
+            );
+            assert.deepEqual(
+              projection.runs.map((run) => [run.providerInstanceId, run.status]),
+              [
+                [CODEX_MODEL_SELECTION.instanceId, "completed"],
+                [CLAUDE_MODEL_SELECTION.instanceId, "completed"],
+                [CODEX_MODEL_SELECTION.instanceId, "completed"],
+              ],
+            );
+            // A clean run queued behind the switch leaves its history alone; one
+            // that runs first is the switch's boundary. The clean run itself
+            // never sees the earlier answer.
+            assert.deepEqual(
+              projection.contextHandoffs.map((handoff) => [
+                handoff.targetRunId,
+                handoff.coveredRunOrdinals,
+              ]),
+              [[projection.runs[1]?.id, reordered ? { from: 3, to: 3 } : { from: 1, to: 1 }]],
+            );
+            const turns = yield* Ref.get(capturedTurns);
+            assert.deepEqual(
+              turns.map((turn) => turn.driver),
+              reordered
+                ? [CODEX_DRIVER, CODEX_DRIVER, CLAUDE_DRIVER]
+                : [CODEX_DRIVER, CLAUDE_DRIVER, CODEX_DRIVER],
+            );
+            const claudeTurn = turns[reordered ? 2 : 1];
+            const cleanTurn = turns[reordered ? 1 : 2];
+            const claudeSees = `${claudeTurn?.text ?? ""}${claudeTurn?.sessionContext ?? ""}`;
+            if (reordered) {
+              assert.notInclude(claudeSees, "Codex answer before the switch");
+              assert.include(claudeSees, "response for run 3");
+            } else {
+              assert.include(claudeSees, "Codex answer before the switch");
+            }
+            assert.notInclude(
+              `${cleanTurn?.text ?? ""}${cleanTurn?.sessionContext ?? ""}`,
+              "Codex answer before the switch",
+            );
+            assert.notEqual(
+              projection.runs[2]?.providerThreadId,
+              projection.runs[0]?.providerThreadId,
+            );
           }),
-          makeTestAdapter({
-            instanceId: CLAUDE_MODEL_SELECTION.instanceId,
-            driver: CLAUDE_DRIVER,
-            capabilities: ClaudeProviderCapabilitiesV2,
-            modelSelection: CLAUDE_MODEL_SELECTION,
-            responseByRunOrdinal: {},
-            capturedTurns,
-          }),
-        ]);
-        const threadId = ThreadId.make("thread:queued-switch-before-clean");
-        const projection = yield* Effect.gen(function* () {
-          const orchestrator = yield* OrchestratorV2;
-          const dispatch = (ordinal: number, modelSelection: ModelSelection, startClean = false) =>
-            orchestrator.dispatch({
-              type: "message.dispatch",
-              createdBy: "user",
-              creationSource: "web",
-              commandId: CommandId.make(`command:queued-switch-before-clean:${ordinal}`),
-              threadId,
-              messageId: MessageId.make(`message:queued-switch-before-clean:${ordinal}`),
-              text: `Prompt ${ordinal}`,
-              attachments: [],
-              modelSelection,
-              startClean,
-              dispatchMode: {
-                type: ordinal === 1 ? "start_immediately" : "queue_after_active",
-              },
-            });
-          yield* orchestrator.dispatch({
-            type: "thread.create",
-            createdBy: "user",
-            creationSource: "web",
-            commandId: CommandId.make("command:queued-switch-before-clean:create"),
-            threadId,
-            projectId: ProjectId.make("project:queued-switch-before-clean"),
-            title: "Queued switch before clean",
-            modelSelection: CODEX_MODEL_SELECTION,
-            runtimeMode: "full-access",
-            interactionMode: "default",
-            branch: null,
-            worktreePath: cwd,
-          });
-          yield* dispatch(1, CODEX_MODEL_SELECTION);
-          yield* Deferred.await(started);
-          yield* dispatch(2, CLAUDE_MODEL_SELECTION);
-          yield* dispatch(3, CODEX_MODEL_SELECTION, true);
-          const queued = yield* orchestrator.getThreadProjection(threadId);
-          assert.deepEqual(
-            queued.runs.map((run) => [run.status, run.startClean === true]),
-            [
-              ["running", false],
-              ["queued", false],
-              ["queued", true],
-            ],
-          );
-          const lastRunCompleted = yield* orchestrator.streamStoredEvents.pipe(
-            Stream.filter(
-              ({ event }) =>
-                event.type === "run.updated" &&
-                event.runId === queued.runs[2]?.id &&
-                event.payload.status === "completed",
-            ),
-            Stream.runHead,
-            Effect.forkScoped,
-          );
-          yield* Deferred.succeed(release, undefined);
-          yield* Fiber.join(lastRunCompleted);
-          return yield* orchestrator.getThreadProjection(threadId);
-        }).pipe(
-          Effect.provide(
-            makeOrchestratorV2ReplayLayerWithRegistry(
-              { name: "queued-switch-before-clean", runtimePolicyOverride: { cwd } },
-              registryLayer,
-            ),
-          ),
-        );
-        assert.deepEqual(
-          projection.runs.map((run) => [run.providerInstanceId, run.status]),
-          [
-            [CODEX_MODEL_SELECTION.instanceId, "completed"],
-            [CLAUDE_MODEL_SELECTION.instanceId, "completed"],
-            [CODEX_MODEL_SELECTION.instanceId, "completed"],
-          ],
-        );
-        // The later clean run must not erase the switch's history, and still
-        // starts clean itself.
-        assert.deepEqual(
-          projection.contextHandoffs.map((handoff) => [
-            handoff.targetRunId,
-            handoff.coveredRunOrdinals,
-          ]),
-          [[projection.runs[1]?.id, { from: 1, to: 1 }]],
-        );
-        const turns = yield* Ref.get(capturedTurns);
-        assert.deepEqual(
-          turns.map((turn) => turn.driver),
-          [CODEX_DRIVER, CLAUDE_DRIVER, CODEX_DRIVER],
-        );
-        assert.include(
-          `${turns[1]?.text ?? ""}${turns[1]?.sessionContext ?? ""}`,
-          "Codex answer before the switch",
-        );
-        assert.notInclude(
-          `${turns[2]?.text ?? ""}${turns[2]?.sessionContext ?? ""}`,
-          "Codex answer before the switch",
-        );
-        assert.notEqual(projection.runs[2]?.providerThreadId, projection.runs[0]?.providerThreadId);
-      }),
-    ),
-  );
+        ),
+    );
+  }
 
   it.live("fails an unsupported queued handoff and advances to the next queued provider", () =>
     Effect.scoped(

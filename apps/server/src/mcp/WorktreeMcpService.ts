@@ -56,6 +56,12 @@ const asOperationFailed = (prefix: string) =>
     failure("operation_failed", `${prefix}: ${errorMessage(error)}`),
   );
 
+// Serializes handoffs per thread: two concurrent calls could otherwise both
+// pass the worktreePath === null check and each create a worktree, leaving
+// one untracked on disk. Module scope, because owner moves build a service per
+// request and agent moves use the MCP server's, and all must see one guard.
+const handoffThreadsInFlight = new Set<string>();
+
 const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const path = yield* Path.Path;
@@ -65,11 +71,6 @@ const make = Effect.gen(function* () {
   const gitWorkflow = yield* GitWorkflowService.GitWorkflowService;
   const setupScriptRunner = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
   const vcsStatusBroadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
-
-  // Serializes handoffs per thread: two concurrent calls could otherwise both
-  // pass the worktreePath === null check and each create a worktree, leaving
-  // one untracked on disk.
-  const handoffThreadsInFlight = new Set<string>();
 
   const requireCapability = (scope: McpInvocationScope) =>
     scope.capabilities.has("worktree")
