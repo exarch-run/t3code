@@ -1607,16 +1607,46 @@ describe("orchestrator MCP toolkit", () => {
               workspaceStrategy: { type: "worktree", baseRef: "main", startFromOrigin: true },
             });
 
+            // Access is capped at the calling chat's; Build or Plan is taken as
+            // asked, and an edit that leaves access out keeps the saved level.
+            yield* orchestrator.dispatch({
+              type: "thread.runtime-mode.set",
+              commandId: CommandId.make("command:mcp-parent:schedule-narrow-access"),
+              threadId: parentThreadId,
+              runtimeMode: "auto-accept-edits",
+            });
+            yield* orchestrator.dispatch({
+              type: "thread.interaction-mode.set",
+              commandId: CommandId.make("command:mcp-parent:schedule-plan"),
+              threadId: parentThreadId,
+              interactionMode: "plan",
+            });
+            const fromPlanChat = yield* invoke("update_scheduled_task", {
+              scheduledTaskId: chosenId,
+              title: "Renamed from a plan chat",
+              interactionMode: "default",
+            });
+            expect(fromPlanChat.structuredContent).toMatchObject({
+              title: "Renamed from a plan chat",
+              runtimeMode: "auto",
+              interactionMode: "default",
+            });
+
             // Refused, never dropped: unknown fields, a missing local branch,
-            // a workspace for runs that post into this thread.
-            for (const [name, args] of [
-              ["update_scheduled_task", { scheduledTaskId: chosenId, workspace: { type: "root" } }],
+            // a workspace for runs that post into this thread, broader access.
+            for (const [name, args, reason] of [
+              [
+                "update_scheduled_task",
+                { scheduledTaskId: chosenId, workspace: { type: "root" } },
+                "This tool does not accept this field",
+              ],
               [
                 "update_scheduled_task",
                 {
                   scheduledTaskId: chosenId,
                   workspaceStrategy: { type: "worktree", baseRef: "main" },
                 },
+                "Branch or ref main does not exist",
               ],
               [
                 "update_scheduled_task",
@@ -1625,6 +1655,12 @@ describe("orchestrator MCP toolkit", () => {
                   bindToCurrentThread: true,
                   workspaceStrategy: { type: "root" },
                 },
+                "applies only to a fresh chat per run",
+              ],
+              [
+                "update_scheduled_task",
+                { scheduledTaskId: chosenId, runtimeMode: "full-access" },
+                "can't be broader than this chat's auto-accept-edits",
               ],
               [
                 "schedule_task",
@@ -1633,14 +1669,26 @@ describe("orchestrator MCP toolkit", () => {
                   schedule: { type: "interval", everyMs: 60_000 },
                   model: claudeModel,
                 },
+                "This tool does not accept this field",
               ],
             ] as const) {
               const refused = yield* invoke(name, args);
-              // Unknown fields fail parameter decoding; the rest fail in the service.
-              expect(refused.structuredContent, name).toMatchObject({
-                _tag: expect.stringMatching(/^(AiError|OrchestratorMcpFailure)$/),
-              });
+              expect((refused.content[0] as { readonly text: string }).text, name).toContain(
+                reason,
+              );
             }
+            yield* orchestrator.dispatch({
+              type: "thread.runtime-mode.set",
+              commandId: CommandId.make("command:mcp-parent:schedule-restore-access"),
+              threadId: parentThreadId,
+              runtimeMode: "full-access",
+            });
+            yield* orchestrator.dispatch({
+              type: "thread.interaction-mode.set",
+              commandId: CommandId.make("command:mcp-parent:schedule-restore-build"),
+              threadId: parentThreadId,
+              interactionMode: "default",
+            });
             expect(
               (yield* Ref.get(scheduledStore)).find((task) => task.id === chosenId)
                 ?.workspaceStrategy,

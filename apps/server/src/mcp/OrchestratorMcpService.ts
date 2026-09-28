@@ -463,6 +463,45 @@ export function resolveRuntimeMode(
     : Effect.succeed(resolved);
 }
 
+/**
+ * A schedule may not get access broader than the chat setting it. Build or
+ * Plan is a working style, not a permission, so it is taken as asked. A mode
+ * left out keeps `saved` (the task's own on update) without a check.
+ */
+function scheduledTaskModes(
+  caller: { readonly runtimeMode: RuntimeMode; readonly interactionMode: ProviderInteractionMode },
+  requested: {
+    readonly runtimeMode?: OrchestratorMcpRuntimeMode | undefined;
+    readonly interactionMode?: OrchestratorMcpInteractionMode | undefined;
+  },
+  saved: {
+    readonly runtimeMode: RuntimeMode;
+    readonly interactionMode: ProviderInteractionMode;
+  } = caller,
+) {
+  const runtimeMode =
+    requested.runtimeMode === undefined
+      ? Effect.succeed(saved.runtimeMode)
+      : resolveRuntimeMode(caller.runtimeMode, requested.runtimeMode);
+  return runtimeMode.pipe(
+    Effect.mapError(() =>
+      failure(
+        "runtime_mode_escalation_denied",
+        `A schedule's access ${requested.runtimeMode} can't be broader than this chat's ${caller.runtimeMode}.`,
+      ),
+    ),
+    Effect.map((runtimeMode) => ({
+      runtimeMode,
+      interactionMode:
+        requested.interactionMode === undefined
+          ? saved.interactionMode
+          : requested.interactionMode === "inherit"
+            ? caller.interactionMode
+            : requested.interactionMode,
+    })),
+  );
+}
+
 export function resolveInteractionMode(
   parentMode: ProviderInteractionMode,
   requested: OrchestratorMcpInteractionMode | undefined,
@@ -1174,11 +1213,7 @@ const make = Effect.gen(function* () {
           threadId: bindToCurrentThread ? scope.threadId : null,
           workspaceStrategy,
           modelSelection,
-          runtimeMode: yield* resolveRuntimeMode(parent.thread.runtimeMode, input.runtimeMode),
-          interactionMode: yield* resolveInteractionMode(
-            parent.thread.interactionMode,
-            input.interactionMode,
-          ),
+          ...(yield* scheduledTaskModes(parent.thread, input)),
           createdBy: "agent",
           creationSource: "mcp",
           // Scope the idempotency key by provider session so two callers
@@ -1265,14 +1300,7 @@ const make = Effect.gen(function* () {
           threadId,
           workspaceStrategy,
           modelSelection,
-          runtimeMode:
-            input.runtimeMode === undefined
-              ? existing.runtimeMode
-              : yield* resolveRuntimeMode(parent.thread.runtimeMode, input.runtimeMode),
-          interactionMode:
-            input.interactionMode === undefined
-              ? existing.interactionMode
-              : yield* resolveInteractionMode(parent.thread.interactionMode, input.interactionMode),
+          ...(yield* scheduledTaskModes(parent.thread, input, existing)),
           createdBy: existing.createdBy,
           creationSource: existing.creationSource,
         };

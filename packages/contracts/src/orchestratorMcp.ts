@@ -503,7 +503,7 @@ const scheduledTaskRunChoices = (omitted: string) => ({
   ),
   interactionMode: Schema.optional(
     OrchestratorMcpInteractionMode.annotate({
-      description: `'default' (build) or 'plan' for every run; 'inherit' uses this thread's. A plan-mode thread cannot choose build. ${omitted}`,
+      description: `'default' (build) or 'plan' for every run; 'inherit' uses this thread's. ${omitted}`,
     }),
   ),
   workspaceStrategy: Schema.optional(
