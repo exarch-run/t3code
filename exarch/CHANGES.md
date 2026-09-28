@@ -135,3 +135,12 @@ Policy lives in `apps/server/src/exarch/ProjectSessionFiles.ts`. A project's ses
 | `orchestration-v2/RuntimePolicy.ts`   | Reads the project's files for the session context; app-owned helpers get none.     | `exarch/ProjectSessionFiles.test.ts`, `RuntimePolicy.test.ts`          |
 
 The engine refresh to upstream `30f21318` moved this off the deleted V1 projection pipeline. The same refresh moved `questionResponseInput.ts` from the deleted `orchestration/` folder to `apps/server/src/exarch/`.
+
+## Claude subagents and shared-session restart
+
+No policy files. Both were resolved by hand in the refresh to upstream `30f21318`, which rewrote the same lines.
+
+| Hook                                           | Reason                                                                                                                                                                                                                                               | Regression coverage                                                  |
+| ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `orchestration-v2/Adapters/ClaudeAdapterV2.ts` | Each subagent keeps `launchToolUseId`, so only the Agent launch's result finishes it, not a later SendMessage, and `emittedTextNativeItemIds` drops repeated text snapshots. Upstream's `recoverResumedClaudeSubagent` sets both. From `53bde662a5`. | `Adapters/ClaudeAdapterV2.test.ts`, `testkit/fixtures/subagent_text` |
+| `orchestration-v2/RestartContinuation.ts`      | A live turn on a `ready` shared session can continue after a restart, alongside upstream's `running` rule. From `a00fcd65e1`.                                                                                                                        | `RestartContinuation.test.ts`                                        |
